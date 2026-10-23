@@ -433,3 +433,69 @@ func TestAppProcessMatches(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeCFProxyDomain(t *testing.T) {
+	cases := map[string]string{
+		"virkgj.com":     "pclead.co.uk",
+		"vmmzovy.com":    "offshor.co.uk",
+		"mkuosckvso.com": "cakeisalie.co.uk",
+		"custom.org":     "custom.org",
+	}
+	for in, want := range cases {
+		if got := decodeCFProxyDomain(in); got != want {
+			t.Errorf("decodeCFProxyDomain(%q)=%q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDC203Normalization(t *testing.T) {
+	makeInit := func(dcIndex int16) []byte {
+		init := make([]byte, 64)
+		for i := range init {
+			init[i] = byte(i*13 + 7)
+		}
+		key := init[8:40]
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream := cipher.NewCTR(block, init[40:56])
+		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
+		keystream := make([]byte, 8)
+		stream.XORKeyStream(keystream, make([]byte, 8))
+		plainTail := make([]byte, 8)
+		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
+		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
+		for i := 0; i < 8; i++ {
+			init[56+i] = plainTail[i] ^ keystream[i]
+		}
+		return init
+	}
+	dc, isMedia, ok := parseMTProtoDC(makeInit(203))
+	if !ok || dc != 2 || isMedia {
+		t.Fatalf("DC 203 normalization failed: dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
+	}
+	dc, isMedia, ok = parseMTProtoDC(makeInit(-203))
+	if !ok || dc != 2 || !isMedia {
+		t.Fatalf("DC -203 media normalization failed: dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
+	}
+}
+
+func TestFrontingSNIConfig(t *testing.T) {
+	oldDir := baseDir
+	tmp := t.TempDir()
+	baseDir = tmp
+	defer func() { baseDir = oldDir }()
+
+	if got := configuredFrontingSNI(); got != "" {
+		t.Errorf("expected empty fronting SNI, got %q", got)
+	}
+	_ = os.WriteFile(filepath.Join(tmp, "fronting-sni"), []byte("sprinthost.ru\n"), 0600)
+	if got := configuredFrontingSNI(); got != "sprinthost.ru" {
+		t.Errorf("expected sprinthost.ru, got %q", got)
+	}
+	_ = os.WriteFile(filepath.Join(tmp, "fronting-sni"), []byte("disable\n"), 0600)
+	if got := configuredFrontingSNI(); got != "" {
+		t.Errorf("expected disabled fronting SNI, got %q", got)
+	}
+}

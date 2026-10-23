@@ -65,6 +65,18 @@ var (
 	routeCacheDisk   = map[string]persistedRoute{}
 	routeHealthMu    sync.Mutex
 	routeHealth      = map[string]routeHealthState{} // host -> repeated early remote-close state
+	ioBufPool        = sync.Pool{
+		New: func() any {
+			b := make([]byte, 32*1024)
+			return &b
+		},
+	}
+	frameBufPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 64*1024)
+			return &b
+		},
+	}
 )
 
 type routeCandidate struct {
@@ -1250,6 +1262,7 @@ func serve() {
 	// Load last-known-good routes before accepting any client sockets. Otherwise
 	// a burst of connections at boot can race the cache load and trigger a full scan.
 	loadRouteCache()
+	startCFDomainsUpdater(context.Background())
 	ln, e := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort))
 	if e != nil {
 		logf("не удалось открыть локальный порт: %v", e)
@@ -1290,7 +1303,7 @@ func dcFor(ip netip.Addr) int {
 		return 0
 	}
 	s := ip.String()
-	known := map[string]int{"149.154.175.50": 1, "149.154.175.51": 1, "149.154.175.53": 1, "149.154.175.54": 1, "149.154.175.55": 1, "149.154.175.100": 3, "149.154.175.101": 3, "149.154.175.211": 1, "149.154.167.50": 2, "149.154.167.51": 2, "149.154.167.52": 2, "149.154.167.91": 4, "149.154.167.92": 4, "149.154.167.99": 2, "149.154.167.118": 4, "149.154.167.151": 2, "149.154.167.220": 2, "149.154.167.222": 2, "149.154.167.223": 2, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4, "149.154.166.121": 4, "149.154.175.52": 1, "149.154.175.102": 3, "149.154.174.100": 1, "149.154.170.100": 5, "149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.128": 5, "91.108.56.151": 5}
+	known := map[string]int{"149.154.175.50": 1, "149.154.175.51": 1, "149.154.175.53": 1, "149.154.175.54": 1, "149.154.175.55": 1, "149.154.175.100": 3, "149.154.175.101": 3, "149.154.175.211": 1, "149.154.167.50": 2, "149.154.167.51": 2, "149.154.167.52": 2, "149.154.167.91": 4, "149.154.167.92": 4, "149.154.167.99": 2, "149.154.167.118": 4, "149.154.167.151": 2, "149.154.167.220": 2, "149.154.167.222": 2, "149.154.167.223": 2, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4, "149.154.166.121": 4, "149.154.175.52": 1, "149.154.175.102": 3, "149.154.174.100": 1, "149.154.170.100": 5, "149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.128": 5, "91.108.56.151": 5, "91.105.192.100": 2}
 	if d := known[s]; d != 0 {
 		return d
 	}
@@ -1416,6 +1429,26 @@ func handleClient(c net.Conn) {
 	var once sync.Once
 	done := make(chan struct{})
 	closeBoth := func() { once.Do(func() { close(done); _ = c.Close(); _ = ws.Close() }) }
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+	stopIdle := make(chan struct{})
+	defer close(stopIdle)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopIdle:
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, lastActivity.Load())) > 5*time.Minute {
+					logf("соединение #%d DC%d закрыто по таймауту бездействия (5 мин)", id, dc)
+					closeBoth()
+					return
+				}
+			}
+		}
+	}()
 	// Do not send unsolicited client WebSocket Ping frames. In observed logs,
 	// remote EOF age tracked the configured Ping interval (25s, then 10s),
 	// suggesting these WSS frontends close or mishandle client-originated Ping.
@@ -1424,7 +1457,7 @@ func handleClient(c net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := pipeTCPToWSCount(c, ws, init, &upBytes); err != nil && !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "use of closed network connection") {
+		if err := pipeTCPToWSCount(c, ws, init, &upBytes, &lastActivity); err != nil && !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "use of closed network connection") {
 			logf("соединение #%d DC%d клиент→WSS ошибка: %T: %v (up=%d down=%d)", id, dc, err, err, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 		}
 		closeBoth()
@@ -1443,6 +1476,7 @@ func handleClient(c net.Conn) {
 				}
 				break
 			}
+			lastActivity.Store(time.Now().UnixNano())
 			switch op {
 			case 2, 0:
 				if len(payload) > 0 {
@@ -1500,6 +1534,9 @@ func parseMTProtoDC(init []byte) (dc int, isMedia bool, ok bool) {
 	isMedia = idx < 0
 	if idx < 0 {
 		idx = -idx
+	}
+	if idx == 203 {
+		idx = 2
 	}
 	if idx < 1 || idx > 5 {
 		return 0, false, false
@@ -1641,22 +1678,28 @@ var builtInCFDomains = []string{
 var domainPattern = regexp.MustCompile(`^(?i)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 func cfDomains() []string {
-	b, err := os.ReadFile(path("cf-domains"))
-	input := builtInCFDomains
-	if err == nil {
-		input = strings.Split(string(b), "\n")
-	}
-	seen := map[string]bool{}
-	out := make([]string, 0, len(input))
-	for _, raw := range input {
-		d := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
-		if d == "" || strings.HasPrefix(d, "#") || !domainPattern.MatchString(d) || d == "web.telegram.org" || strings.HasSuffix(d, ".web.telegram.org") || seen[d] {
-			continue
+	if b, err := os.ReadFile(path("cf-domains")); err == nil {
+		input := strings.Split(string(b), "\n")
+		seen := map[string]bool{}
+		out := make([]string, 0, len(input))
+		for _, raw := range input {
+			d := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
+			if d == "" || strings.HasPrefix(d, "#") || !domainPattern.MatchString(d) || d == "web.telegram.org" || strings.HasSuffix(d, ".web.telegram.org") || seen[d] {
+				continue
+			}
+			seen[d] = true
+			out = append(out, d)
 		}
-		seen[d] = true
-		out = append(out, d)
+		if len(out) > 0 {
+			return out
+		}
 	}
-	return out
+
+	if dyn := getDynamicCFDomains(); len(dyn) > 0 {
+		return dyn
+	}
+
+	return append([]string(nil), builtInCFDomains...)
 }
 
 func routeKey(dc int, isMedia bool) string {
@@ -1782,15 +1825,20 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 	}
 }
 
-func pipeTCPToWSCount(src net.Conn, ws *wsConn, initial []byte, counter *int64) error {
+func pipeTCPToWSCount(src net.Conn, ws *wsConn, initial []byte, counter *int64, activity *atomic.Int64) error {
 	framer, err := newMTProtoPacketFramer(initial)
 	if err != nil {
 		return err
 	}
-	buf := make([]byte, 32*1024)
+	bufPtr := ioBufPool.Get().(*[]byte)
+	defer ioBufPool.Put(bufPtr)
+	buf := *bufPtr
 	for {
 		n, readErr := src.Read(buf)
 		if n > 0 {
+			if activity != nil {
+				activity.Store(time.Now().UnixNano())
+			}
 			if counter != nil {
 				atomic.AddInt64(counter, int64(n))
 			}
@@ -2289,8 +2337,23 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 	return nil, last
 }
 
+func configuredFrontingSNI() string {
+	b, err := os.ReadFile(path("fronting-sni"))
+	if err == nil {
+		s := strings.TrimSpace(string(b))
+		if s != "" && !strings.EqualFold(s, "none") && !strings.EqualFold(s, "disable") {
+			return s
+		}
+	}
+	return ""
+}
+
 func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, error) {
-	tc := tls.Client(raw, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	sni := host
+	if customSNI := configuredFrontingSNI(); customSNI != "" {
+		sni = customSNI
+	}
+	tc := tls.Client(raw, &tls.Config{ServerName: sni, MinVersion: tls.VersionTLS12})
 	_ = tc.SetDeadline(time.Now().Add(8 * time.Second))
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()
@@ -2348,35 +2411,58 @@ func headerToken(value, token string) bool {
 func sha1Sum(b []byte) []byte  { h := sha1.Sum(b); return h[:] }
 func (w *wsConn) Close() error { return w.conn.Close() }
 func (w *wsConn) writeFrame(op byte, p []byte) error {
-	if len(p) > maxWSFrame {
+	n := len(p)
+	if n > maxWSFrame {
 		return errors.New("WebSocket frame too large")
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	var h []byte
-	h = append(h, 0x80|(op&0x0f))
-	n := len(p)
+
+	var hBuf [14]byte
+	hBuf[0] = 0x80 | (op & 0x0f)
+	var hLen int
 	switch {
 	case n < 126:
-		h = append(h, 0x80|byte(n))
+		hBuf[1] = 0x80 | byte(n)
+		hLen = 2
 	case n <= 65535:
-		h = append(h, 0x80|126, byte(n>>8), byte(n))
+		hBuf[1] = 0x80 | 126
+		binary.BigEndian.PutUint16(hBuf[2:4], uint16(n))
+		hLen = 4
 	default:
-		h = append(h, 0x80|127, 0, 0, 0, 0, byte(uint64(n)>>24), byte(uint64(n)>>16), byte(uint64(n)>>8), byte(n))
+		hBuf[1] = 0x80 | 127
+		binary.BigEndian.PutUint64(hBuf[2:10], uint64(n))
+		hLen = 10
 	}
-	mask := make([]byte, 4)
-	if _, e := rand.Read(mask); e != nil {
+	if _, e := rand.Read(hBuf[hLen : hLen+4]); e != nil {
 		return e
 	}
-	h = append(h, mask...)
-	payload := make([]byte, n)
+	mask := hBuf[hLen : hLen+4]
+	hLen += 4
+	header := hBuf[:hLen]
+
+	var payload []byte
+	var bufPtr *[]byte
+	if n <= 64*1024 {
+		bufPtr = frameBufPool.Get().(*[]byte)
+		payload = (*bufPtr)[:n]
+	} else {
+		payload = make([]byte, n)
+	}
+
 	for i := range p {
 		payload[i] = p[i] ^ mask[i&3]
 	}
-	if e := writeFull(w.conn, h); e != nil {
-		return e
+
+	err := writeFull(w.conn, header)
+	if err == nil {
+		err = writeFull(w.conn, payload)
 	}
-	return writeFull(w.conn, payload)
+
+	if bufPtr != nil {
+		frameBufPool.Put(bufPtr)
+	}
+	return err
 }
 func writeFull(w io.Writer, p []byte) error {
 	for len(p) > 0 {
