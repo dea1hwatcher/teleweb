@@ -50,9 +50,8 @@ func originalDestination(c net.Conn) (netip.AddrPort, error) {
 	e = raw.Control(func(fd uintptr) {
 		var sa [128]byte
 		l := uint32(16)
-		_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, uintptr(syscall.SOL_IP), uintptr(80), uintptr(unsafe.Pointer(&sa[0])), uintptr(unsafe.Pointer(&l)), 0)
-		if errno != 0 {
-			inner = errno
+		if err := getOriginalDst(fd, unsafe.Pointer(&sa[0]), &l); err != nil {
+			inner = err
 			return
 		}
 		port := binary.BigEndian.Uint16(sa[2:4])

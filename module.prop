@@ -1,7 +1,7 @@
 id=tgopen
 name=TG Open
-version=v2.1.47-lite-stats
-versionCode=249
+version=v2.1.48-multiarch
+versionCode=250
 author=TG Open
-description=Lite cleanup with WebUI RSS current/peak and Telegram traffic counters (reset on daemon restart), throttled diagnostics, and temporary cooldown for HTTP 5xx WSS frontends; TG Open v2.1.18 baseline with DC1 fix, watchdog recovery, adaptive direct/Cloudflare route selection, WebSocket keepalive and Obfuscated2 CTR offset rollback, WSS stale-tunnel detection, early-EOF route cooldown, persistent service supervisor, boot-race recovery and WebUI foreground rule reassertion and abridged Quick ACK framing fix and Android cgroup freezer protection and disabled client-originated WSS Ping after interval-correlated remote EOF; best-effort target-app cgroup freezer protection; persistent last-known-good WSS route cache across daemon restarts; removed the v2.1.42 Android Doze/app-standby policy after reported regressions; cached WSS route first before direct ingress; DC1 hardcoded route now respects early-EOF cooldown; repeated low-volume early EOF threshold reduced to two; legacy cached route candidates retained but background route-pool/pulse probes disabled; supervisor checks every 60 seconds; Android ARM64; WSS-only.
+description=TG Open: прозрачный WSS-транспорт для Telegram (DC1-DC5). Поддержка Cloudflare domain fronting, автообновление CF доменов, zero-alloc буферы, нормализация DC 203, защита от Doze/Cgroups. Поддержка архитектур: ARM64, ARM, x86, x86_64.
 webuiIcon=webroot/module_icon.png

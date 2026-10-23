@@ -2,7 +2,7 @@
 MODDIR=${0%/*}
 export TGOPEN_DIR=/data/adb/tgopen
 export TGOPEN_MOD="$MODDIR"
-echo "TG Open $(grep -E '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2 || echo "v2.1.47")"
+echo "TG Open $(grep -E '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2 || echo "v2.1.48")"
 echo "ABI: $(getprop ro.product.cpu.abi 2>/dev/null)"
 echo
 "$MODDIR/bin/tgws" status 2>&1

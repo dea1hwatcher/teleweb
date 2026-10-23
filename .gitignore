@@ -1,0 +1,5 @@
+# TG Open build & packaging artifacts
+*.zip
+*.tmp
+*.log
+src/tgopen
