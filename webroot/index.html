@@ -192,7 +192,12 @@ function kexec(cmd) {
     };
     try { ksu.exec(cmd, "{}", cb); }
     catch (e) { delete window[cb]; reject(e); return; }
-    setTimeout(() => { if (!done) reject(new Error("Таймаут")); }, 20000);
+    setTimeout(() => {
+      if (!done) {
+        delete window[cb];
+        reject(new Error("Таймаут"));
+      }
+    }, 20000);
   });
 }
 async function api(cmd, extra) {
@@ -207,6 +212,7 @@ async function api(cmd, extra) {
 }
 let state = null;
 let busy = false;
+let refreshing = false;
 function render() {
   const on = !!(state && state.enabled);
   $("sw").setAttribute("aria-checked", on ? "true" : "false");
@@ -237,8 +243,11 @@ function render() {
   if ($("log").classList.contains("show") && state.log) $("log").textContent = state.log || "Пусто";
 }
 async function refresh() {
+  if (refreshing || busy) return;
+  refreshing = true;
   try { state = await api("status"); }
   catch (e) { $("status").textContent = e.message; $("status").className = "status bad"; return; }
+  finally { refreshing = false; }
   render();
 }
 $("sw").addEventListener("click", async () => {

@@ -94,6 +94,12 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 		"149.154.168.1":   5,
 		"149.154.170.100": 5,
 		"149.154.165.136": 4,
+		"149.154.160.1":   2,
+		"149.154.161.10":  2,
+		"149.154.162.1":   2,
+		"149.154.163.254": 2,
+		"185.76.151.10":   2,
+		"91.105.192.50":   2,
 	}
 	for raw, want := range cases {
 		if got := dcFor(netip.MustParseAddr(raw)); got != want {

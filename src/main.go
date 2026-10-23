@@ -21,7 +21,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
-	"os/signal"
+	stdpath "path"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
@@ -29,9 +29,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
-	"unsafe"
 )
 
 const (
@@ -193,7 +191,6 @@ type Status struct {
 	Apps              []App          `json:"apps"`
 	Active            int64          `json:"active"`
 	WS                int64          `json:"ws"`
-	Direct            int            `json:"direct"`
 	Fail              int64          `json:"fail"`
 	DC                map[string]int `json:"dc"`
 	MemNowBytes       int64          `json:"memNowBytes"`
@@ -239,7 +236,11 @@ func logf(format string, a ...any) {
 				_ = logFile.Sync()
 				b, readErr := os.ReadFile(path("tgws.log"))
 				if readErr == nil && len(b) > 128*1024 {
-					_ = os.WriteFile(path("tgws.log"), b[len(b)-128*1024:], 0600)
+					tail := b[len(b)-128*1024:]
+					_ = logFile.Truncate(0)
+					_, _ = logFile.Seek(0, io.SeekStart)
+					_, _ = logFile.Write(tail)
+					_ = logFile.Sync()
 				}
 			}
 		}
@@ -291,7 +292,7 @@ func procSummary(pid int) string {
 
 func startSignalLogger() {
 	ch := make(chan os.Signal, 4)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	notifySignals(ch)
 	go func() {
 		for sig := range ch {
 			logf("process: получен сигнал %s; завершаюсь", sig)
@@ -324,7 +325,7 @@ func pidAlive() bool {
 	if p <= 1 {
 		return false
 	}
-	return syscall.Kill(p, 0) == nil
+	return isPidAlive(p)
 }
 func tailLog(n int) string {
 	b, e := os.ReadFile(path("tgws.log"))
@@ -441,69 +442,6 @@ func installedApps() ([]App, []int) {
 		appCache, uidCache = discoverApps()
 	}
 	return append([]App(nil), appCache...), append([]int(nil), uidCache...)
-}
-
-// applyBackgroundPolicy asks Android not to put supported Telegram clients into
-// Doze/app-standby background restrictions. This helps ordinary backgrounding,
-// but deliberately does not try to undo an explicit user force-stop or launch
-// the app UI. Commands are best-effort because OEM Android builds vary.
-func applyBackgroundPolicy() {
-	apps, _ := installedApps()
-	if len(apps) == 0 {
-		return
-	}
-	for _, app := range apps {
-		commands := []struct {
-			name string
-			args []string
-		}{
-			{"deviceidle-whitelist", []string{"deviceidle", "whitelist", "+" + app.Pkg}},
-			{"run-in-background", []string{"appops", "set", app.Pkg, "RUN_IN_BACKGROUND", "allow"}},
-			{"run-any-in-background", []string{"appops", "set", app.Pkg, "RUN_ANY_IN_BACKGROUND", "allow"}},
-			{"standby-active", []string{"set-standby-bucket", app.Pkg, "active"}},
-		}
-		for _, c := range commands {
-			var err error
-			if c.name == "standby-active" {
-				err = runAndroidCommand("am", c.args...)
-			} else {
-				err = runAndroidCommand("cmd", c.args...)
-			}
-			outcome := "ok"
-			if err != nil {
-				outcome = err.Error()
-			}
-			key := app.Pkg + "/" + c.name
-			previous, loaded := backgroundPolicyState.LoadOrStore(key, outcome)
-			if !loaded || previous.(string) != outcome {
-				backgroundPolicyState.Store(key, outcome)
-				if err != nil {
-					logf("background-policy: %s %s не применено: %v", app.Pkg, c.name, err)
-				} else {
-					logf("background-policy: %s %s применено", app.Pkg, c.name)
-				}
-			}
-		}
-	}
-}
-
-func runAndroidCommand(name string, args ...string) error {
-	candidates := []string{"/system/bin/" + name, "/system/xbin/" + name, name}
-	var lastErr error
-	for _, candidate := range candidates {
-		cmd := exec.Command(candidate, args...)
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			return nil
-		}
-		lastErr = fmt.Errorf("%s %s: %v (%s)", candidate, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-		if strings.Contains(err.Error(), "executable file not found") || strings.Contains(err.Error(), "no such file or directory") {
-			continue
-		}
-		// The executable exists and rejected the command; trying aliases won't help.
-		return lastErr
-	}
-	return lastErr
 }
 
 // Telegram IPv4 ranges. They are limited to Telegram's published DC address space.
@@ -625,7 +563,7 @@ func ensureServer() error {
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 	cmd.Stdin = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	setDaemonProcAttr(cmd)
 	if e = cmd.Start(); e != nil {
 		lf.Close()
 		return e
@@ -652,13 +590,12 @@ func parseProcCgroups(raw string) []procCgroupEntry {
 		if len(parts) != 3 || parts[2] == "" {
 			continue
 		}
-		entries = append(entries, procCgroupEntry{hierarchy: parts[0], controllers: parts[1], path: filepath.Clean("/" + strings.TrimPrefix(parts[2], "/"))})
+		entries = append(entries, procCgroupEntry{hierarchy: parts[0], controllers: parts[1], path: stdpath.Clean("/" + strings.TrimPrefix(parts[2], "/"))})
 	}
 	return entries
 }
 
-var protectWarnings sync.Map       // pid -> last warning string; avoids log spam
-var backgroundPolicyState sync.Map // package/action -> last outcome; avoids log spam
+var protectWarnings sync.Map // pid -> last warning string; avoids log spam
 
 func writePIDToCgroup(pid int, file string) error {
 	if _, err := os.Stat(file); err != nil {
@@ -886,7 +823,7 @@ func processHasArg(pid int, want string) bool {
 
 func watchdogAlive() bool {
 	pid := readPIDFile("watchdog.pid")
-	return pid > 1 && syscall.Kill(pid, 0) == nil && processHasArg(pid, "watchdog")
+	return pid > 1 && isPidAlive(pid) && processHasArg(pid, "watchdog")
 }
 
 func ensureWatchdog() error {
@@ -905,7 +842,7 @@ func ensureWatchdog() error {
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 	cmd.Stdin = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	setDaemonProcAttr(cmd)
 	if err = cmd.Start(); err != nil {
 		_ = lf.Close()
 		return err
@@ -916,16 +853,22 @@ func ensureWatchdog() error {
 	return nil
 }
 
-func stopWatchdog() {
-	pid := readPIDFile("watchdog.pid")
-	if pid > 1 && pid != os.Getpid() && processHasArg(pid, "watchdog") {
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+func stopPID(pid int) {
+	if pid > 1 && pid != os.Getpid() {
+		_ = killProcess(pid)
 		for i := 0; i < 20; i++ {
-			if syscall.Kill(pid, 0) != nil {
+			if !isPidAlive(pid) {
 				break
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+	}
+}
+
+func stopWatchdog() {
+	pid := readPIDFile("watchdog.pid")
+	if pid > 1 && pid != os.Getpid() && processHasArg(pid, "watchdog") {
+		stopPID(pid)
 	}
 	_ = os.Remove(path("watchdog.pid"))
 }
@@ -1072,19 +1015,8 @@ func ensureRuntime() error {
 }
 
 func stopServer() {
-	p := 0
-	if b, e := os.ReadFile(path("tgws.pid")); e == nil {
-		p, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-	}
-	if p > 1 && p != os.Getpid() {
-		_ = syscall.Kill(p, syscall.SIGTERM)
-		for i := 0; i < 20; i++ {
-			if syscall.Kill(p, 0) != nil {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+	pid := readPIDFile("tgws.pid")
+	stopPID(pid)
 	_ = os.Remove(path("tgws.pid"))
 	cleanupRules()
 }
@@ -1145,8 +1077,17 @@ func status() Status {
 }
 func writeStatus() {
 	s := currentStatus()
-	b, _ := json.Marshal(s)
-	_ = os.WriteFile(path("status.json"), b, 0600)
+	b, err := json.Marshal(s)
+	if err != nil {
+		return
+	}
+	tmp := path("status.json.tmp")
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, path("status.json")); err != nil {
+		_ = os.Remove(tmp)
+	}
 }
 func apiMain(arg string) {
 	b, e := base64.StdEncoding.DecodeString(arg)
@@ -1341,50 +1282,6 @@ func serve() {
 	}
 }
 
-// originalDestination uses Linux netfilter's SO_ORIGINAL_DST after REDIRECT.
-func originalDestination(c net.Conn) (netip.AddrPort, error) {
-	tc, ok := c.(*net.TCPConn)
-	if !ok {
-		return netip.AddrPort{}, errors.New("not TCP")
-	}
-	raw, e := tc.SyscallConn()
-	if e != nil {
-		return netip.AddrPort{}, e
-	}
-	var addr netip.AddrPort
-	var inner error
-	e = raw.Control(func(fd uintptr) {
-		var sa [128]byte
-		l := uint32(16)
-		_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, uintptr(syscall.SOL_IP), uintptr(80), uintptr(unsafe.Pointer(&sa[0])), uintptr(unsafe.Pointer(&l)), 0)
-		if errno != 0 {
-			inner = errno
-			return
-		}
-		port := binary.BigEndian.Uint16(sa[2:4])
-		ip := net.IPv4(sa[4], sa[5], sa[6], sa[7])
-		a, ok := netip.AddrFromSlice(ip)
-		if !ok {
-			inner = errors.New("bad original IPv4 address")
-			return
-		}
-		// net.IPv4 returns a 16-byte IPv4-mapped representation; keep
-		// the original destination normalized as IPv4 for logs and routing.
-		a = a.Unmap()
-		addr = netip.AddrPortFrom(a, port)
-	})
-	if e != nil {
-		return netip.AddrPort{}, e
-	}
-	if inner != nil {
-		return netip.AddrPort{}, inner
-	}
-	if !addr.IsValid() {
-		return netip.AddrPort{}, errors.New("SO_ORIGINAL_DST did not return address")
-	}
-	return addr, nil
-}
-
 func dcFor(ip netip.Addr) int {
 	// SO_ORIGINAL_DST may yield IPv4-mapped IPv6 addresses such as
 	// ::ffff:149.154.167.51. Normalize these before IPv4 DC matching.
@@ -1406,6 +1303,8 @@ func dcFor(ip netip.Addr) int {
 		// cover common production addresses; explicit addresses above take
 		// precedence where the aggregate alone is ambiguous.
 		switch {
+		case b[2] >= 160 && b[2] <= 163:
+			return 2
 		case b[2] == 167:
 			if b[3] >= 128 {
 				return 4
@@ -1431,6 +1330,12 @@ func dcFor(ip netip.Addr) int {
 		default:
 			return 1
 		}
+	}
+	if netip.MustParsePrefix("185.76.151.0/24").Contains(ip) {
+		return 2
+	}
+	if netip.MustParsePrefix("91.105.192.0/23").Contains(ip) {
+		return 2
 	}
 	if netip.MustParsePrefix("91.108.56.0/22").Contains(ip) {
 		return 5
@@ -1617,23 +1522,6 @@ func mediaForIP(ip netip.Addr) bool {
 		return true
 	}
 	return false
-}
-
-func bridgeTCP(a, b net.Conn) {
-	defer a.Close()
-	defer b.Close()
-	var wg sync.WaitGroup
-	copyOne := func(dst, src net.Conn) {
-		defer wg.Done()
-		_, _ = io.Copy(dst, src)
-		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
-	}
-	wg.Add(2)
-	go copyOne(a, b)
-	go copyOne(b, a)
-	wg.Wait()
 }
 
 type wsConn struct {
@@ -1892,10 +1780,6 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 		f.raw = f.raw[n:]
 		f.plain = f.plain[n:]
 	}
-}
-
-func pipeTCPToWS(src net.Conn, ws *wsConn, initial []byte) error {
-	return pipeTCPToWSCount(src, ws, initial, nil)
 }
 
 func pipeTCPToWSCount(src net.Conn, ws *wsConn, initial []byte, counter *int64) error {
@@ -2161,7 +2045,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 			ws   *wsConn
 			err  error
 		}
-		ch := make(chan result)
+		ch := make(chan result, end-i)
 		for _, domain := range domains[i:end] {
 			primary := fmt.Sprintf("kws%d.%s", dc, domain)
 			alternate := fmt.Sprintf("kws%d-1.%s", dc, domain)
@@ -2193,20 +2077,24 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 				}
 			}(orderedHosts)
 		}
+		var winner *wsConn
 		remaining := end - i
 		for remaining > 0 {
 			select {
 			case r := <-ch:
 				remaining--
 				if r.err == nil && r.ws != nil {
-					cancelBatch()
-					cfHostCache.Store(key, r.host)
-					routeChoice.Store(key, routeDecision{preferCF: true, host: r.host, expires: time.Now().Add(6 * time.Hour)})
-					saveRouteCache(key, r.host, nil)
-					logf("DC%d media=%t WSS через Cloudflare-домен %s", dc, isMedia, r.host)
-					return r.ws, nil
-				}
-				if r.err != nil {
+					if winner == nil {
+						winner = r.ws
+						cancelBatch()
+						cfHostCache.Store(key, r.host)
+						routeChoice.Store(key, routeDecision{preferCF: true, host: r.host, expires: time.Now().Add(6 * time.Hour)})
+						saveRouteCache(key, r.host, nil)
+						logf("DC%d media=%t WSS через Cloudflare-домен %s", dc, isMedia, r.host)
+					} else {
+						_ = r.ws.Close()
+					}
+				} else if r.err != nil {
 					errorsSeen = append(errorsSeen, r.host+": "+r.err.Error())
 				}
 			case <-batchCtx.Done():
@@ -2214,6 +2102,22 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 			}
 		}
 		cancelBatch()
+		if winner != nil {
+			go func(c chan result, count int) {
+				for count > 0 {
+					select {
+					case r := <-c:
+						count--
+						if r.ws != nil {
+							_ = r.ws.Close()
+						}
+					case <-time.After(3 * time.Second):
+						return
+					}
+				}
+			}(ch, remaining)
+			return winner, nil
+		}
 		if ctx.Err() != nil {
 			break
 		}
@@ -2274,6 +2178,19 @@ func maybeProbeCloudflare(key string, dc int, isMedia bool, directDuration time.
 				}
 			}
 		case <-ctx.Done():
+			go func(c chan result, rem int) {
+				for rem > 0 {
+					select {
+					case res := <-c:
+						rem--
+						if res.ws != nil {
+							_ = res.ws.Close()
+						}
+					case <-time.After(2 * time.Second):
+						return
+					}
+				}
+			}(ch, len(domains)-i)
 			i = len(domains)
 		}
 	}
