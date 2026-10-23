@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TG Open</title>
+<style>
+  :root {
+    --bg: #101114;
+    --surface: #1a1d24;
+    --surface-2: #232833;
+    --fg: #f3efe6;
+    --muted: #9b9488;
+    --line: #31363f;
+    --accent: #e4f07a;
+    --ink: #1c1e0d;
+    --ok: #b6e3a0;
+    --bad: #f0a394;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 16px/1.45 "Outfit", "Segoe UI", Roboto, sans-serif;
+    min-height: 100dvh;
+    padding: 20px 16px calc(28px + env(safe-area-inset-bottom));
+  }
+  main { max-width: 440px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px; }
+  h1 { margin: 0; font-size: 28px; font-weight: 650; letter-spacing: -0.04em; }
+  .mark { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; letter-spacing: 0.14em; color: var(--muted); }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    padding: 18px;
+  }
+  .card + .card { margin-top: 12px; }
+  .row { display: flex; align-items: center; gap: 14px; }
+  .grow { flex: 1; min-width: 0; }
+  .title { font-size: 18px; font-weight: 620; letter-spacing: -0.02em; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  button.switch {
+    width: 64px; height: 36px; border: 0; border-radius: 999px;
+    background: var(--surface-2); position: relative; padding: 0; flex: none;
+  }
+  button.switch i {
+    position: absolute; top: 4px; left: 4px; width: 28px; height: 28px;
+    border-radius: 50%; background: var(--muted); transition: transform .2s ease, background .2s ease;
+  }
+  button.switch[aria-checked="true"] { background: var(--accent); }
+  button.switch[aria-checked="true"] i { transform: translateX(28px); background: var(--ink); }
+  .status { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
+  .status.on { color: var(--ok); }
+  .status.bad { color: var(--bad); }
+  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
+  .dc {
+    background: var(--surface-2);
+    border-radius: 14px;
+    min-height: 78px;
+    padding: 10px 4px 8px;
+    text-align: center;
+  }
+  .dc b { display: block; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 16px; font-weight: 500; }
+  .dc span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; letter-spacing: 0.02em; }
+  .dc em { display: block; margin-top: 8px; font-style: normal; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  .dc.live { box-shadow: inset 0 0 0 1px var(--accent); }
+  .dc.live em { color: var(--accent); }
+  .meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 13px; }
+  .meta strong { color: var(--fg); font-weight: 560; }
+  .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+  .stat { min-width: 0; padding: 12px; border-radius: 14px; background: var(--surface-2); }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .value { margin-top: 4px; font: 600 17px/1.3 "IBM Plex Mono", ui-monospace, monospace; overflow-wrap: anywhere; }
+  .stat .sub { margin-top: 4px; color: var(--muted); font-size: 11px; }
+  .tools { display: flex; gap: 8px; margin-top: 14px; }
+  button.ghost {
+    min-height: 44px; border-radius: 12px; border: 1px solid var(--line);
+    background: transparent; color: var(--fg); padding: 0 14px; font: inherit;
+  }
+  pre {
+    display: none; margin: 12px 0 0; white-space: pre-wrap; word-break: break-word;
+    background: #0c0e12; border-radius: 14px; padding: 12px;
+    font: 12px/1.45 "IBM Plex Mono", ui-monospace, monospace; color: var(--muted);
+    max-height: 240px; overflow: auto;
+  }
+  pre.show { display: block; }
+  #toast {
+    position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom));
+    max-width: 440px; margin: 0 auto; background: var(--surface-2); color: var(--fg);
+    border-radius: 14px; padding: 12px 14px; display: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    button.switch i { transition: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>TG Open</h1>
+    <div class="mark">WEBSOCKET</div>
+  </header>
+  <section class="card">
+    <div class="row">
+      <div class="grow">
+        <div class="title">Обход блокировки</div>
+        <div class="hint">DC1–DC5 через WebSocket. Прокси в Telegram не нужен.</div>
+      </div>
+      <button id="sw" class="switch" type="button" role="switch" aria-checked="false" aria-label="Обход блокировки">
+        <i></i>
+      </button>
+    </div>
+    <p id="status" class="status">Выключен</p>
+    <div class="grid" id="grid"></div>
+    <div class="meta">
+      <span>Сейчас <strong id="active">0</strong></span>
+      <span>Сессий <strong id="ws">0</strong></span>
+    </div>
+  </section>
+  <section class="card">
+    <div class="title">Потребление памяти</div>
+    <div class="stats">
+      <div class="stat"><div class="label">Сейчас (RSS)</div><div class="value" id="memNow">—</div><div class="sub">Физическая память процесса</div></div>
+      <div class="stat"><div class="label">Пик с запуска</div><div class="value" id="memPeak">—</div><div class="sub">Максимальный RSS</div></div>
+    </div>
+  </section>
+  <section class="card">
+    <div class="title">Обработанный трафик Telegram</div>
+    <div class="stats">
+      <div class="stat"><div class="label">Всего</div><div class="value" id="trafficTotal">0 Б</div><div class="sub">С момента запуска демона</div></div>
+      <div class="stat"><div class="label">Отправлено</div><div class="value" id="trafficUp">0 Б</div><div class="sub">Клиент → WSS</div></div>
+      <div class="stat"><div class="label">Получено</div><div class="value" id="trafficDown">0 Б</div><div class="sub">WSS → клиент</div></div>
+    </div>
+  </section>
+  <section class="card">
+    <div class="tools">
+      <button id="logbtn" class="ghost" type="button">Журнал</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+const BIN = "/data/adb/modules/tgopen/bin/tgws";
+const DCS = [
+  ["1", "Майами"],
+  ["2", "Амстердам"],
+  ["3", "Майами"],
+  ["4", "Амстердам"],
+  ["5", "Сингапур"]
+];
+const $ = (id) => document.getElementById(id);
+const grid = $("grid");
+DCS.forEach(([id, city]) => {
+  const el = document.createElement("div");
+  el.className = "dc";
+  el.id = "dc" + id;
+  el.innerHTML = "<b>" + id + "</b><span>" + city + "</span><em>0</em>";
+  grid.appendChild(el);
+});
+function formatBytes(value) {
+  const n = Math.max(0, Number(value) || 0);
+  if (n >= 1e9) return (n / 1e9).toFixed(n >= 10e9 ? 1 : 2).replace(/\.?0+$/, "") + " ГБ";
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 100e6 ? 0 : n >= 10e6 ? 1 : 2).replace(/\.?0+$/, "") + " МБ";
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 100e3 ? 0 : 1).replace(/\.?0+$/, "") + " КБ";
+  return Math.round(n) + " Б";
+}
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.style.display = "none"; }, 2800);
+}
+function b64(s) {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+function hasBridge() {
+  return typeof window.ksu !== "undefined" && typeof ksu.exec === "function";
+}
+function kexec(cmd) {
+  return new Promise((resolve, reject) => {
+    if (!hasBridge()) { reject(new Error("Откройте панель из Magisk, KernelSU или APatch")); return; }
+    const cb = "tg_" + Math.random().toString(36).slice(2);
+    let done = false;
+    window[cb] = (errno, stdout, stderr) => {
+      done = true; delete window[cb];
+      resolve({ errno, stdout: stdout || "", stderr: stderr || "" });
+    };
+    try { ksu.exec(cmd, "{}", cb); }
+    catch (e) { delete window[cb]; reject(e); return; }
+    setTimeout(() => { if (!done) reject(new Error("Таймаут")); }, 20000);
+  });
+}
+async function api(cmd, extra) {
+  const payload = b64(JSON.stringify(Object.assign({ cmd }, extra || {})));
+  const r = await kexec(BIN + " api '" + payload + "'");
+  const line = (r.stdout || "").trim().split("\n").pop();
+  let j;
+  try { j = JSON.parse(line); }
+  catch (e) { throw new Error((r.stderr || r.stdout || "нет ответа").slice(0, 240)); }
+  if (!j.ok) throw new Error(j.error || "ошибка");
+  return j.data;
+}
+let state = null;
+let busy = false;
+function render() {
+  const on = !!(state && state.enabled);
+  $("sw").setAttribute("aria-checked", on ? "true" : "false");
+  const st = $("status");
+  st.className = "status";
+  if (!state) { st.textContent = "Нет данных"; return; }
+  const apps = (state.apps || []).map((a) => a.name).filter((v, i, arr) => arr.indexOf(v) === i);
+  const appLabel = apps.length ? " · " + apps.join(", ") : "";
+  if (!on) st.textContent = "Выключен";
+  else if (!state.running) { st.textContent = "Перехватчик не запущен"; st.classList.add("bad"); }
+  else if ((state.ws || 0) > 0) { st.textContent = "WebSocket активен" + appLabel; st.classList.add("on"); }
+  else if ((state.fail || 0) > 0) { st.textContent = "Перехват запущен · ошибки соединения"; st.classList.add("bad"); }
+  else { st.textContent = "Перехват запущен · ожидание соединений" + appLabel; }
+  const dc = (state && state.dc) || {};
+  DCS.forEach(([id]) => {
+    const el = $("dc" + id);
+    const n = dc[id] || 0;
+    el.querySelector("em").textContent = String(n);
+    el.classList.toggle("live", n > 0);
+  });
+  $("active").textContent = String((state && state.active) || 0);
+  $("ws").textContent = String((state && state.ws) || 0);
+  $("memNow").textContent = formatBytes(state.memNowBytes);
+  $("memPeak").textContent = formatBytes(state.memPeakBytes);
+  $("trafficTotal").textContent = formatBytes(state.trafficTotalBytes);
+  $("trafficUp").textContent = formatBytes(state.trafficUpBytes);
+  $("trafficDown").textContent = formatBytes(state.trafficDownBytes);
+  if ($("log").classList.contains("show") && state.log) $("log").textContent = state.log || "Пусто";
+}
+async function refresh() {
+  try { state = await api("status"); }
+  catch (e) { $("status").textContent = e.message; $("status").className = "status bad"; return; }
+  render();
+}
+$("sw").addEventListener("click", async () => {
+  if (busy) return;
+  const next = $("sw").getAttribute("aria-checked") !== "true";
+  busy = true;
+  $("sw").setAttribute("aria-checked", next ? "true" : "false");
+  try {
+    state = await api("set", { enabled: next });
+    toast(next ? "Обход включён" : "Обход выключен");
+  } catch (e) {
+    toast(e.message);
+  }
+  busy = false;
+  render();
+});
+$("logbtn").addEventListener("click", async () => {
+  const pre = $("log");
+  const show = !pre.classList.contains("show");
+  pre.classList.toggle("show", show);
+  if (!show) return;
+  pre.textContent = "…";
+  try {
+    if (!state) state = await api("status");
+    pre.textContent = (state && state.log) || "Пока пусто. Включите обход и откройте Telegram.";
+  } catch (e) { pre.textContent = e.message; }
+});
+// On returning from Android's app switcher, reassert interception rules
+// without toggling the module or restarting a healthy daemon.
+let lastResumeAt = 0;
+async function resumeTransport() {
+  const now = Date.now();
+  if (busy || now - lastResumeAt < 5000) return;
+  lastResumeAt = now;
+  try { state = await api("resume"); render(); }
+  catch (e) { console.warn("TG Open resume:", e); }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") resumeTransport();
+});
+window.addEventListener("pageshow", () => resumeTransport());
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
