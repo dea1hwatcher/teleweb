@@ -2418,7 +2418,7 @@ function initTheme() {
    TeleWEB Application Logic & Bridge Controller
    ========================================================================== */
 
-const BIN = "([ -x /data/adb/modules/teleweb/bin/tgws ] && /data/adb/modules/teleweb/bin/tgws || /data/adb/modules/tgopen/bin/tgws)";
+const BIN = 'B=/data/adb/modules/teleweb/bin/tgws; [ -x "$B" ] || B=/data/adb/modules/tgopen/bin/tgws; "$B"';
 const DCS = [
   ["1", "Майами"],
   ["2", "Амстердам"],
