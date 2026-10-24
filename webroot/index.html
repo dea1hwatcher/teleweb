@@ -319,7 +319,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
   padding: 0 12px;
   border-radius: var(--shape-full);
   background: var(--md-sys-color-surface-container-high);
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: none;
   font-size: var(--ts-label-medium);
   font-weight: var(--w-medium);
   color: var(--md-sys-color-on-surface-variant);
@@ -348,7 +348,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
   display: flex;
   justify-content: center;
   background: var(--md-sys-color-surface-container);
-  border-top: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 40%, transparent);
+  border-top: none;
   transition: transform var(--dur-medium-long) var(--emphasized-decelerate);
 }
 .nav-bar-inner {
@@ -498,20 +498,17 @@ svg.icon.s36 { width: 36px; height: 36px; }
   gap: 20px;
   background: var(--hero-bg);
   color: var(--md-sys-color-on-surface);
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: none;
   transition: background-color var(--dur-medium-long) var(--standard),
-              color var(--dur-medium-long) var(--standard),
-              border-color var(--dur-medium-long) var(--standard);
+              color var(--dur-medium-long) var(--standard);
 }
 .hero.running {
   --hero-bg: var(--md-sys-color-primary-container);
   color: var(--md-sys-color-on-primary-container);
-  border-color: var(--md-sys-color-primary);
 }
 .hero.bad {
   --hero-bg: var(--md-sys-color-error-container);
   color: var(--md-sys-color-on-error-container);
-  border-color: var(--md-sys-color-error);
 }
 .hero-head {
   display: flex;
@@ -619,7 +616,8 @@ svg.icon.s36 { width: 36px; height: 36px; }
   width: 48px;
   height: 48px;
   color: inherit;
-  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border: none;
+  background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
 /* ==========================================================================
@@ -632,7 +630,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
   display: flex;
   flex-direction: column;
   position: relative;
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: none;
   gap: 12px;
 }
 
@@ -646,7 +644,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
 }
 .dc-card {
   background: var(--md-sys-color-surface-container-high);
-  border: 1px solid transparent;
+  border: none;
   border-radius: var(--shape-medium);
   min-height: 80px;
   padding: 10px 4px 8px;
@@ -655,7 +653,6 @@ svg.icon.s36 { width: 36px; height: 36px; }
   flex-direction: column;
   justify-content: space-between;
   transition: background-color var(--dur-short) ease,
-              border-color var(--dur-short) ease,
               transform var(--dur-short) ease;
 }
 .dc-card b {
@@ -685,7 +682,6 @@ svg.icon.s36 { width: 36px; height: 36px; }
 }
 .dc-card.live {
   background: var(--md-sys-color-primary-container);
-  border-color: var(--md-sys-color-primary);
   box-shadow: 0 0 10px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
 }
 .dc-card.live b,
@@ -703,7 +699,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
   justify-content: space-between;
   gap: 12px;
   padding-top: 10px;
-  border-top: 1px solid var(--md-sys-color-outline-variant);
+  border-top: none;
   font-size: var(--ts-body-small);
   color: var(--md-sys-color-on-surface-variant);
 }
@@ -730,7 +726,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
   border-radius: var(--shape-medium);
   background: var(--md-sys-color-surface-container);
   color: var(--md-sys-color-on-surface);
-  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 40%, transparent);
+  border: none;
 }
 .list-item.two-line {
   min-height: 64px;
@@ -784,6 +780,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
   width: 52px;
   height: 32px;
   flex: 0 0 52px;
+  box-sizing: border-box;
   border: 2px solid var(--md-sys-color-outline);
   border-radius: var(--shape-full);
   background: var(--md-sys-color-surface-container-highest);
@@ -797,6 +794,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
   left: 6px;
   width: 16px;
   height: 16px;
+  box-sizing: border-box;
   border-radius: 50%;
   background: var(--md-sys-color-outline);
   transform: translateY(-50%);
@@ -810,38 +808,51 @@ svg.icon.s36 { width: 36px; height: 36px; }
   content: "";
   position: absolute;
   top: 50%;
-  left: 7px;
-  width: 14px;
-  height: 14px;
-  transform: translateY(-50%) scale(0.3);
-  background-color: var(--md-sys-color-primary);
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z'/%3E%3C/svg%3E") no-repeat center / contain;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z'/%3E%3C/svg%3E") no-repeat center / contain;
-  opacity: 0;
+  left: 22px;
+  width: 24px;
+  height: 24px;
+  box-sizing: border-box;
+  border-radius: 50%;
   pointer-events: none;
+  background: var(--md-sys-color-primary);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9.55 18 3.85 12.3 5.275 10.875 9.55 15.15 18.725 5.975 20.15 7.4Z' fill='black'/%3E%3C/svg%3E") no-repeat center / 16px 16px;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9.55 18 3.85 12.3 5.275 10.875 9.55 15.15 18.725 5.975 20.15 7.4Z' fill='black'/%3E%3C/svg%3E") no-repeat center / 16px 16px;
+  transform: translateY(-50%) scale(0);
+  opacity: 0;
   z-index: 2;
-  transition: opacity var(--dur-short) var(--standard),
-              transform var(--dur-medium) var(--spring-strong),
-              left var(--dur-medium) var(--spring-strong);
+  transition: transform var(--dur-medium) var(--spring-strong),
+              opacity var(--dur-short) var(--standard);
 }
 .switch:checked {
   background: var(--md-sys-color-primary);
   border-color: var(--md-sys-color-primary);
 }
 .switch:checked::before {
-  left: 26px;
+  left: 22px;
   width: 24px;
   height: 24px;
   background: var(--md-sys-color-on-primary);
 }
 .switch:checked::after {
-  left: 31px;
-  opacity: 1;
   transform: translateY(-50%) scale(1);
+  opacity: 1;
 }
-.switch:active::before { width: 28px; height: 28px; left: 2px; }
+.switch:active::before { width: 28px; height: 28px; left: 0; }
 .switch:checked:active::before { left: 20px; }
-.switch:checked:active::after { left: 27px; }
+.switch:checked:active::after { left: 20px; width: 28px; height: 28px; }
+@media (hover: hover) {
+  .switch:hover { border-color: var(--md-sys-color-on-surface); }
+}
+.switch:disabled {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) calc(var(--state-disabled-container) * 100%), transparent);
+  border-color: transparent; pointer-events: none;
+}
+.switch:disabled::before {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) calc(var(--state-disabled-content) * 100%), transparent);
+}
+.switch:disabled::after {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) calc(var(--state-disabled-content) * 100%), transparent);
+}
 
 /* ==========================================================================
    M3 Component: Text Fields (Floating Label / Filled)
@@ -972,7 +983,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 30%, transparent);
+  border: none;
 }
 .stat-title {
   font-size: var(--ts-label-medium);
@@ -999,7 +1010,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
    ========================================================================== */
 .log-view {
   background: var(--md-sys-color-surface-container-lowest);
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: none;
   border-radius: var(--shape-card);
   padding: 14px 16px;
   font-family: var(--md-font-code);
@@ -1048,6 +1059,378 @@ svg.icon.s36 { width: 36px; height: 36px; }
   }
 }
 
+
+/* ==========================================================================
+   M3 Component: Segmented Button
+   ========================================================================== */
+.segmented {
+  display: flex;
+  gap: 0;
+  width: 100%;
+}
+.segmented .seg {
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  flex: 1;
+  height: 40px;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: 0;
+  font-size: var(--ts-label-large);
+  line-height: var(--lh-label-large);
+  font-weight: var(--w-medium);
+  color: var(--md-sys-color-on-surface);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color var(--dur-short) var(--standard),
+              color var(--dur-short) var(--standard);
+}
+.segmented .seg + .seg {
+  margin-inline-start: -1px;
+}
+.segmented .seg:first-child {
+  border-top-left-radius: var(--shape-full);
+  border-bottom-left-radius: var(--shape-full);
+}
+.segmented .seg:last-child {
+  border-top-right-radius: var(--shape-full);
+  border-bottom-right-radius: var(--shape-full);
+}
+.segmented .seg .check {
+  width: 0;
+  overflow: hidden;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: width var(--dur-short) var(--spring);
+}
+.segmented .seg.on {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  border-color: transparent;
+  font-weight: var(--w-bold);
+}
+.segmented .seg.on .check {
+  width: 18px;
+}
+
+/* ==========================================================================
+   M3 Bottom Sheet & Scrim (Theme Sheet)
+   ========================================================================== */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-medium) var(--standard);
+}
+.scrim.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+.sheet {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 95;
+  margin: 0 auto;
+  max-width: var(--content-max);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  border-radius: var(--shape-extra-large) var(--shape-extra-large) 0 0;
+  box-shadow: 0 -4px 32px rgba(0, 0, 0, 0.45);
+  padding: 0 var(--screen-margin) calc(24px + var(--bottom-inset));
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 88vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transform: translateY(102%);
+  transition: transform var(--dur-long) var(--spring);
+}
+.sheet.open {
+  transform: none;
+}
+.sheet-drag {
+  appearance: none;
+  border: 0;
+  background: none;
+  cursor: grab;
+  touch-action: none;
+  flex: none;
+  align-self: stretch;
+  height: 36px;
+  margin-bottom: -8px;
+  display: grid;
+  place-items: center;
+}
+.sheet .handle {
+  width: 36px;
+  height: 4px;
+  border-radius: var(--shape-full);
+  background: var(--md-sys-color-on-surface-variant);
+  opacity: 0.4;
+}
+.sheet-title {
+  font-size: var(--ts-title-large);
+  line-height: var(--lh-title-large);
+  font-weight: var(--w-bold);
+  color: var(--md-sys-color-on-surface);
+}
+
+/* Theme Preview */
+.theme-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--shape-extra-large);
+  background: var(--md-sys-color-surface-container-high);
+  transition: background-color var(--dur-medium) var(--standard);
+}
+.tp-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--shape-large);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  transition: background-color var(--dur-medium) var(--standard);
+}
+.tp-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+.tp-lines {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tp-line {
+  height: 8px;
+  border-radius: 4px;
+  background: currentColor;
+  opacity: .55;
+}
+.tp-line.w70 { width: 70%; opacity: .8; }
+.tp-line.w45 { width: 45%; }
+.tp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tp-btn {
+  height: 28px;
+  flex: 1;
+  border-radius: 14px;
+  background: var(--md-sys-color-primary);
+}
+.tp-chip {
+  height: 28px;
+  width: 56px;
+  border-radius: 8px;
+  background: var(--md-sys-color-secondary-container);
+}
+.tp-chip.t {
+  background: var(--md-sys-color-tertiary-container);
+}
+.tp-roles {
+  display: flex;
+  gap: 8px;
+}
+.tp-role {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
+}
+
+.amoled-row, .monochrome-row {
+  border-radius: var(--shape-large);
+  margin: 0;
+}
+.subhead {
+  font-size: var(--ts-title-small);
+  line-height: var(--lh-title-small);
+  font-weight: var(--w-bold);
+  color: var(--md-sys-color-primary);
+  margin: 4px 0 0;
+}
+.subhead.plain {
+  color: var(--md-sys-color-on-surface-variant);
+}
+.swatch-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: 10px;
+  justify-items: center;
+}
+.swatch-dot {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: conic-gradient(from 270deg, var(--sw-a) 0 50%, var(--sw-c) 0 75%, var(--sw-b) 0);
+  transition: border-radius var(--dur-medium) var(--spring-strong), transform var(--dur-short) var(--spring);
+}
+.swatch-dot.on {
+  border-radius: 16px;
+  box-shadow: 0 0 0 3px var(--md-sys-color-surface-container-low), 0 0 0 5px var(--md-sys-color-primary);
+}
+.swatch-dot .sw-check {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  transform: scale(0);
+  transition: transform var(--dur-medium) var(--spring-strong);
+}
+.swatch-dot.on .sw-check {
+  transform: scale(1);
+}
+
+/* Color Picker Wheel & Lum */
+.picker {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 16px;
+  border-radius: var(--shape-extra-large);
+  background: var(--md-sys-color-surface-container);
+}
+.wheel {
+  position: relative;
+  flex: none;
+  width: 136px;
+  height: 136px;
+  border-radius: 50%;
+  cursor: crosshair;
+  touch-action: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent);
+}
+.wheel-thumb {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  border-radius: 50%;
+  pointer-events: none;
+  border: 3px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.15);
+  transition: width var(--dur-short) var(--spring), height var(--dur-short) var(--spring), margin var(--dur-short) var(--spring);
+}
+.wheel.drag .wheel-thumb {
+  width: 32px;
+  height: 32px;
+  margin: -16px 0 0 -16px;
+}
+.picker-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cd-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cd-row > label {
+  font-size: var(--ts-label-medium);
+  line-height: var(--lh-label-medium);
+  font-weight: var(--w-medium);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.slider {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 16px;
+  background: linear-gradient(90deg, #000, var(--md-sys-color-primary), #fff);
+  border-radius: var(--shape-full);
+  outline: none;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--md-sys-color-primary);
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+.hex-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: var(--shape-medium);
+  background: var(--md-sys-color-surface-container-high);
+}
+.hex-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex: none;
+}
+.pfx {
+  font-size: var(--ts-body-medium);
+  font-weight: var(--w-bold);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.hex {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--md-font-code);
+  font-size: var(--ts-body-medium);
+  font-weight: var(--w-bold);
+  width: 100%;
+  outline: none;
+}
+.picker-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (max-width: 380px) {
+  .picker { flex-direction: column; }
+  .picker-side { width: 100%; }
+}
+
 /* Motion Accessibility */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -1056,6 +1439,8 @@ svg.icon.s36 { width: 36px; height: 36px; }
   }
 }
 </style>
+<!-- Dynamic M3 Palette injected by applyTheme() -->
+<style id="theme-vars"></style>
 </head>
 <body>
 
@@ -1079,6 +1464,8 @@ svg.icon.s36 { width: 36px; height: 36px; }
 <symbol id="i-apps" viewBox="0 -960 960 960"><path d="M240-160q-33 0-56.5-23.5T160-240q0-33 23.5-56.5T240-320q33 0 56.5 23.5T320-240q0 33-23.5 56.5T240-160Zm240 0q-33 0-56.5-23.5T400-240q0-33 23.5-56.5T480-320q33 0 56.5 23.5T560-240q0 33-23.5 56.5T480-160Zm240 0q-33 0-56.5-23.5T640-240q0-33 23.5-56.5T720-320q33 0 56.5 23.5T800-240q0 33-23.5 56.5T720-160ZM240-400q-33 0-56.5-23.5T160-480q0-33 23.5-56.5T240-560q33 0 56.5 23.5T320-480q0 33-23.5 56.5T240-400Zm240 0q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm240 0q-33 0-56.5-23.5T640-480q0-33 23.5-56.5T720-560q33 0 56.5 23.5T800-480q0 33-23.5 56.5T720-400ZM240-640q-33 0-56.5-23.5T160-720q0-33 23.5-56.5T240-800q33 0 56.5 23.5T320-720q0 33-23.5 56.5T240-640Zm240 0q-33 0-56.5-23.5T400-720q0-33 23.5-56.5T480-800q33 0 56.5 23.5T560-720q0 33-23.5 56.5T480-640Zm240 0q-33 0-56.5-23.5T640-720q0-33 23.5-56.5T720-800q33 0 56.5 23.5T800-720q0 33-23.5 56.5T720-640Z"/></symbol>
 <symbol id="i-memory" viewBox="0 -960 960 960"><path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm80-80h400v-80H280v80Zm0-160h400v-80H280v80Zm0-160h400v-80H280v80ZM40-280v-80h80v80H40Zm0-160v-80h80v80H40Zm0-160v-80h80v80H40Zm800 320v-80h80v80h-80Zm0-160v-80h80v80h-80Zm0-160v-80h80v80h-80ZM280-840v-80h80v80h-80Zm160 0v-80h80v80h-80Zm160 0v-80h80v80h-80ZM280-40v-80h80v80h-80Zm160 0v-80h80v80h-80Zm160 0v-80h80v80h-80Z"/></symbol>
 <symbol id="i-tg" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></symbol>
+<symbol id="i-palette" viewBox="0 -960 960 960"><path d="M480-80q-82 0-155-31.5t-127.5-86Q143-252 111.5-325T80-480q0-83 31.5-156t86-127Q252-817 325-848.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 82-32 153.5T761-205q-55 50-128 77.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm-180-280q25 0 42.5-17.5T360-500q0-25-17.5-42.5T300-560q-25 0-42.5 17.5T240-500q0 25 17.5 42.5T300-440Zm180-120q25 0 42.5-17.5T540-620q0-25-17.5-42.5T480-680q-25 0-42.5 17.5T420-620q0 25 17.5 42.5T480-560Zm180 120q25 0 42.5-17.5T720-500q0-25-17.5-42.5T660-560q-25 0-42.5 17.5T600-500q0 25 17.5 42.5T660-440Z"/></symbol>
+<symbol id="i-contrast" viewBox="0 -960 960 960"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm40-83q119-15 199.5-99.5T800-480q0-134-80.5-218.5T520-797v714Z"/></symbol>
 </defs></svg>
 
 <!-- Top App Bar -->
@@ -1097,6 +1484,9 @@ svg.icon.s36 { width: 36px; height: 36px; }
       <span class="chip-dot" id="chipDot"></span>
       <span>v2.1.48</span>
     </div>
+    <button class="icon-btn state" id="btn-theme" aria-label="Тема оформления" title="Тема оформления" onclick="openThemeSheet()">
+      <svg class="icon s20"><use href="#i-palette"/></svg>
+    </button>
     <button class="icon-btn state" id="btn-refresh" aria-label="Обновить статус" title="Обновить">
       <svg class="icon s20"><use href="#i-refresh"/></svg>
     </button>
@@ -1363,10 +1753,660 @@ svg.icon.s36 { width: 36px; height: 36px; }
   </div>
 </nav>
 
+<!-- Theme Sheet Scrim -->
+<div class="scrim" id="theme-scrim" onclick="closeThemeSheet()"></div>
+
+<!-- Material 3 Theme Bottom Sheet -->
+<div class="sheet theme-sheet" id="theme-sheet" role="dialog" aria-modal="true" aria-labelledby="theme-sheet-title">
+  <button type="button" class="sheet-drag" aria-label="Закрыть" onclick="closeThemeSheet()"><span class="handle"></span></button>
+  
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+    <div class="sheet-title" id="theme-sheet-title">Тема оформления</div>
+    <button class="icon-btn state" onclick="closeThemeSheet()" aria-label="Закрыть">
+      <svg class="icon s20"><use href="#i-close"/></svg>
+    </button>
+  </div>
+
+  <!-- Live preview -->
+  <div class="theme-preview" aria-hidden="true">
+    <div class="tp-hero">
+      <span class="tp-icon"><svg class="icon s20"><use href="#i-tg"/></svg></span>
+      <span class="tp-lines"><span class="tp-line w70"></span><span class="tp-line w45"></span></span>
+    </div>
+    <div class="tp-row">
+      <span class="tp-btn"></span><span class="tp-chip"></span><span class="tp-chip t"></span>
+    </div>
+    <div class="tp-roles" id="tp-roles"></div>
+  </div>
+
+  <!-- Mode Segmented Buttons -->
+  <div class="segmented" id="theme-mode" role="group" aria-label="Режим темы"></div>
+
+  <!-- AMOLED Dark Mode Toggle -->
+  <label class="list-item clickable state amoled-row">
+    <span class="li-icon"><svg class="icon s24"><use href="#i-contrast"/></svg></span>
+    <span class="li-text">
+      <span class="li-primary">Чёрный фон AMOLED</span>
+      <span class="li-secondary">Чистый #000000 в тёмной теме</span>
+    </span>
+    <span class="li-trail">
+      <input type="checkbox" class="switch" role="switch" id="amoled-toggle" aria-label="Чёрный фон AMOLED" onchange="toggleAmoled(this.checked)">
+    </span>
+  </label>
+
+  <!-- Monochrome Toggle -->
+  <label class="list-item clickable state monochrome-row">
+    <span class="li-icon"><svg class="icon s24"><use href="#i-contrast"/></svg></span>
+    <span class="li-text">
+      <span class="li-primary">Монохромная тема</span>
+      <span class="li-secondary">Чёрно-белая схема без акцента</span>
+    </span>
+    <span class="li-trail">
+      <input type="checkbox" class="switch" role="switch" id="monochrome-toggle" aria-label="Монохромная тема" onchange="toggleMonochrome(this.checked)">
+    </span>
+  </label>
+
+  <h2 class="subhead plain">Цвет акцента</h2>
+  <div class="swatch-row" id="palette-grid" role="group" aria-label="Готовые палитры"></div>
+
+  <!-- Custom Color Wheel & Lum -->
+  <div class="picker">
+    <div class="wheel" id="wheel" role="slider" tabindex="0" aria-label="Тон и насыщенность" aria-valuemin="0" aria-valuemax="360">
+      <span class="wheel-thumb" id="wheel-thumb"></span>
+    </div>
+    <div class="picker-side">
+      <div class="cd-row">
+        <label for="cd-lum">Яркость тона</label>
+        <input type="range" class="slider" id="cd-lum" min="20" max="85" step="1" value="60" oninput="onWheelLum()">
+      </div>
+      <div class="hex-group">
+        <span class="hex-swatch" id="custom-swatch"></span>
+        <span class="pfx">#</span>
+        <input type="text" class="hex" id="custom-hex-input" maxlength="6" placeholder="7ED0FF" aria-label="HEX" autocapitalize="characters" spellcheck="false" oninput="onHexInput(this.value)">
+      </div>
+      <div class="picker-actions">
+        <button class="btn btn-tonal state" style="flex:1;min-height:36px;padding:0 12px;font-size:var(--ts-label-medium);" onclick="detectSystemMonet(true)">
+          <svg class="icon s18"><use href="#i-refresh"/></svg>
+          <span>Цвет обоев</span>
+        </button>
+        <button class="btn btn-text state" style="min-height:36px;padding:0 12px;font-size:var(--ts-label-medium);" onclick="resetTheme()">
+          <span>Сбросить</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Floating Snackbar -->
 <div class="snackbar" id="toast" role="status" aria-live="polite"></div>
 
 <script>
+
+/* ==========================================================================
+   Material 3 Dynamic Theme Engine (Monet & AMOLED)
+   Ported from nfqws2-android architecture
+   ========================================================================== */
+
+const store = {
+  get: (k) => { try { return localStorage.getItem(k); } catch(e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch(e) {} },
+  del: (k) => { try { localStorage.removeItem(k); } catch(e) {} }
+};
+
+function hexToRgb(hex) {
+  hex = String(hex).replace('#', '');
+  if (hex.length === 3) hex = hex.split('').map(x => x + x).join('');
+  return [parseInt(hex.substr(0, 2), 16), parseInt(hex.substr(2, 2), 16), parseInt(hex.substr(4, 2), 16)];
+}
+
+function rgbToHex(r, g, b) {
+  const p = x => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, '0');
+  return '#' + p(r) + p(g) + p(b);
+}
+
+function hexToHsl(hex) {
+  const c = hexToRgb(hex), r = c[0] / 255, g = c[1] / 255, b = c[2] / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0; const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  return [h * 360, s, l];
+}
+
+function hslToHex(h, s, l) {
+  h = ((h % 360) + 360) % 360; s = Math.max(0, Math.min(1, s)); l = Math.max(0, Math.min(1, l)); h /= 360;
+  if (s === 0) { const v = l * 255; return rgbToHex(v, v, v); }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const hue = t => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return rgbToHex(hue(h + 1 / 3) * 255, hue(h) * 255, hue(h - 1 / 3) * 255);
+}
+
+const toLinear = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+const toSrgb = c => 255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+
+function rgbToLab(rgb) {
+  const r = toLinear(rgb[0]), g = toLinear(rgb[1]), b = toLinear(rgb[2]);
+  const x = (r * 0.4124564 + g * 0.3575761 + b * 0.1804375) / 0.95047;
+  const y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+  const z = (r * 0.0193339 + g * 0.1191920 + b * 0.9503041) / 1.08883;
+  const f = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+  const fx = f(x), fy = f(y), fz = f(z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+function labToRgb(lab) {
+  const fy = (lab[0] + 16) / 116, fx = lab[1] / 500 + fy, fz = fy - lab[2] / 200;
+  const fi = t => t * t * t > 0.008856 ? t * t * t : (t - 16 / 116) / 7.787;
+  const x = fi(fx) * 0.95047, y = fi(fy), z = fi(fz) * 1.08883;
+  return [toSrgb(x * 3.2404542 + y * -1.5371385 + z * -0.4985314),
+          toSrgb(x * -0.9692660 + y * 1.8760108 + z * 0.0415560),
+          toSrgb(x * 0.0556434 + y * -0.2040259 + z * 1.0572252)];
+}
+
+const inGamut = rgb => rgb[0] >= -0.2 && rgb[0] <= 255.2 && rgb[1] >= -0.2 && rgb[1] <= 255.2 && rgb[2] >= -0.2 && rgb[2] <= 255.2;
+
+const CHROMA = { primary: 1, secondary: 0.34, tertiary: 0.55, neutral: 0.05, neutralVariant: 0.12, error: 0.9 };
+const TERTIARY_HUE = Math.PI / 3;
+
+function tone(lab, t, palette, hueShift) {
+  const seedC = Math.hypot(lab[1], lab[2]);
+  const chroma = seedC < 0.4 ? 0 : seedC * CHROMA[palette];
+  const hue = Math.atan2(lab[2], lab[1]) + (hueShift || 0);
+  const at = s => labToRgb([t, Math.cos(hue) * chroma * s, Math.sin(hue) * chroma * s]);
+  if (inGamut(at(1))) return rgbToHex.apply(null, at(1));
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 14; i++) {
+    const mid = (lo + hi) / 2;
+    if (inGamut(at(mid))) lo = mid; else hi = mid;
+  }
+  return rgbToHex.apply(null, at(lo));
+}
+
+const PALETTES = [
+  ['Циан', '#7ed0ff'],
+  ['Pixel Blue', '#a8c7fa'],
+  ['Лаванда', '#d0bcff'],
+  ['Сирень', '#deb0da'],
+  ['Сакура', '#f4b5d2'],
+  ['Изумруд', '#6dd58c'],
+  ['Янтарь', '#f3c774'],
+  ['Коралл', '#ffb4ab'],
+  ['Монохром', '#757575']
+];
+
+const ERROR_LAB = rgbToLab(hexToRgb('#B3261E'));
+let currentSeed = store.get('m3_seed') || '#7ed0ff';
+let currentMode = store.get('m3_mode') || 'auto';
+
+function systemSeed() {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim();
+  if (raw) {
+    if (raw.charAt(0) === '#') return raw.length >= 7 ? raw.slice(0, 7).toLowerCase() : '#7ed0ff';
+    const m = raw.match(/(\d+)\D+(\d+)\D+(\d+)/);
+    if (m) return rgbToHex(+m[1], +m[2], +m[3]).toLowerCase();
+  }
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;visibility:hidden;color:Highlight';
+  document.body.appendChild(probe);
+  const accent = getComputedStyle(probe).color;
+  probe.remove();
+  const mm = /rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/.exec(accent || '');
+  if (!mm) return '#7ed0ff';
+  const rgb = [+mm[1], +mm[2], +mm[3]], lab = rgbToLab(rgb);
+  if (rgb[0] === 0 && rgb[1] === 0 && rgb[2] === 0) return '#7ed0ff';
+  if (Math.hypot(lab[1], lab[2]) < 6) return '#7ed0ff';
+  return rgbToHex(rgb[0], rgb[1], rgb[2]).toLowerCase();
+}
+
+function isDark() {
+  if (currentMode === 'light') return false;
+  if (currentMode === 'dark') return true;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function isMonochrome() {
+  return store.get('m3_monochrome') === 'true' || currentSeed === '#757575';
+}
+
+function roles(seedHex, dark, amoled, monochrome) {
+  const isMono = monochrome !== undefined ? !!monochrome : (String(seedHex).toLowerCase() === '#757575');
+  const lab = rgbToLab(hexToRgb(seedHex));
+  const p = (t, pal, shift) => tone(lab, t, pal || 'primary', shift);
+  const e = t => tone(ERROR_LAB, t, 'error');
+  const R = {};
+  if (dark) {
+    if (isMono) {
+      R.primary = '#ffffff'; R.onPrimary = '#000000';
+      R.primaryContainer = amoled ? '#262626' : '#393939'; R.onPrimaryContainer = '#e2e2e2';
+      R.secondary = '#c6c6c6'; R.onSecondary = '#1a1a1a';
+      R.secondaryContainer = amoled ? '#2e2e2e' : '#424242'; R.onSecondaryContainer = '#e2e2e2';
+      R.tertiary = '#d0d0d0'; R.onTertiary = '#1a1a1a';
+      R.tertiaryContainer = amoled ? '#282828' : '#3a3a3a'; R.onTertiaryContainer = '#e2e2e2';
+      R.error = e(80); R.onError = e(20); R.errorContainer = e(30); R.onErrorContainer = e(90);
+      R.background = amoled ? '#000000' : '#131313'; R.onBackground = '#e2e2e2';
+      R.surface = amoled ? '#000000' : '#131313'; R.onSurface = '#e2e2e2';
+      R.surfaceVariant = '#444444'; R.onSurfaceVariant = '#c6c6c6';
+      R.surfaceDim = amoled ? '#000000' : '#131313'; R.surfaceBright = '#383838';
+      R.surfaceContainerLowest = amoled ? '#000000' : '#0e0e0e';
+      R.surfaceContainerLow = amoled ? '#141414' : '#1a1a1a';
+      R.surfaceContainer = amoled ? '#1c1c1c' : '#202020';
+      R.surfaceContainerHigh = amoled ? '#262626' : '#282828';
+      R.surfaceContainerHighest = amoled ? '#303030' : '#333333';
+      R.outline = '#8e8e8e'; R.outlineVariant = '#444444';
+      R.inverseSurface = '#e2e2e2'; R.inverseOnSurface = '#1b1b1b';
+      R.inversePrimary = '#000000';
+      R.statusOk = '#6dd58c'; R.statusWarn = '#f0c14b'; R.statusBad = '#ffb4ab';
+    } else {
+      R.primary = p(80); R.onPrimary = p(20);
+      R.primaryContainer = p(30); R.onPrimaryContainer = p(90);
+      R.secondary = p(80, 'secondary'); R.onSecondary = p(20, 'secondary');
+      R.secondaryContainer = p(30, 'secondary'); R.onSecondaryContainer = p(90, 'secondary');
+      R.tertiary = p(80, 'tertiary', TERTIARY_HUE); R.onTertiary = p(20, 'tertiary', TERTIARY_HUE);
+      R.tertiaryContainer = p(30, 'tertiary', TERTIARY_HUE); R.onTertiaryContainer = p(90, 'tertiary', TERTIARY_HUE);
+      R.error = e(80); R.onError = e(20); R.errorContainer = e(30); R.onErrorContainer = e(90);
+      R.background = amoled ? '#000000' : p(6, 'neutral'); R.onBackground = p(90, 'neutral');
+      R.surface = amoled ? '#000000' : p(6, 'neutral'); R.onSurface = p(90, 'neutral');
+      R.surfaceVariant = p(30, 'neutralVariant'); R.onSurfaceVariant = p(80, 'neutralVariant');
+      R.surfaceDim = amoled ? '#000000' : p(6, 'neutral'); R.surfaceBright = p(24, 'neutral');
+      R.surfaceContainerLowest = amoled ? '#000000' : p(4, 'neutral');
+      R.surfaceContainerLow = amoled ? p(11, 'neutralVariant') : p(10, 'neutral');
+      R.surfaceContainer = amoled ? p(14, 'neutralVariant') : p(12, 'neutral');
+      R.surfaceContainerHigh = amoled ? p(18, 'neutralVariant') : p(17, 'neutral');
+      R.surfaceContainerHighest = amoled ? p(23, 'neutralVariant') : p(22, 'neutral');
+      R.outline = p(60, 'neutralVariant'); R.outlineVariant = p(30, 'neutralVariant');
+      R.inverseSurface = p(90, 'neutral'); R.inverseOnSurface = p(20, 'neutral');
+      R.inversePrimary = p(40);
+      R.statusOk = '#6dd58c'; R.statusWarn = '#f0c14b'; R.statusBad = '#ffb4ab';
+    }
+  } else {
+    if (isMono) {
+      R.primary = '#000000'; R.onPrimary = '#ffffff';
+      R.primaryContainer = '#e2e2e2'; R.onPrimaryContainer = '#1b1b1b';
+      R.secondary = '#5e5e5e'; R.onSecondary = '#ffffff';
+      R.secondaryContainer = '#e6e6e6'; R.onSecondaryContainer = '#1b1b1b';
+      R.tertiary = '#606060'; R.onTertiary = '#ffffff';
+      R.tertiaryContainer = '#e8e8e8'; R.onTertiaryContainer = '#1b1b1b';
+      R.error = e(40); R.onError = e(100); R.errorContainer = e(90); R.onErrorContainer = e(10);
+      R.background = '#f9f9f9'; R.onBackground = '#1a1a1a';
+      R.surface = '#f9f9f9'; R.onSurface = '#1a1a1a';
+      R.surfaceVariant = '#e0e0e0'; R.onSurfaceVariant = '#444444';
+      R.surfaceDim = '#dedede'; R.surfaceBright = '#f9f9f9';
+      R.surfaceContainerLowest = '#ffffff';
+      R.surfaceContainerLow = '#f3f3f3';
+      R.surfaceContainer = '#eeeeee';
+      R.surfaceContainerHigh = '#e8e8e8';
+      R.surfaceContainerHighest = '#e2e2e2';
+      R.outline = '#757575'; R.outlineVariant = '#c6c6c6';
+      R.inverseSurface = '#303030'; R.inverseOnSurface = '#f1f1f1';
+      R.inversePrimary = '#ffffff';
+      R.statusOk = '#166a33'; R.statusWarn = '#6b5000'; R.statusBad = '#a01811';
+    } else {
+      R.primary = p(40); R.onPrimary = p(100);
+      R.primaryContainer = p(90); R.onPrimaryContainer = p(10);
+      R.secondary = p(40, 'secondary'); R.onSecondary = p(100, 'secondary');
+      R.secondaryContainer = p(90, 'secondary'); R.onSecondaryContainer = p(10);
+      R.tertiary = p(40, 'tertiary', TERTIARY_HUE); R.onTertiary = p(100, 'tertiary', TERTIARY_HUE);
+      R.tertiaryContainer = p(90, 'tertiary', TERTIARY_HUE); R.onTertiaryContainer = p(10, 'tertiary', TERTIARY_HUE);
+      R.error = e(40); R.onError = e(100); R.errorContainer = e(90); R.onErrorContainer = e(10);
+      R.background = p(98, 'neutral'); R.onBackground = p(10, 'neutral');
+      R.surface = p(98, 'neutral'); R.onSurface = p(10, 'neutral');
+      R.surfaceVariant = p(90, 'neutralVariant'); R.onSurfaceVariant = p(30, 'neutralVariant');
+      R.surfaceDim = p(87, 'neutral'); R.surfaceBright = p(98, 'neutral');
+      R.surfaceContainerLowest = p(100, 'neutral');
+      R.surfaceContainerLow = p(96, 'neutral');
+      R.surfaceContainer = p(94, 'neutral');
+      R.surfaceContainerHigh = p(92, 'neutral');
+      R.surfaceContainerHighest = p(90, 'neutral');
+      R.outline = p(50, 'neutralVariant'); R.outlineVariant = p(80, 'neutralVariant');
+      R.inverseSurface = p(20, 'neutral'); R.inverseOnSurface = p(95, 'neutral');
+      R.inversePrimary = p(80);
+      R.statusOk = '#166a33'; R.statusWarn = '#6b5000'; R.statusBad = '#a01811';
+    }
+  }
+  return R;
+}
+
+const ROLE_VAR = {
+  primary: '--md-sys-color-primary', onPrimary: '--md-sys-color-on-primary',
+  primaryContainer: '--md-sys-color-primary-container', onPrimaryContainer: '--md-sys-color-on-primary-container',
+  secondary: '--md-sys-color-secondary', onSecondary: '--md-sys-color-on-secondary',
+  secondaryContainer: '--md-sys-color-secondary-container', onSecondaryContainer: '--md-sys-color-on-secondary-container',
+  tertiary: '--md-sys-color-tertiary', onTertiary: '--md-sys-color-on-tertiary',
+  tertiaryContainer: '--md-sys-color-tertiary-container', onTertiaryContainer: '--md-sys-color-on-tertiary-container',
+  error: '--md-sys-color-error', onError: '--md-sys-color-on-error',
+  errorContainer: '--md-sys-color-error-container', onErrorContainer: '--md-sys-color-on-error-container',
+  background: '--md-sys-color-background', onBackground: '--md-sys-color-on-background',
+  surface: '--md-sys-color-surface', onSurface: '--md-sys-color-on-surface',
+  surfaceVariant: '--md-sys-color-surface-variant', onSurfaceVariant: '--md-sys-color-on-surface-variant',
+  surfaceDim: '--md-sys-color-surface-dim', surfaceBright: '--md-sys-color-surface-bright',
+  surfaceContainerLowest: '--md-sys-color-surface-container-lowest',
+  surfaceContainerLow: '--md-sys-color-surface-container-low',
+  surfaceContainer: '--md-sys-color-surface-container',
+  surfaceContainerHigh: '--md-sys-color-surface-container-high',
+  surfaceContainerHighest: '--md-sys-color-surface-container-highest',
+  outline: '--md-sys-color-outline', outlineVariant: '--md-sys-color-outline-variant',
+  inverseSurface: '--md-sys-color-inverse-surface', inverseOnSurface: '--md-sys-color-inverse-on-surface',
+  inversePrimary: '--md-sys-color-inverse-primary'
+};
+
+function applyTheme(skipUI) {
+  const dark = isDark();
+  const amoled = store.get('m3_amoled') === 'true' && dark;
+  const monochrome = isMonochrome();
+  const R = roles(currentSeed, dark, amoled, monochrome);
+
+  let css = ':root{';
+  for (const k in ROLE_VAR) {
+    if (R[k]) css += ROLE_VAR[k] + ':' + R[k] + ';';
+  }
+  css += '--status-ok:' + R.statusOk + ';--status-warn:' + R.statusWarn + ';--status-bad:' + R.statusBad + ';}';
+
+  const tv = $('theme-vars');
+  if (tv) tv.textContent = css;
+
+  document.documentElement.setAttribute('data-mode', dark ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-amoled', amoled ? 'true' : 'false');
+  document.documentElement.setAttribute('data-monochrome', monochrome ? 'true' : 'false');
+
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta && R.background) meta.setAttribute('content', R.background);
+
+  if (!skipUI) drawThemeUI();
+}
+
+let wheelH = 200, wheelS = 0.6, wheelDrag = false, wheelFrame = 0;
+
+function drawThemeUI() {
+  const modeEl = $('theme-mode');
+  if (modeEl) {
+    const modes = [['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']];
+    modeEl.innerHTML = modes.map(([m, label]) => {
+      const on = currentMode === m;
+      return '<button class="seg state' + (on ? ' on' : '') + '" aria-pressed="' + on + '" onclick="setThemeMode('' + m + '')">' +
+        '<span class="check"><svg class="icon s18"><use href="#i-check"/></svg></span>' +
+        '<span>' + label + '</span>' +
+        '</button>';
+    }).join('');
+  }
+  const dark = isDark();
+  const mono = isMonochrome();
+  const palEl = $('palette-grid');
+  if (palEl) {
+    palEl.innerHTML = PALETTES.map(p => {
+      const isThisMono = p[1].toLowerCase() === '#757575';
+      const r = roles(p[1], true, false, isThisMono);
+      const on = isThisMono ? mono : (!mono && p[1].toLowerCase() === currentSeed.toLowerCase());
+      return '<button class="swatch-dot state' + (on ? ' on' : '') + '" aria-pressed="' + on + '" title="' + p[0] + '" aria-label="' + p[0] + '" onclick="applyMonet('' + p[1] + '')"' +
+        ' style="--sw-a:' + r.primary + ';--sw-b:' + r.secondary + ';--sw-c:' + r.tertiary + '">' +
+        '<span class="sw-check"><svg class="icon s20"><use href="#i-check"/></svg></span></button>';
+    }).join('');
+  }
+  const tpEl = $('tp-roles');
+  if (tpEl) {
+    const rolesList = ['primary', 'secondary', 'tertiary', 'primary-container', 'error'];
+    tpEl.innerHTML = rolesList.map(v => '<span class="tp-role" style="background:var(--md-sys-color-' + v + ')"></span>').join('');
+  }
+  const amoledToggle = $('amoled-toggle');
+  if (amoledToggle) {
+    amoledToggle.checked = store.get('m3_amoled') === 'true';
+    amoledToggle.disabled = !dark;
+  }
+  const monoToggle = $('monochrome-toggle');
+  if (monoToggle) {
+    monoToggle.checked = mono;
+  }
+  syncPicker(true);
+}
+
+function syncPicker(fromSeed) {
+  const hsl = hexToHsl(currentSeed);
+  if (fromSeed) {
+    wheelH = hsl[0];
+    wheelS = hsl[1];
+    const lum = $('cd-lum');
+    if (lum) lum.value = Math.round(Math.min(85, Math.max(20, hsl[2] * 100)));
+  }
+  const lumEl = $('cd-lum');
+  const L = lumEl ? +lumEl.value : 60;
+  const stops = [];
+  for (let h = 0; h <= 360; h += 30) stops.push('hsl(' + h + ' 100% ' + L + '%)');
+  const wheel = $('wheel');
+  if (wheel) {
+    wheel.style.background = 'radial-gradient(closest-side, hsl(0 0% ' + L + '%), hsl(0 0% ' + L + '% / 0)), conic-gradient(' + stops.join(',') + ')';
+    wheel.setAttribute('aria-valuenow', Math.round(wheelH));
+  }
+  const a = wheelH * Math.PI / 180, r = wheelS * 50;
+  const th = $('wheel-thumb');
+  if (th) {
+    th.style.left = (50 + Math.sin(a) * r) + '%';
+    th.style.top = (50 - Math.cos(a) * r) + '%';
+    th.style.background = currentSeed;
+  }
+  const sw = $('custom-swatch');
+  if (sw) sw.style.background = currentSeed;
+  const hexIn = $('custom-hex-input');
+  if (hexIn && document.activeElement !== hexIn) {
+    hexIn.value = currentSeed.replace('#', '').toUpperCase();
+  }
+}
+
+const wheelHex = () => hslToHex(wheelH, wheelS, +($('cd-lum') ? $('cd-lum').value : 60) / 100);
+
+function wheelApply(final) {
+  store.set('m3_monochrome', 'false');
+  currentSeed = wheelHex().toLowerCase();
+  store.set('m3_last_color_seed', currentSeed);
+  if (!wheelFrame) {
+    wheelFrame = requestAnimationFrame(() => {
+      wheelFrame = 0;
+      applyTheme(true);
+      syncPicker(false);
+    });
+  }
+  if (final) {
+    store.set('m3_seed', currentSeed);
+    setTimeout(drawThemeUI, 30);
+  }
+}
+
+function wheelPick(e) {
+  const w = $('wheel');
+  if (!w) return;
+  const r = w.getBoundingClientRect();
+  const dx = e.clientX - (r.left + r.width / 2);
+  const dy = e.clientY - (r.top + r.height / 2);
+  wheelH = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+  wheelS = Math.min(1, Math.hypot(dx, dy) / (r.width / 2));
+  wheelApply(false);
+}
+
+function initWheel() {
+  const w = $('wheel');
+  if (!w) return;
+  w.addEventListener('pointerdown', e => {
+    wheelDrag = true;
+    try { w.setPointerCapture(e.pointerId); } catch(_) {}
+    w.classList.add('drag');
+    wheelPick(e);
+  });
+  w.addEventListener('pointermove', e => {
+    if (wheelDrag) wheelPick(e);
+  });
+  const end = () => {
+    if (!wheelDrag) return;
+    wheelDrag = false;
+    w.classList.remove('drag');
+    wheelApply(true);
+  };
+  w.addEventListener('pointerup', end);
+  w.addEventListener('pointercancel', end);
+  w.addEventListener('keydown', e => {
+    const k = { ArrowLeft: [-5, 0], ArrowRight: [5, 0], ArrowUp: [0, 0.05], ArrowDown: [0, -0.05] }[e.key];
+    if (!k) return;
+    e.preventDefault();
+    wheelH = (wheelH + k[0] + 360) % 360;
+    wheelS = Math.min(1, Math.max(0, wheelS + k[1]));
+    wheelApply(true);
+  });
+}
+
+function onWheelLum() {
+  wheelApply(false);
+  clearTimeout(onWheelLum.t);
+  onWheelLum.t = setTimeout(() => store.set('m3_seed', currentSeed), 300);
+}
+
+function setThemeMode(m) {
+  haptic(8);
+  currentMode = m;
+  store.set('m3_mode', m);
+  applyTheme();
+}
+
+function applyMonet(seedHex) {
+  if (!/^#[0-9a-fA-F]{6}$/.test(seedHex)) return;
+  haptic(8);
+  const hex = seedHex.toLowerCase();
+  if (hex === '#757575') {
+    if (currentSeed !== '#757575') store.set('m3_last_color_seed', currentSeed);
+    store.set('m3_monochrome', 'true');
+  } else {
+    store.set('m3_monochrome', 'false');
+    store.set('m3_last_color_seed', hex);
+  }
+  currentSeed = hex;
+  store.set('m3_seed', currentSeed);
+  applyTheme();
+}
+
+function toggleMonochrome(on) {
+  haptic(8);
+  store.set('m3_monochrome', on ? 'true' : 'false');
+  if (on) {
+    if (currentSeed !== '#757575') store.set('m3_last_color_seed', currentSeed);
+    currentSeed = '#757575';
+    store.set('m3_seed', currentSeed);
+  } else {
+    const last = store.get('m3_last_color_seed') || '#7ed0ff';
+    currentSeed = (/^#[0-9a-fA-F]{6}$/.test(last) && last.toLowerCase() !== '#757575') ? last.toLowerCase() : '#7ed0ff';
+    store.set('m3_seed', currentSeed);
+  }
+  applyTheme();
+}
+
+function toggleAmoled(on) {
+  haptic(8);
+  store.set('m3_amoled', on ? 'true' : 'false');
+  applyTheme();
+}
+
+function onHexInput(val) {
+  const clean = val.replace(/[^0-9a-fA-F]/g, '').slice(0, 6);
+  const inputEl = $('custom-hex-input');
+  if (inputEl) inputEl.value = clean;
+  if (clean.length !== 6) return;
+  const hex = '#' + clean.toLowerCase();
+  if (hex === '#757575') {
+    store.set('m3_monochrome', 'true');
+  } else {
+    store.set('m3_monochrome', 'false');
+    store.set('m3_last_color_seed', hex);
+  }
+  currentSeed = hex;
+  store.set('m3_seed', currentSeed);
+  applyTheme(true);
+  syncPicker(true);
+}
+
+function resetTheme() {
+  haptic(12);
+  ['m3_seed', 'm3_mode', 'm3_amoled', 'm3_monochrome', 'm3_last_color_seed'].forEach(k => store.del(k));
+  currentMode = 'auto';
+  currentSeed = systemSeed();
+  applyTheme();
+  toast('Тема сброшена к системной');
+}
+
+async function detectSystemMonet(showToastNotice) {
+  haptic(10);
+  let hex = '';
+  if (hasBridge()) {
+    try {
+      const r = await kexec(`
+        dumpsys wallpaper 2>/dev/null | grep -iE "Color\\(" | tail -n 4
+        settings get secure theme_customization_overlay_packages 2>/dev/null
+        dumpsys activity service com.android.systemui/.theme.ThemeOverlayController 2>/dev/null | grep -iE "color|accent|mMain" | tail -n 4
+      `);
+      const out = (r && r.stdout) || '';
+      for (const m of Array.from(out.matchAll(/(?:Color\(|mMainColor\s*[:=]\s*)(-?\d{5,12})/gi)).reverse()) {
+        const val = parseInt(m[1], 10);
+        if (isNaN(val) || val === 0 || val === -1) continue;
+        const rawHex = ((val >>> 0) & 0xFFFFFF).toString(16).padStart(6, '0');
+        if (rawHex !== '000000' && rawHex !== 'ffffff' && rawHex !== 'e2e2e9' && rawHex !== '111318') { hex = '#' + rawHex; break; }
+      }
+      if (!hex) {
+        for (const m of Array.from(out.matchAll(/Color\(\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/gi)).reverse()) {
+          const to2 = v => { const x = parseFloat(v); return Math.round(x <= 1 ? x * 255 : x).toString(16).padStart(2, '0'); };
+          const c = '#' + to2(m[1]) + to2(m[2]) + to2(m[3]);
+          if (c !== '#000000' && c !== '#ffffff' && c !== '#e2e2e9') { hex = c; break; }
+        }
+      }
+      if (!hex) {
+        for (const m of Array.from(out.matchAll(/(?:_|[#"'=:|]|(?:0x))([0-9a-fA-F]{6,8})\b/g)).reverse()) {
+          let h = m[1];
+          if (h.length === 8) h = h.slice(2);
+          const c = ('#' + h).toLowerCase();
+          if (c !== '#e2e2e9' && c !== '#000000' && c !== '#ffffff' && c !== '#111318') { hex = c; break; }
+        }
+      }
+    } catch (_) {}
+  }
+  if (!hex) hex = systemSeed();
+  applyMonet(hex);
+  if (showToastNotice) toast('Цвет обоев: ' + hex.toUpperCase());
+}
+
+function openThemeSheet() {
+  haptic(10);
+  const sheet = $('theme-sheet');
+  const scrim = $('theme-scrim');
+  if (!sheet || !scrim) return;
+  scrim.classList.add('show');
+  sheet.classList.add('open');
+  drawThemeUI();
+  syncPicker(true);
+}
+
+function closeThemeSheet() {
+  haptic(8);
+  const sheet = $('theme-sheet');
+  const scrim = $('theme-scrim');
+  if (sheet) sheet.classList.remove('open');
+  if (scrim) scrim.classList.remove('show');
+}
+
+function initTheme() {
+  applyTheme();
+  initWheel();
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (currentMode === 'auto') applyTheme();
+    });
+  }
+}
+
 /* ==========================================================================
    TG Open Application Logic & Bridge Controller
    ========================================================================== */
@@ -1842,7 +2882,8 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pageshow", () => resumeTransport());
 
-// Initial run
+// Initial theme & bridge run
+initTheme();
 refresh();
 setInterval(refresh, 3000);
 </script>
