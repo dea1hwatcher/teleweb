@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -132,7 +133,13 @@ func fetchCFDomainsFromURL(ctx context.Context, client *http.Client, targetURL s
 }
 
 func refreshCFDomains(ctx context.Context) error {
-	client := &http.Client{Timeout: 12 * time.Second}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs:            getSystemRootCAs(),
+			InsecureSkipVerify: true,
+		},
+	}
+	client := &http.Client{Transport: tr, Timeout: 12 * time.Second}
 	domains, err := fetchCFDomainsFromURL(ctx, client, primaryCFDomainsURL)
 	if err != nil {
 		domains, err = fetchCFDomainsFromURL(ctx, client, fallbackCFDomainsURL)

@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -1572,6 +1573,52 @@ type wsConn struct {
 	fragData   []byte
 }
 
+var (
+	systemRootCAs     *x509.CertPool
+	systemRootCAsOnce sync.Once
+)
+
+// getSystemRootCAs loads Android trusted system and APEX root certificates.
+// Go binaries compiled with GOOS=linux do not automatically search Android certificate paths.
+func getSystemRootCAs() *x509.CertPool {
+	systemRootCAsOnce.Do(func() {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		dirs := []string{
+			"/system/etc/security/cacerts",
+			"/apex/com.android.conscrypt/cacerts",
+			"/apex/com.google.android.conscrypt/cacerts",
+			"/data/misc/keychain/certs-added",
+			"/etc/security/cacerts",
+		}
+		added := 0
+		for _, dir := range dirs {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+				if err == nil && len(data) > 0 {
+					if pool.AppendCertsFromPEM(data) {
+						added++
+					}
+				}
+			}
+		}
+		if added > 0 {
+			logf("tls: успешно загружено %d системных CA сертификатов Android", added)
+		}
+		systemRootCAs = pool
+	})
+	return systemRootCAs
+}
+
 // androidDNSServers finds resolver addresses exposed by Android's netd.
 // Some rooted environments expose only a loopback nameserver in resolv.conf;
 // that address is not necessarily listening inside a standalone module process.
@@ -1593,12 +1640,26 @@ func androidDNSServers() []string {
 			out = append(out, v)
 		}
 	}
+	// 1. Android property dumps (catches net.wlan0.dns1, net.rmnet_data0.dns1, dhcp.wlan0.dns1, etc.)
+	if b, err := exec.Command("getprop").Output(); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, "dns") {
+				parts := strings.SplitN(line, "]: [", 2)
+				if len(parts) == 2 {
+					val := strings.Trim(parts[1], "]\r\n ")
+					add(val)
+				}
+			}
+		}
+	}
+	// 2. Legacy net.dns1..4
 	for i := 1; i <= 4; i++ {
 		b, err := exec.Command("getprop", fmt.Sprintf("net.dns%d", i)).Output()
 		if err == nil {
 			add(string(b))
 		}
 	}
+	// 3. /etc/resolv.conf
 	if b, err := os.ReadFile("/etc/resolv.conf"); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
 			f := strings.Fields(line)
@@ -1607,10 +1668,9 @@ func androidDNSServers() []string {
 			}
 		}
 	}
-	// Last-resort resolvers for Android builds that expose no DNS property.
-	// They may be unreachable on restricted networks; local DNS is preferred.
-	if len(out) == 0 {
-		out = append(out, "1.1.1.1", "8.8.8.8")
+	// 4. Reliable fallback resolvers (Yandex DNS 77.88.8.8 never blocked in RU, Cloudflare, Google)
+	for _, fallback := range []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"} {
+		add(fallback)
 	}
 	return out
 }
@@ -2097,12 +2157,8 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 		}
 		ch := make(chan result, end-i)
 		for _, domain := range domains[i:end] {
-			primary := fmt.Sprintf("kws%d.%s", dc, domain)
-			alternate := fmt.Sprintf("kws%d-1.%s", dc, domain)
-			orderedHosts := []string{primary, alternate}
-			if isMedia {
-				orderedHosts = []string{alternate, primary}
-			}
+			host := fmt.Sprintf("kws%d.%s", dc, domain)
+			orderedHosts := []string{host}
 			go func(hosts []string) {
 				var ws *wsConn
 				var err error
@@ -2202,9 +2258,6 @@ func maybeProbeCloudflare(key string, dc int, isMedia bool, directDuration time.
 	ch := make(chan result, len(domains))
 	for _, domain := range domains {
 		host := fmt.Sprintf("kws%d.%s", dc, domain)
-		if isMedia {
-			host = fmt.Sprintf("kws%d-1.%s", dc, domain)
-		}
 		go func(h string) {
 			started := time.Now()
 			ws, err := dialCFHost(ctx, resolver, h)
@@ -2355,7 +2408,13 @@ func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, 
 	if customSNI := configuredFrontingSNI(); customSNI != "" {
 		sni = customSNI
 	}
-	tc := tls.Client(raw, &tls.Config{ServerName: sni, MinVersion: tls.VersionTLS12})
+	tlsConfig := &tls.Config{
+		ServerName:         sni,
+		MinVersion:         tls.VersionTLS12,
+		RootCAs:            getSystemRootCAs(),
+		InsecureSkipVerify: true,
+	}
+	tc := tls.Client(raw, tlsConfig)
 	_ = tc.SetDeadline(time.Now().Add(8 * time.Second))
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()
