@@ -221,6 +221,11 @@ type Status struct {
 	CustomCFDomain    string         `json:"customCFDomain"`
 	CustomCFWorker    string         `json:"customCFWorker"`
 	DCOverrides       string         `json:"dcOverrides"`
+	PoolSize          int            `json:"poolSize"`
+	PoolHits          int64          `json:"poolHits"`
+	PoolMisses        int64          `json:"poolMisses"`
+	PoolIdle          int            `json:"poolIdle"`
+	DoHEnabled        bool           `json:"dohEnabled"`
 }
 
 type apiRequest struct {
@@ -231,6 +236,8 @@ type apiRequest struct {
 	CustomCFDomain *string `json:"customCFDomain,omitempty"`
 	CustomCFWorker *string `json:"customCFWorker,omitempty"`
 	DCOverrides    *string `json:"dcOverrides,omitempty"`
+	PoolSize       *int    `json:"poolSize,omitempty"`
+	DoHEnabled     *bool   `json:"dohEnabled,omitempty"`
 }
 
 func envOr(k, d string) string {
@@ -1809,6 +1816,10 @@ func currentStatus() Status {
 	memNow, memPeak := processMemoryBytes()
 	up := atomic.LoadInt64(&trafficUpBytes)
 	down := atomic.LoadInt64(&trafficDownBytes)
+	hits, misses, idle := int64(0), int64(0), 0
+	if globalWsPool != nil {
+		hits, misses, idle = globalWsPool.Stats()
+	}
 	return Status{
 		Enabled:           readEnabled(),
 		Running:           true,
@@ -1830,6 +1841,11 @@ func currentStatus() Status {
 		CustomCFDomain:    readCustomCFDomain(),
 		CustomCFWorker:    readCustomCFWorker(),
 		DCOverrides:       readDCOverridesRaw(),
+		PoolSize:          readPoolSize(),
+		PoolHits:          hits,
+		PoolMisses:        misses,
+		PoolIdle:          idle,
+		DoHEnabled:        readDoHEnabled(),
 	}
 }
 func status() Status {
@@ -1852,6 +1868,11 @@ func status() Status {
 			s.CustomCFDomain = readCustomCFDomain()
 			s.CustomCFWorker = readCustomCFWorker()
 			s.DCOverrides = readDCOverridesRaw()
+			s.PoolSize = readPoolSize()
+			s.DoHEnabled = readDoHEnabled()
+			if globalWsPool != nil {
+				s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
+			}
 			return s
 		}
 	}
@@ -1871,6 +1892,8 @@ func status() Status {
 		CustomCFDomain: readCustomCFDomain(),
 		CustomCFWorker: readCustomCFWorker(),
 		DCOverrides:    readDCOverridesRaw(),
+		PoolSize:       readPoolSize(),
+		DoHEnabled:     readDoHEnabled(),
 	}
 }
 func writeStatus() {
@@ -1982,6 +2005,18 @@ func apiMain(arg string) {
 		}
 		if q.DCOverrides != nil {
 			if err := writeDCOverrides(*q.DCOverrides); err != nil {
+				emitErr(err)
+				return
+			}
+		}
+		if q.PoolSize != nil {
+			if err := writePoolSize(*q.PoolSize); err != nil {
+				emitErr(err)
+				return
+			}
+		}
+		if q.DoHEnabled != nil {
+			if err := writeDoHEnabled(*q.DoHEnabled); err != nil {
 				emitErr(err)
 				return
 			}
@@ -2106,6 +2141,10 @@ func serve() {
 	loadRouteCache()
 	loadLearnedDCs()
 	startCFDomainsUpdater(context.Background())
+	initGlobalWsPool(context.Background())
+	if globalWsPool != nil {
+		globalWsPool.Warmup([]int{1, 2, 4})
+	}
 	ln, e := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort))
 	if e != nil {
 		logf("failed to open local port: %v", e)
@@ -2321,13 +2360,23 @@ func handleClient(c net.Conn) {
 	statsMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	ws, err := dialTelegramWS(ctx, dc, isMedia)
-	if err != nil {
-		if !isNeutralError(err) {
-			atomic.AddInt64(&failCnt, 1)
-			logf("DC%d media=%t WSS failed: %v; WSS-only, connection closed", dc, isMedia, err)
+	var ws *wsConn
+	if globalWsPool != nil && globalWsPool.size.Load() > 0 {
+		ws = globalWsPool.Get(dc, isMedia)
+	}
+	if ws == nil {
+		var err error
+		ws, err = dialTelegramWS(ctx, dc, isMedia)
+		if err != nil {
+			if !isNeutralError(err) {
+				atomic.AddInt64(&failCnt, 1)
+				logf("DC%d media=%t WSS failed: %v; WSS-only, connection closed", dc, isMedia, err)
+			}
+			return
 		}
-		return
+		if globalWsPool != nil && globalWsPool.size.Load() > 0 {
+			go globalWsPool.Refill(dc, isMedia)
+		}
 	}
 	atomic.AddInt64(&wsCount, 1)
 	defer atomic.AddInt64(&wsCount, -1)
@@ -3502,9 +3551,21 @@ func noteRouteHTTPFailure(host string, err error) {
 }
 
 func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsConn, error) {
-	ips, err := resolver.LookupNetIP(ctx, "ip4", host)
-	if err != nil {
-		return nil, fmt.Errorf("DNS: %w", err)
+	var ips []netip.Addr
+	if readDoHEnabled() {
+		dohCtx, dohCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		dohIPs, err := resolveDoHRace(dohCtx, host)
+		dohCancel()
+		if err == nil && len(dohIPs) > 0 {
+			ips = dohIPs
+		}
+	}
+	if len(ips) == 0 {
+		var err error
+		ips, err = resolver.LookupNetIP(ctx, "ip4", host)
+		if err != nil {
+			return nil, fmt.Errorf("DNS: %w", err)
+		}
 	}
 	var last error
 	for _, ip := range ips {

@@ -1641,8 +1641,9 @@ html.no-anim *::after {
       <h2 class="subhead">Датацентры Telegram (DC Matrix)</h2>
       <div class="dc-grid" id="dcGrid"></div>
       <div class="meta-row">
-        <span>Активно сейчас: <strong id="meta-active">0</strong></span>
-        <span>Всего WS сессий: <strong id="meta-ws">0</strong></span>
+        <span>Активно: <strong id="meta-active">0</strong></span>
+        <span>WS сессий: <strong id="meta-ws">0</strong></span>
+        <span>Пул сокетов: <strong id="meta-pool">0</strong></span>
       </div>
     </div>
 
@@ -1688,6 +1689,17 @@ html.no-anim *::after {
             <input type="checkbox" class="switch" role="switch" id="swCFBalance" aria-label="Балансировка доменов">
           </span>
         </label>
+
+        <!-- Multi-DoH Resolver -->
+        <label class="list-item clickable state">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-status"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">Защищенный DNS (Multi-DoH гонка)</span>
+          </span>
+          <span class="li-trail">
+            <input type="checkbox" class="switch" role="switch" id="swDoH" aria-label="Защищенный DNS">
+          </span>
+        </label>
       </div>
     </div>
 
@@ -1715,6 +1727,19 @@ html.no-anim *::after {
           <div class="tf">
             <input type="text" id="inputDCOverrides" placeholder="1:149.154.175.50, 2:149.154.167.220" autocomplete="off" autocapitalize="off" spellcheck="false">
             <label for="inputDCOverrides">Ручные IP для DC (опционально)</label>
+          </div>
+        </div>
+
+        <!-- Pre-warmed WSS Pool Size -->
+        <div class="field">
+          <div class="tf">
+            <select id="selectPoolSize" style="background:transparent;border:none;color:inherit;font:inherit;width:100%;outline:none;padding:12px 0 4px 0;">
+              <option value="0" style="background:var(--md-sys-color-surface-container, #1e1e24);color:inherit;">Отключен (0)</option>
+              <option value="1" style="background:var(--md-sys-color-surface-container, #1e1e24);color:inherit;">Эконом (1 сокет на DC)</option>
+              <option value="2" style="background:var(--md-sys-color-surface-container, #1e1e24);color:inherit;">Стандарт (2 сокета на DC, реком.)</option>
+              <option value="4" style="background:var(--md-sys-color-surface-container, #1e1e24);color:inherit;">Максимум (4 сокета на DC)</option>
+            </select>
+            <label for="selectPoolSize">Пул предпрогретых WSS-сокетов</label>
           </div>
         </div>
 
@@ -2817,6 +2842,15 @@ function render() {
   // Routing Switches & Inputs
   if ($("swCFPriority")) $("swCFPriority").checked = !!(state && state.cfPriority);
   if ($("swCFBalance")) $("swCFBalance").checked = !!(state && state.cfBalance);
+  if ($("swDoH")) $("swDoH").checked = !!(state && state.dohEnabled);
+  if ($("selectPoolSize") && document.activeElement !== $("selectPoolSize")) {
+    $("selectPoolSize").value = String(state && typeof state.poolSize === "number" ? state.poolSize : 2);
+  }
+  if ($("meta-pool")) {
+    const hits = state && state.poolHits || 0;
+    const idle = state && state.poolIdle || 0;
+    $("meta-pool").textContent = `${idle} гот / ${hits} хит`;
+  }
 
   if ($("inputCustomDomain") && document.activeElement !== $("inputCustomDomain")) {
     $("inputCustomDomain").value = (state && state.customCFDomain) || "";
@@ -3185,6 +3219,21 @@ $("swCFBalance").addEventListener("change", async (e) => {
   render();
 });
 
+if ($("swDoH")) {
+  $("swDoH").addEventListener("change", async (e) => {
+    if (busy) return;
+    haptic(8);
+    const val = e.target.checked;
+    try {
+      state = await api("setConfig", { dohEnabled: val });
+      toast(val ? "Защищенный Multi-DoH включен" : "Multi-DoH выключен");
+    } catch (err) {
+      toast(err.message);
+    }
+    render();
+  });
+}
+
 // Save Routing Settings
 $("saveConfigBtn").addEventListener("click", async () => {
   if (busy) return;
@@ -3194,9 +3243,11 @@ $("saveConfigBtn").addEventListener("click", async () => {
   const dcOverrides = ($("inputDCOverrides").value || "").trim();
   const cfPriority = $("swCFPriority").checked;
   const cfBalance = $("swCFBalance").checked;
+  const dohEnabled = $("swDoH") ? $("swDoH").checked : true;
+  const poolSize = $("selectPoolSize") ? parseInt($("selectPoolSize").value, 10) : 2;
 
   try {
-    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance });
+    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance, dohEnabled, poolSize });
     toast("Настройки успешно сохранены");
   } catch (e) {
     toast(e.message);

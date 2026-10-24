@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -1398,5 +1399,186 @@ func TestUpdateModuleDescription(t *testing.T) {
 	desc := currentStatusDesc()
 	if desc != "⛔ Остановлено" {
 		t.Errorf("expected ⛔ Остановлено when disabled, got %s", desc)
+	}
+}
+
+func TestWsPool_Lifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TELEWEB_DIR", tmpDir)
+
+	if err := writePoolSize(3); err != nil {
+		t.Fatalf("failed to write pool size: %v", err)
+	}
+	if sz := readPoolSize(); sz != 3 {
+		t.Fatalf("expected pool size 3, got %d", sz)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWsPool(ctx, 3)
+	defer pool.Close()
+
+	// 1. Initial Get on empty pool should miss
+	ws := pool.Get(2, false)
+	if ws != nil {
+		t.Fatalf("expected nil from empty pool, got %v", ws)
+	}
+	hits, misses, idle := pool.Stats()
+	if hits != 0 || misses != 1 || idle != 0 {
+		t.Fatalf("expected 0 hits, 1 miss, 0 idle; got hits=%d misses=%d idle=%d", hits, misses, idle)
+	}
+
+	// 2. Put a live mock connection into slot
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	mockWS := &wsConn{conn: c1, host: "mock-host.invalid"}
+
+	slot := poolSlot{dc: 2, isMedia: false}
+	q, _ := pool.getQueue(slot)
+	q <- &poolEntry{ws: mockWS, createdAt: time.Now()}
+
+	if pool.IdleCount() != 1 {
+		t.Fatalf("expected 1 idle connection, got %d", pool.IdleCount())
+	}
+
+	// 3. Get should hit
+	retrieved := pool.Get(2, false)
+	if retrieved == nil {
+		t.Fatalf("expected valid connection from pool, got nil")
+	}
+	if retrieved.host != "mock-host.invalid" {
+		t.Fatalf("expected mock-host.invalid, got %s", retrieved.host)
+	}
+	_ = retrieved.Close()
+
+	hits, misses, _ = pool.Stats()
+	if hits != 1 || misses != 1 {
+		t.Fatalf("expected 1 hit, 1 miss; got hits=%d misses=%d", hits, misses)
+	}
+
+	// 4. Stale connection should be discarded
+	c3, c4 := net.Pipe()
+	defer c4.Close()
+	staleWS := &wsConn{conn: c3, host: "stale-host.invalid"}
+	q <- &poolEntry{ws: staleWS, createdAt: time.Now().Add(-200 * time.Second)}
+
+	staleRetrieved := pool.Get(2, false)
+	if staleRetrieved != nil {
+		t.Fatalf("expected stale entry to be dropped, got %v", staleRetrieved)
+	}
+}
+
+func TestDoH_ParsingAndCache(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TELEWEB_DIR", tmpDir)
+
+	if err := writeDoHEnabled(true); err != nil {
+		t.Fatalf("failed to write doh enabled: %v", err)
+	}
+	if !readDoHEnabled() {
+		t.Fatalf("expected dohEnabled to be true")
+	}
+
+	// Mock DoH server returning DNS JSON
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		if name != "kws2.test.invalid" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/dns-json")
+		resp := dohResponse{
+			Status: 0,
+			Answer: []dohAnswer{
+				{Name: "kws2.test.invalid", Type: 1, TTL: 120, Data: "104.21.12.34"},
+				{Name: "kws2.test.invalid", Type: 1, TTL: 120, Data: "172.67.56.78"},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	origEndpoints := dohEndpoints
+	dohEndpoints = []string{server.URL}
+	defer func() { dohEndpoints = origEndpoints }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	ips, err := resolveDoHRace(ctx, "kws2.test.invalid")
+	if err != nil {
+		t.Fatalf("resolveDoHRace failed: %v", err)
+	}
+	if len(ips) != 2 {
+		t.Fatalf("expected 2 IPs from mock DoH, got %d (%v)", len(ips), ips)
+	}
+	if ips[0].String() != "104.21.12.34" || ips[1].String() != "172.67.56.78" {
+		t.Fatalf("unexpected IPs returned: %v", ips)
+	}
+
+	// Verify cached
+	cachedVal, ok := dohCache.Load("kws2.test.invalid")
+	if !ok {
+		t.Fatalf("expected kws2.test.invalid in dohCache")
+	}
+	cachedEntry := cachedVal.(dohCacheEntry)
+	if len(cachedEntry.ips) != 2 {
+		t.Fatalf("expected 2 cached IPs, got %d", len(cachedEntry.ips))
+	}
+
+	// Test DoH disabled
+	_ = writeDoHEnabled(false)
+	_, err = resolveDoHRace(ctx, "another.test.invalid")
+	if err == nil {
+		t.Fatalf("expected error when DoH disabled, got nil")
+	}
+}
+
+func TestApiMain_PoolSize_And_DoH_Config(t *testing.T) {
+	tmpDir := t.TempDir()
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	poolSz := 4
+	dohEn := false
+	req := apiRequest{
+		Cmd:        "setConfig",
+		PoolSize:   &poolSz,
+		DoHEnabled: &dohEn,
+	}
+	b, _ := json.Marshal(req)
+	encoded := base64.StdEncoding.EncodeToString(b)
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	apiMain(encoded)
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	var resp struct {
+		OK   bool   `json:"ok"`
+		Data Status `json:"data"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("failed to parse api response: %v, raw: %s", err, string(out))
+	}
+	if !resp.OK {
+		t.Fatalf("expected api response OK=true, got false")
+	}
+
+	if readPoolSize() != 4 {
+		t.Fatalf("expected poolSize 4, got %d", readPoolSize())
+	}
+	if readDoHEnabled() != false {
+		t.Fatalf("expected dohEnabled false, got %t", readDoHEnabled())
 	}
 }
