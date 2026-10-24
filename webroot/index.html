@@ -386,6 +386,26 @@ svg.icon.s36 { width: 36px; height: 36px; }
   position: relative;
   transition: color var(--dur-short) var(--standard);
 }
+.nav-badge {
+  position: absolute;
+  top: 3px;
+  right: 16px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--md-sys-color-error);
+  box-shadow: 0 0 6px var(--md-sys-color-error);
+  display: none;
+  z-index: 2;
+  animation: badge-pulse 1.8s infinite;
+}
+.nav-badge.show {
+  display: block;
+}
+@keyframes badge-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.8; }
+}
 .nav-ind::before {
   content: "";
   position: absolute;
@@ -754,7 +774,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
 }
 
 /* ==========================================================================
-   M3 Component: Native Switch
+   M3 Component: Native Switch (with M3 Checkmark Icon)
    ========================================================================== */
 .switch {
   appearance: none;
@@ -784,6 +804,25 @@ svg.icon.s36 { width: 36px; height: 36px; }
               width var(--dur-medium) var(--spring-strong),
               height var(--dur-medium) var(--spring-strong),
               background-color var(--dur-medium) var(--spring);
+  z-index: 1;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 7px;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-50%) scale(0.3);
+  background-color: var(--md-sys-color-primary);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z'/%3E%3C/svg%3E") no-repeat center / contain;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity var(--dur-short) var(--standard),
+              transform var(--dur-medium) var(--spring-strong),
+              left var(--dur-medium) var(--spring-strong);
 }
 .switch:checked {
   background: var(--md-sys-color-primary);
@@ -795,8 +834,14 @@ svg.icon.s36 { width: 36px; height: 36px; }
   height: 24px;
   background: var(--md-sys-color-on-primary);
 }
+.switch:checked::after {
+  left: 31px;
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
 .switch:active::before { width: 28px; height: 28px; left: 2px; }
 .switch:checked:active::before { left: 20px; }
+.switch:checked:active::after { left: 27px; }
 
 /* ==========================================================================
    M3 Component: Text Fields (Floating Label / Filled)
@@ -1305,7 +1350,10 @@ svg.icon.s36 { width: 36px; height: 36px; }
       <span class="nav-label">Маршруты</span>
     </button>
     <button class="nav-dest" data-page="logs">
-      <span class="nav-ind state"><svg class="icon"><use href="#i-logs"/></svg></span>
+      <span class="nav-ind state">
+        <svg class="icon"><use href="#i-logs"/></svg>
+        <span class="nav-badge" id="logsNavBadge"></span>
+      </span>
       <span class="nav-label">Журналы</span>
     </button>
     <button class="nav-dest" data-page="about">
@@ -1346,6 +1394,12 @@ DCS.forEach(([id, city]) => {
 });
 
 // Formatting Utilities
+function haptic(ms = 10) {
+  if (typeof navigator !== "undefined" && navigator.vibrate) {
+    try { navigator.vibrate(ms); } catch (_) {}
+  }
+}
+
 function formatBytes(val) {
   const n = Math.max(0, Number(val) || 0);
   if (n >= 1e9) return (n / 1e9).toFixed(n >= 10e9 ? 1 : 2).replace(/\.?0+$/, "") + " ГБ";
@@ -1538,10 +1592,20 @@ function render() {
     $("inputDCOverrides").value = (state && state.dcOverrides) || "";
   }
 
-  // Log View
+  // Log View with Smart Auto-Scroll
   const logView = $("logView");
   if (logView && state && state.log) {
+    const atBottom = logView.scrollHeight - logView.scrollTop <= logView.clientHeight + 48;
     logView.textContent = state.log || "Журнал пуст";
+    if (atBottom) {
+      logView.scrollTop = logView.scrollHeight;
+    }
+  }
+
+  // Logs Badge on nav bar (signals connection errors in real time)
+  const logsBadge = $("logsNavBadge");
+  if (logsBadge) {
+    logsBadge.classList.toggle("show", !!(state && (state.fail || 0) > 0));
   }
 
   // Bridge detection
@@ -1575,6 +1639,7 @@ async function refresh() {
 const navDests = document.querySelectorAll(".nav-dest");
 navDests.forEach(btn => {
   btn.addEventListener("click", () => {
+    haptic(8);
     const pageId = btn.getAttribute("data-page");
     if (!pageId) return;
 
@@ -1595,6 +1660,7 @@ navDests.forEach(btn => {
 // Hero Toggle (Start / Stop)
 $("hero-toggle").addEventListener("click", async () => {
   if (busy) return;
+  haptic(15);
   const next = !(state && state.enabled);
   busy = true;
   try {
@@ -1611,6 +1677,7 @@ $("hero-toggle").addEventListener("click", async () => {
 // Hero Restart
 $("hero-restart").addEventListener("click", async () => {
   if (busy) return;
+  haptic(20);
   busy = true;
   toast("Перезапуск перехватчика…");
   try {
@@ -1628,6 +1695,7 @@ $("hero-restart").addEventListener("click", async () => {
 
 // Refresh Button in App Bar
 $("btn-refresh").addEventListener("click", async () => {
+  haptic(10);
   toast("Обновление данных…");
   await refresh();
 });
@@ -1635,6 +1703,7 @@ $("btn-refresh").addEventListener("click", async () => {
 // Routing Toggles
 $("swCFPriority").addEventListener("change", async (e) => {
   if (busy) return;
+  haptic(8);
   const val = e.target.checked;
   try {
     state = await api("setConfig", { cfPriority: val });
@@ -1647,6 +1716,7 @@ $("swCFPriority").addEventListener("change", async (e) => {
 
 $("swCFBalance").addEventListener("change", async (e) => {
   if (busy) return;
+  haptic(8);
   const val = e.target.checked;
   try {
     state = await api("setConfig", { cfBalance: val });
@@ -1660,6 +1730,7 @@ $("swCFBalance").addEventListener("change", async (e) => {
 // Save Routing Settings
 $("saveConfigBtn").addEventListener("click", async () => {
   if (busy) return;
+  haptic(18);
   const customCFDomain = ($("inputCustomDomain").value || "").trim();
   const dcOverrides = ($("inputDCOverrides").value || "").trim();
   const cfPriority = $("swCFPriority").checked;
@@ -1676,6 +1747,7 @@ $("saveConfigBtn").addEventListener("click", async () => {
 
 // Log Action: Copy
 $("btn-copy-logs").addEventListener("click", async () => {
+  haptic(10);
   const text = $("logView").textContent || "";
   if (!text || text === "Загрузка журнала…") {
     toast("Журнал пуст");
@@ -1700,6 +1772,7 @@ $("btn-copy-logs").addEventListener("click", async () => {
 
 // Log Action: Export
 $("btn-export-logs").addEventListener("click", () => {
+  haptic(10);
   const text = $("logView").textContent || "";
   if (!text) {
     toast("Журнал пуст");
@@ -1720,6 +1793,7 @@ $("btn-export-logs").addEventListener("click", () => {
 
 // Log Action: Clear
 $("btn-clear-logs").addEventListener("click", () => {
+  haptic(10);
   $("logView").textContent = "Журнал очищен.";
   toast("Журнал очищен");
 });
