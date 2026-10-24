@@ -436,10 +436,18 @@ html.no-anim *::after {
 }
 .subhead:first-child { padding-top: 0; }
 
-.group {
+.stack {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.group {
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: var(--shape-large);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .row {
   display: flex;
@@ -566,6 +574,8 @@ html.no-anim *::after {
   font-weight: var(--w-bold);
   letter-spacing: .2px;
   border-radius: var(--shape-full);
+  justify-content: center;
+  text-align: center;
 }
 .hero-restart {
   width: 48px;
@@ -675,24 +685,66 @@ html.no-anim *::after {
 .list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 .list-item {
   display: flex;
   align-items: center;
   gap: 16px;
   min-height: 56px;
-  padding: 10px 16px;
-  border-radius: var(--shape-medium);
-  background: var(--md-sys-color-surface-container);
-  color: var(--md-sys-color-on-surface);
+  padding: 8px 16px;
+  appearance: none;
   border: none;
+  background: var(--md-sys-color-surface-container-low);
+  text-align: left;
+  color: var(--md-sys-color-on-surface);
+  border-radius: var(--shape-extra-small);
+  transition: background-color var(--dur-short) var(--standard),
+              border-radius 0.2s ease,
+              transform var(--dur-short) var(--spring);
+}
+.list-item:active {
+  border-radius: 20px;
+}
+.list-item.state:active {
+  transform: none;
+}
+.list > .list-item:where(:first-child) {
+  border-start-start-radius: var(--shape-large);
+  border-start-end-radius: var(--shape-large);
+}
+.list > .list-item:where(:last-child) {
+  border-end-start-radius: var(--shape-large);
+  border-end-end-radius: var(--shape-large);
+}
+.list > .list-item:where(:only-child) {
+  border-radius: var(--shape-large);
+}
+.list-item:active,
+.list > .list-item:active {
+  border-radius: 20px;
+  border-start-start-radius: 20px;
+  border-start-end-radius: 20px;
+  border-end-start-radius: 20px;
+  border-end-end-radius: 20px;
 }
 .list-item.two-line {
   min-height: 64px;
 }
-.list-item.clickable {
+.list-item.clickable,
+.list-item[role="button"] {
   cursor: pointer;
+}
+.sheet .list {
+  gap: 0;
+}
+.sheet .list-item {
+  background: transparent;
+  border-radius: var(--shape-small);
+}
+.sheet > .list-item {
+  background: transparent;
+  border-radius: var(--shape-large);
 }
 .li-icon {
   width: 40px;
@@ -739,25 +791,6 @@ html.no-anim *::after {
   flex: none;
 }
 
-/* Page Routing: Remove inner containers & apply MD3E dividers */
-#page-routing .list {
-  gap: 0;
-}
-#page-routing .list-item {
-  background: transparent;
-  border-radius: 0;
-  padding: 12px 0;
-  min-height: 56px;
-  border-bottom: 1px solid var(--md-sys-color-outline-variant);
-}
-#page-routing .list-item:last-child {
-  border-bottom: none;
-}
-#page-routing .list-item .li-icon {
-  background: transparent;
-  color: var(--md-sys-color-primary);
-}
-
 /* Page Routing: Traffic Stats without inner container boxes */
 #page-routing .stats-grid {
   display: grid;
@@ -802,6 +835,9 @@ html.no-anim *::after {
   border-radius: 0;
   padding: 8px 0;
   min-height: 48px;
+}
+#appsList .list-item:active {
+  border-radius: 0;
 }
 #appsList .li-icon {
   background: transparent;
@@ -1588,7 +1624,6 @@ html.no-anim *::after {
       </div>
       <div class="hero-actions">
         <button class="btn state" id="hero-toggle" type="button">
-          <svg class="icon s20"><use href="#i-play"/></svg>
           <span id="hero-toggle-label">Запустить</span>
         </button>
         <button class="icon-btn hero-restart state" id="hero-restart" type="button" aria-label="Перезапустить перехват" title="Перезапустить">
@@ -1626,7 +1661,7 @@ html.no-anim *::after {
        PAGE 2: МАРШРУТИЗАЦИЯ (Routing)
        ======================================================================== -->
   <section class="page" id="page-routing" data-page="routing">
-    <div class="card">
+    <div class="stack">
       <h2 class="subhead">Режим WebSocket & Cloudflare</h2>
       <div class="list">
         <!-- CF Priority -->
@@ -1653,9 +1688,9 @@ html.no-anim *::after {
           </span>
         </label>
       </div>
+    </div>
 
-      <div class="divider"></div>
-
+    <div class="stack">
       <h2 class="subhead">Тонкая настройка адресов</h2>
       <div class="group">
         <!-- Custom CF Domain -->
@@ -1684,36 +1719,36 @@ html.no-anim *::after {
           </div>
           <span class="helper">Переопределение точек входа в формате: DC:IP, DC:IP</span>
         </div>
-      </div>
 
-      <div class="divider"></div>
-
-      <div class="row">
-        <button class="btn primary with-icon state" id="saveConfigBtn" type="button">
-          <svg class="icon s18"><use href="#i-check"/></svg>
-          <span>Сохранить настройки</span>
-        </button>
+        <div style="margin-top: 4px;">
+          <button class="btn primary with-icon state" id="saveConfigBtn" type="button" style="width: 100%;">
+            <svg class="icon s18"><use href="#i-check"/></svg>
+            <span>Сохранить настройки</span>
+          </button>
+        </div>
       </div>
     </div>
 
     <!-- Traffic Detailed Stats -->
-    <div class="card">
+    <div class="stack">
       <h2 class="subhead">Обработанный трафик Telegram</h2>
-      <div class="stats-grid cols-3">
-        <div class="stat-box">
-          <span class="stat-title">Всего</span>
-          <span class="stat-num" id="trafficTotal">0 Б</span>
-          <span class="stat-sub">С момента запуска</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-title">Отправлено</span>
-          <span class="stat-num" id="trafficUp">0 Б</span>
-          <span class="stat-sub">Клиент → WSS</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-title">Получено</span>
-          <span class="stat-num" id="trafficDown">0 Б</span>
-          <span class="stat-sub">WSS → Клиент</span>
+      <div class="group">
+        <div class="stats-grid cols-3">
+          <div class="stat-box">
+            <span class="stat-title">Всего</span>
+            <span class="stat-num" id="trafficTotal">0 Б</span>
+            <span class="stat-sub">С момента запуска</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-title">Отправлено</span>
+            <span class="stat-num" id="trafficUp">0 Б</span>
+            <span class="stat-sub">Клиент → WSS</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-title">Получено</span>
+            <span class="stat-num" id="trafficDown">0 Б</span>
+            <span class="stat-sub">WSS → Клиент</span>
+          </div>
         </div>
       </div>
     </div>
@@ -1748,8 +1783,8 @@ html.no-anim *::after {
        PAGE: НАСТРОЙКИ (Settings)
        ======================================================================== -->
   <section class="page" id="page-settings" data-page="settings">
-    <div class="card">
-      <h2 class="subhead">Оформление</h2>
+    <div class="stack">
+      <h2 class="subhead">Внешний вид</h2>
       <div class="list">
         <div class="list-item two-line clickable state" role="button" tabindex="0" onclick="openThemeSheet()">
           <span class="li-icon"><svg class="icon s20"><use href="#i-palette"/></svg></span>
@@ -1763,7 +1798,7 @@ html.no-anim *::after {
           <span class="li-icon"><svg class="icon s20"><use href="#i-motion"/></svg></span>
           <span class="li-text">
             <span class="li-primary">Отключение анимаций</span>
-            <span class="li-secondary">Мгновенные переходы для плавности и экономии заряда</span>
+            <span class="li-secondary">Уменьшить визуальные эффекты и задержки</span>
           </span>
           <span class="li-trail">
             <input type="checkbox" class="switch" role="switch" id="swDisableAnimations" aria-label="Отключение анимаций" onchange="toggleDisableAnimations(this.checked)">
@@ -2715,31 +2750,26 @@ function render() {
     heroState.textContent = "Обход выключен";
     heroSub.textContent = "Нажмите «Запустить» для активации WSS обхода";
     heroToggleLabel.textContent = "Запустить";
-    heroToggle.querySelector("use").setAttribute("href", "#i-play");
   } else if (!running) {
     heroState.textContent = "Служба не запущена";
     heroSub.textContent = "Перехватчик tgws остановлен в системе";
     heroCard.classList.add("bad");
     heroToggleLabel.textContent = "Запустить";
-    heroToggle.querySelector("use").setAttribute("href", "#i-play");
   } else if ((state.ws || 0) > 0) {
     heroState.textContent = "WebSocket активен";
     heroSub.textContent = "DC1–DC5 в эфире" + appLabel;
     heroCard.classList.add("running");
     heroToggleLabel.textContent = "Остановить";
-    heroToggle.querySelector("use").setAttribute("href", "#i-stop");
   } else if ((state.fail || 0) > 0) {
     heroState.textContent = "Ошибки соединения";
     heroSub.textContent = "Перехват активен, сбои подключения к Cloudflare";
     heroCard.classList.add("bad");
     heroToggleLabel.textContent = "Остановить";
-    heroToggle.querySelector("use").setAttribute("href", "#i-stop");
   } else {
     heroState.textContent = "Ожидание трафика";
     heroSub.textContent = "Перехват активен · откройте Telegram" + appLabel;
     heroCard.classList.add("running");
     heroToggleLabel.textContent = "Остановить";
-    heroToggle.querySelector("use").setAttribute("href", "#i-stop");
   }
 
   // Quick stats
