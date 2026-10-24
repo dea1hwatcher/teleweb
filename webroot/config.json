@@ -1,0 +1,6 @@
+{
+  "title": "TG Open",
+  "icon": "module_icon.png",
+  "windowResize": false,
+  "backInterceptor": "javascript"
+}

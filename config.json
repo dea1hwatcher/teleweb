@@ -1,3 +1,6 @@
 {
-  "webui-engine": "ksu"
+  "title": "TG Open",
+  "icon": "webroot/module_icon.png",
+  "windowResize": false,
+  "backInterceptor": "javascript"
 }

@@ -305,6 +305,13 @@ svg.icon.s36 { width: 36px; height: 36px; }
   border-top: none;
   transition: transform var(--dur-medium-long) var(--emphasized-decelerate);
 }
+html.scroll-locked, html.scroll-locked body {
+  overflow: hidden !important;
+  touch-action: none;
+}
+body.kb-open .nav-bar {
+  display: none !important;
+}
 .nav-bar-inner {
   display: flex;
   width: 100%;
@@ -2327,23 +2334,79 @@ function openThemeSheet() {
   const sheet = $('theme-sheet');
   const scrim = $('theme-scrim');
   if (!sheet || !scrim) return;
+  sheet.style.transform = '';
+  sheet.style.transition = '';
   scrim.classList.add('show');
   sheet.classList.add('open');
   drawThemeUI();
   syncPicker(true);
+  if (typeof updateScrollLock === 'function') updateScrollLock();
+  if (typeof scheduleSync === 'function') scheduleSync();
 }
 
 function closeThemeSheet() {
   haptic(8);
   const sheet = $('theme-sheet');
   const scrim = $('theme-scrim');
-  if (sheet) sheet.classList.remove('open');
+  if (sheet) {
+    sheet.classList.remove('open');
+    sheet.style.transform = '';
+  }
   if (scrim) scrim.classList.remove('show');
+  if (typeof updateScrollLock === 'function') updateScrollLock();
+  if (typeof scheduleSync === 'function') scheduleSync();
+}
+
+/* Sheet drag handle gesture: swipe down to dismiss or tap */
+function initSheetDrag(sheet) {
+  if (!sheet) return;
+  const zone = sheet.querySelector('.sheet-drag') || sheet;
+  let y0 = null, dy = 0, dragged = false;
+
+  zone.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('input, button:not(.sheet-drag), .wheel, .swatch-dot')) return;
+    y0 = e.clientY;
+    dy = 0;
+    dragged = false;
+    sheet.style.transition = 'none';
+    try { zone.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  zone.addEventListener('pointermove', (e) => {
+    if (y0 === null) return;
+    dy = Math.max(0, e.clientY - y0);
+    if (dy > 4) dragged = true;
+    sheet.style.transform = 'translateY(' + dy + 'px)';
+  });
+
+  const end = () => {
+    if (y0 === null) return;
+    y0 = null;
+    sheet.style.transition = '';
+    if (dy > Math.min(120, sheet.offsetHeight * 0.25)) {
+      requestAnimationFrame(() => closeThemeSheet());
+    } else {
+      sheet.style.transform = '';
+    }
+  };
+
+  zone.addEventListener('pointerup', end);
+  zone.addEventListener('pointercancel', end);
+  zone.addEventListener('click', (e) => {
+    if (dragged) {
+      dragged = false;
+      return;
+    }
+    if (e.target.closest('.sheet-drag')) {
+      closeThemeSheet();
+    }
+  });
 }
 
 function initTheme() {
   applyTheme();
   initWheel();
+  initSheetDrag($('theme-sheet'));
   if (window.matchMedia) {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
       if (currentMode === 'auto') applyTheme();
@@ -2621,8 +2684,9 @@ async function refresh() {
   render();
 }
 
-// Navigation / Tabs Switching
-const navDests = document.querySelectorAll(".nav-dest");
+// Navigation / Tabs Switching & State
+let currentPage = "control";
+const TABS = ["control", "routing", "apps", "logs"];
 const PAGE_TITLES = {
   control: "Состояние",
   routing: "Маршрутизация",
@@ -2630,33 +2694,230 @@ const PAGE_TITLES = {
   logs: "Журнал"
 };
 
+function navigateTo(pageId) {
+  if (!pageId || !PAGE_TITLES[pageId] || currentPage === pageId) return;
+  currentPage = pageId;
+  haptic(8);
+
+  const navDests = document.querySelectorAll(".nav-dest");
+  navDests.forEach(d => {
+    if (d.getAttribute("data-page") === pageId) {
+      d.setAttribute("aria-current", "page");
+    } else {
+      d.removeAttribute("aria-current");
+    }
+  });
+
+  document.querySelectorAll(".page").forEach(p => {
+    p.classList.remove("active", "enter-fade");
+    if (p.getAttribute("data-page") === pageId) {
+      p.classList.add("active", "enter-fade");
+    }
+  });
+
+  const tEl = $("app-title");
+  if (tEl && PAGE_TITLES[pageId]) {
+    tEl.textContent = PAGE_TITLES[pageId];
+    tEl.classList.remove("swap");
+    void tEl.offsetWidth;
+    tEl.classList.add("swap");
+  }
+
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (typeof scheduleSync === "function") scheduleSync();
+}
+
+const navDests = document.querySelectorAll(".nav-dest");
 navDests.forEach(btn => {
   btn.addEventListener("click", () => {
-    haptic(8);
     const pageId = btn.getAttribute("data-page");
-    if (!pageId) return;
-
-    navDests.forEach(d => d.removeAttribute("aria-current"));
-    btn.setAttribute("aria-current", "page");
-
-    document.querySelectorAll(".page").forEach(p => {
-      p.classList.remove("active", "enter-fade");
-      if (p.getAttribute("data-page") === pageId) {
-        p.classList.add("active", "enter-fade");
-      }
-    });
-
-    const tEl = $("app-title");
-    if (tEl && PAGE_TITLES[pageId]) {
-      tEl.textContent = PAGE_TITLES[pageId];
-      tEl.classList.remove("swap");
-      void tEl.offsetWidth;
-      tEl.classList.add("swap");
-    }
-
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    navigateTo(pageId);
   });
 });
+
+/* Back Interceptor & History Sync (KernelSU / APatch / MMRL Contract) */
+function handleBack(allowExit) {
+  const sheet = $("theme-sheet");
+  if (sheet && sheet.classList.contains("open")) {
+    closeThemeSheet();
+    return true;
+  }
+  if (currentPage !== "control") {
+    navigateTo("control");
+    return true;
+  }
+  return false;
+}
+
+window.onBackKeyPressed = function() {
+  if (handleBack(true)) return;
+  try {
+    if (window.ksu && typeof window.ksu.exit === "function") {
+      window.ksu.exit();
+    }
+  } catch (_) {}
+};
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") handleBack(false);
+});
+
+let histDepth = (history.state && history.state.tg) || 0;
+let histPending = false;
+let syncTimer = 0;
+
+function uiLayers() {
+  let n = (currentPage !== "control") ? 1 : 0;
+  const sheet = $("theme-sheet");
+  if (sheet && sheet.classList.contains("open")) n++;
+  return n;
+}
+
+const canPush = () => !navigator.userActivation || navigator.userActivation.isActive;
+
+function syncHistory() {
+  syncTimer = 0;
+  updateScrollLock();
+  if (histPending) return;
+  const layers = uiLayers(), target = layers ? layers + 1 : 0;
+  try {
+    if (target > histDepth) {
+      if (!canPush()) return;
+      while (histDepth < target) history.pushState({ tg: ++histDepth }, "");
+    } else if (target < histDepth) {
+      histPending = true;
+      history.go(target - histDepth);
+    }
+  } catch (_) {
+    histPending = false;
+  }
+}
+
+function scheduleSync() {
+  if (!syncTimer) syncTimer = setTimeout(syncHistory, 0);
+}
+
+window.addEventListener("popstate", (e) => {
+  const d = (e.state && e.state.tg) || 0;
+  if (histPending) {
+    histPending = false;
+    histDepth = d;
+    scheduleSync();
+    return;
+  }
+  const was = histDepth;
+  histDepth = d;
+  if (d < was) handleBack(true);
+  scheduleSync();
+});
+
+["pointerdown", "keydown"].forEach((ev) => {
+  window.addEventListener(ev, () => setTimeout(syncHistory, 0), true);
+});
+
+/* Lock background scrolling while an overlay is open */
+function updateScrollLock() {
+  const sheet = $("theme-sheet");
+  const lock = !!(sheet && sheet.classList.contains("open"));
+  document.documentElement.classList.toggle("scroll-locked", lock);
+}
+
+/* Virtual Keyboard Viewport Handler: prevent navbar occlusion */
+const isTextInput = (el) => !!el && (el.tagName === "TEXTAREA" ||
+  (el.tagName === "INPUT" && !/^(checkbox|radio|range|button|submit|file|color)$/i.test(el.type)));
+const vpHeight = () => (window.visualViewport ? window.visualViewport.height : window.innerHeight);
+let vpBase = vpHeight(), kbPendingUntil = 0;
+
+function updateKeyboard() {
+  const h = vpHeight(), focused = isTextInput(document.activeElement);
+  if (!focused) vpBase = Math.max(vpBase, h);
+  const open = focused && (vpBase - h > 120 || Date.now() < kbPendingUntil);
+  document.body.classList.toggle("kb-open", open);
+}
+
+document.addEventListener("focusin", (e) => {
+  if (!isTextInput(e.target)) return;
+  kbPendingUntil = Date.now() + 700;
+  updateKeyboard();
+  setTimeout(updateKeyboard, 750);
+});
+document.addEventListener("focusout", () => setTimeout(updateKeyboard, 60));
+(window.visualViewport || window).addEventListener("resize", updateKeyboard);
+window.addEventListener("orientationchange", () => {
+  vpBase = 0;
+  setTimeout(updateKeyboard, 300);
+});
+
+/* Interactive Horizontal Tab Swipe Paging */
+function initTabSwipe() {
+  let x0 = 0, y0 = 0, dx = 0, dy = 0;
+  let tracking = false, locked = false;
+
+  window.addEventListener("pointerdown", (e) => {
+    if (!e.isPrimary) return;
+    if (e.target.closest("input, textarea, select, pre, .sheet, .scrim, #wheel, .wheel, button, .swatch-dot, .switch, .dc-card")) return;
+    
+    // Ignore extreme edges (24px) for Android system back gesture
+    const edgeMargin = 24;
+    if (e.clientX < edgeMargin || e.clientX > window.innerWidth - edgeMargin) return;
+
+    // Do not swipe tabs when bottom sheet modal is open
+    const sheet = $("theme-sheet");
+    if (sheet && sheet.classList.contains("open")) return;
+
+    x0 = e.clientX;
+    y0 = e.clientY;
+    dx = 0;
+    dy = 0;
+    tracking = true;
+    locked = false;
+  }, { passive: true });
+
+  window.addEventListener("pointermove", (e) => {
+    if (!tracking) return;
+    dx = e.clientX - x0;
+    dy = e.clientY - y0;
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+
+    if (!locked) {
+      // Cancel early if vertical movement dominates (>16px) to maintain 120 FPS vertical scrolling
+      if (absY > 16 && absY >= absX) {
+        tracking = false;
+        return;
+      }
+      // Lock horizontal if dominance is clear (>12px and >1.5x vertical)
+      if (absX > 12 && absX > 1.5 * absY) {
+        locked = true;
+      }
+    }
+  }, { passive: true });
+
+  const onEnd = () => {
+    if (!tracking) return;
+    tracking = false;
+    if (!locked) return;
+    locked = false;
+
+    const threshold = 48; // minimum swipe distance
+    if (dx < -threshold) {
+      // Swiped Left -> Next tab
+      const idx = TABS.indexOf(currentPage);
+      if (idx !== -1 && idx < TABS.length - 1) {
+        navigateTo(TABS[idx + 1]);
+      }
+    } else if (dx > threshold) {
+      // Swiped Right -> Previous tab
+      const idx = TABS.indexOf(currentPage);
+      if (idx > 0) {
+        navigateTo(TABS[idx - 1]);
+      }
+    }
+  };
+
+  window.addEventListener("pointerup", onEnd, { passive: true });
+  window.addEventListener("pointercancel", onEnd, { passive: true });
+}
 
 // Hero Toggle (Start / Stop)
 $("hero-toggle").addEventListener("click", async () => {
@@ -2847,8 +3108,9 @@ window.addEventListener("pageshow", () => resumeTransport());
 // Initial theme & bridge run
 try {
   initTheme();
+  initTabSwipe();
 } catch (e) {
-  console.warn("TG Open initTheme:", e);
+  console.warn("TG Open init:", e);
 }
 refresh();
 setInterval(refresh, 3000);

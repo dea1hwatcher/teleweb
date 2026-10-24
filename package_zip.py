@@ -20,6 +20,7 @@ FILES_TO_PACK = [
     
     # Webroot UI
     "webroot/index.html",
+    "webroot/config.json",
     "webroot/module_icon.png",
     
     # Multi-arch binaries
