@@ -3,143 +3,739 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>TG Open</title>
 <style>
+  /* ==========================================================================
+     M3E (Material 3 Expressive) Design System Tokens
+     Compliant with https://matraic.github.io/m3e/ & Material Design 3 Spec
+     Self-contained, Zero-CDN, 100% Offline-Safe for Android Magisk/KernelSU
+     ========================================================================== */
+
   :root {
-    --bg: #101114;
-    --surface: #1a1d24;
-    --surface-2: #232833;
-    --fg: #f3efe6;
-    --muted: #9b9488;
-    --line: #31363f;
-    --accent: #e4f07a;
-    --ink: #1c1e0d;
-    --ok: #b6e3a0;
-    --bad: #f0a394;
+    /* M3 Color System — Dark Palette (Default) */
+    --md-sys-color-primary: #7ed0ff;
+    --md-sys-color-on-primary: #00344f;
+    --md-sys-color-primary-container: #004c70;
+    --md-sys-color-on-primary-container: #c6e7ff;
+    --md-sys-color-secondary: #b6c9d8;
+    --md-sys-color-on-secondary: #21323e;
+    --md-sys-color-secondary-container: #374955;
+    --md-sys-color-on-secondary-container: #d2e5f5;
+    --md-sys-color-tertiary: #cddffb;
+    --md-sys-color-on-tertiary: #19324b;
+    --md-sys-color-surface: #101418;
+    --md-sys-color-surface-dim: #101418;
+    --md-sys-color-surface-bright: #363a3e;
+    --md-sys-color-surface-container-lowest: #0b0f12;
+    --md-sys-color-surface-container-low: #181c20;
+    --md-sys-color-surface-container: #1c2024;
+    --md-sys-color-surface-container-high: #262a2f;
+    --md-sys-color-surface-container-highest: #31353a;
+    --md-sys-color-on-surface: #e0e2e8;
+    --md-sys-color-on-surface-variant: #c1c7ce;
+    --md-sys-color-outline: #8b9198;
+    --md-sys-color-outline-variant: #41474d;
+    --md-sys-color-inverse-surface: #e0e2e8;
+    --md-sys-color-inverse-on-surface: #2d3135;
+    --md-sys-color-error: #ffb4ab;
+    --md-sys-color-on-error: #690005;
+    --md-sys-color-error-container: #93000a;
+    --md-sys-color-on-error-container: #ffdad6;
+    --md-sys-color-success: #85d996;
+    --md-sys-color-on-success: #003915;
+    --md-sys-color-success-container: #005322;
+    --md-sys-color-on-success-container: #a0f6b0;
+
+    /* M3 Typography Scale */
+    --md-sys-typescale-font-family: Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --md-sys-typescale-mono-family: "Roboto Mono", "IBM Plex Mono", ui-monospace, monospace;
+
+    /* M3 Shape System */
+    --md-sys-shape-corner-none: 0px;
+    --md-sys-shape-corner-extra-small: 4px;
+    --md-sys-shape-corner-small: 8px;
+    --md-sys-shape-corner-medium: 12px;
+    --md-sys-shape-corner-large: 16px;
+    --md-sys-shape-corner-extra-large: 28px;
+    --md-sys-shape-corner-full: 9999px;
+
+    /* M3 Motion System */
+    --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+    --md-sys-motion-easing-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
+    --md-sys-motion-duration-short: 150ms;
+    --md-sys-motion-duration-medium: 300ms;
+    --md-sys-motion-duration-long: 500ms;
   }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+
+  /* M3 Light Palette (Adaptive) */
+  @media (prefers-color-scheme: light) {
+    :root {
+      --md-sys-color-primary: #006492;
+      --md-sys-color-on-primary: #ffffff;
+      --md-sys-color-primary-container: #c6e7ff;
+      --md-sys-color-on-primary-container: #001e2f;
+      --md-sys-color-secondary: #4f606e;
+      --md-sys-color-on-secondary: #ffffff;
+      --md-sys-color-secondary-container: #d2e5f5;
+      --md-sys-color-on-secondary-container: #0b1d29;
+      --md-sys-color-tertiary: #63597c;
+      --md-sys-color-on-tertiary: #ffffff;
+      --md-sys-color-surface: #f7f9ff;
+      --md-sys-color-surface-dim: #d7dadf;
+      --md-sys-color-surface-bright: #f7f9ff;
+      --md-sys-color-surface-container-lowest: #ffffff;
+      --md-sys-color-surface-container-low: #f1f4f9;
+      --md-sys-color-surface-container: #ebeef3;
+      --md-sys-color-surface-container-high: #e5e8ee;
+      --md-sys-color-surface-container-highest: #dfe3e8;
+      --md-sys-color-on-surface: #181c20;
+      --md-sys-color-on-surface-variant: #41474d;
+      --md-sys-color-outline: #71787e;
+      --md-sys-color-outline-variant: #c1c7ce;
+      --md-sys-color-inverse-surface: #2d3135;
+      --md-sys-color-inverse-on-surface: #f0f0f5;
+      --md-sys-color-error: #ba1a1a;
+      --md-sys-color-on-error: #ffffff;
+      --md-sys-color-error-container: #ffdad6;
+      --md-sys-color-on-error-container: #410002;
+      --md-sys-color-success: #1b6d34;
+      --md-sys-color-on-success: #ffffff;
+      --md-sys-color-success-container: #a0f6b0;
+      --md-sys-color-on-success-container: #00210a;
+    }
+  }
+
+  /* Reset & Base Elements */
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html, body {
+    background: var(--md-sys-color-surface);
+    color: var(--md-sys-color-on-surface);
+    font-family: var(--md-sys-typescale-font-family);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
   body {
-    font: 16px/1.45 "Outfit", "Segoe UI", Roboto, sans-serif;
     min-height: 100dvh;
-    padding: 20px 16px calc(28px + env(safe-area-inset-bottom));
+    padding: calc(16px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));
   }
-  main { max-width: 440px; margin: 0 auto; }
-  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px; }
-  h1 { margin: 0; font-size: 28px; font-weight: 650; letter-spacing: -0.04em; }
-  .mark { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; letter-spacing: 0.14em; color: var(--muted); }
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 22px;
-    padding: 18px;
+
+  main {
+    max-width: 448px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
-  .card + .card { margin-top: 12px; }
-  .row { display: flex; align-items: center; gap: 14px; }
-  .grow { flex: 1; min-width: 0; }
-  .title { font-size: 18px; font-weight: 620; letter-spacing: -0.02em; }
-  .hint { color: var(--muted); font-size: 13px; margin-top: 3px; }
-  button.switch {
-    width: 64px; height: 36px; border: 0; border-radius: 999px;
-    background: var(--surface-2); position: relative; padding: 0; flex: none;
+
+  /* ==========================================================================
+     M3E Component: Top App Bar
+     ========================================================================== */
+  .m3-app-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 4px 16px;
+    gap: 12px;
   }
-  button.switch i {
-    position: absolute; top: 4px; left: 4px; width: 28px; height: 28px;
-    border-radius: 50%; background: var(--muted); transition: transform .2s ease, background .2s ease;
+
+  .m3-app-bar-leading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
   }
-  button.switch[aria-checked="true"] { background: var(--accent); }
-  button.switch[aria-checked="true"] i { transform: translateX(28px); background: var(--ink); }
-  .status { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
-  .status.on { color: var(--ok); }
-  .status.bad { color: var(--bad); }
-  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
+
+  .m3-app-bar-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--md-sys-shape-corner-medium);
+    background: var(--md-sys-color-primary-container);
+    color: var(--md-sys-color-on-primary-container);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  }
+
+  .m3-app-bar-icon svg {
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+  }
+
+  .m3-app-bar-titles {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .m3-app-bar-title {
+    font-size: 22px;
+    font-weight: 600;
+    line-height: 28px;
+    letter-spacing: -0.01em;
+    color: var(--md-sys-color-on-surface);
+  }
+
+  .m3-app-bar-subtitle {
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 16px;
+    letter-spacing: 0.02em;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  /* M3E Chip */
+  .m3-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: var(--md-sys-shape-corner-small);
+    background: var(--md-sys-color-surface-container-high);
+    border: 1px solid var(--md-sys-color-outline-variant);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--md-sys-color-on-surface-variant);
+    letter-spacing: 0.02em;
+    flex: none;
+  }
+
+  .m3-chip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--md-sys-color-outline);
+    transition: background var(--md-sys-motion-duration-short) ease;
+  }
+
+  .m3-chip-dot.active {
+    background: var(--md-sys-color-success);
+    box-shadow: 0 0 6px var(--md-sys-color-success);
+  }
+
+  /* ==========================================================================
+     M3E Component: Card (Filled / Elevated)
+     ========================================================================== */
+  .m3-card {
+    background: var(--md-sys-color-surface-container-low);
+    border-radius: var(--md-sys-shape-corner-large);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    transition: background-color var(--md-sys-motion-duration-medium) ease,
+                border-color var(--md-sys-motion-duration-medium) ease;
+  }
+
+  .m3-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .m3-card-title-group {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .m3-card-title {
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 24px;
+    letter-spacing: -0.01em;
+    color: var(--md-sys-color-on-surface);
+  }
+
+  .m3-card-hint {
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 18px;
+    color: var(--md-sys-color-on-surface-variant);
+    margin-top: 2px;
+  }
+
+  /* ==========================================================================
+     M3E Component: Switch (52x32dp spec-compliant)
+     ========================================================================== */
+  .m3-switch-wrapper {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+
+  button.m3-switch {
+    width: 52px;
+    height: 32px;
+    border-radius: var(--md-sys-shape-corner-full);
+    border: 2px solid var(--md-sys-color-outline);
+    background: var(--md-sys-color-surface-container-highest);
+    position: relative;
+    padding: 0;
+    cursor: pointer;
+    outline: none;
+    transition: background var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+                border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Switch Thumb */
+  button.m3-switch .m3-switch-thumb {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--md-sys-color-outline);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized),
+                width var(--md-sys-motion-duration-short) ease,
+                height var(--md-sys-motion-duration-short) ease,
+                background var(--md-sys-motion-duration-short) ease;
+  }
+
+  button.m3-switch .m3-switch-icon {
+    width: 14px;
+    height: 14px;
+    fill: var(--md-sys-color-on-primary-container);
+    opacity: 0;
+    transform: scale(0.5);
+    transition: opacity var(--md-sys-motion-duration-short) ease,
+                transform var(--md-sys-motion-duration-short) ease;
+  }
+
+  /* Checked State */
+  button.m3-switch[aria-checked="true"] {
+    background: var(--md-sys-color-primary);
+    border-color: var(--md-sys-color-primary);
+  }
+
+  button.m3-switch[aria-checked="true"] .m3-switch-thumb {
+    top: 2px;
+    left: 2px;
+    width: 24px;
+    height: 24px;
+    transform: translateX(20px);
+    background: var(--md-sys-color-on-primary);
+  }
+
+  button.m3-switch[aria-checked="true"] .m3-switch-icon {
+    opacity: 1;
+    transform: scale(1);
+    fill: var(--md-sys-color-primary);
+  }
+
+  /* Press / Active Feedback */
+  button.m3-switch:active .m3-switch-thumb {
+    width: 28px;
+  }
+
+  /* Strong Focus */
+  button.m3-switch:focus-visible,
+  .m3-button:focus-visible,
+  .dc:focus-visible {
+    outline: 3px solid var(--md-sys-color-primary);
+    outline-offset: 3px;
+  }
+
+  /* ==========================================================================
+     Status Banner
+     ========================================================================== */
+  .m3-status-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    margin-top: 14px;
+    color: var(--md-sys-color-on-surface-variant);
+    padding: 8px 12px;
+    border-radius: var(--md-sys-shape-corner-small);
+    background: var(--md-sys-color-surface-container);
+    transition: background-color var(--md-sys-motion-duration-short) ease,
+                color var(--md-sys-motion-duration-short) ease;
+  }
+
+  .m3-status-banner.on {
+    background: var(--md-sys-color-success-container);
+    color: var(--md-sys-color-on-success-container);
+  }
+
+  .m3-status-banner.bad {
+    background: var(--md-sys-color-error-container);
+    color: var(--md-sys-color-on-error-container);
+  }
+
+  .m3-status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+  }
+
+  /* ==========================================================================
+     M3E Component: DC Matrix Grid
+     ========================================================================== */
+  .m3-dc-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 14px;
+  }
+
   .dc {
-    background: var(--surface-2);
-    border-radius: 14px;
-    min-height: 78px;
+    background: var(--md-sys-color-surface-container-high);
+    border: 1px solid transparent;
+    border-radius: var(--md-sys-shape-corner-medium);
+    min-height: 76px;
     padding: 10px 4px 8px;
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: background-color var(--md-sys-motion-duration-short) ease,
+                border-color var(--md-sys-motion-duration-short) ease,
+                transform var(--md-sys-motion-duration-short) ease;
   }
-  .dc b { display: block; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 16px; font-weight: 500; }
-  .dc span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; letter-spacing: 0.02em; }
-  .dc em { display: block; margin-top: 8px; font-style: normal; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; color: var(--muted); }
-  .dc.live { box-shadow: inset 0 0 0 1px var(--accent); }
-  .dc.live em { color: var(--accent); }
-  .meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 13px; }
-  .meta strong { color: var(--fg); font-weight: 560; }
-  .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
-  .stat { min-width: 0; padding: 12px; border-radius: 14px; background: var(--surface-2); }
-  .stat .label { color: var(--muted); font-size: 12px; }
-  .stat .value { margin-top: 4px; font: 600 17px/1.3 "IBM Plex Mono", ui-monospace, monospace; overflow-wrap: anywhere; }
-  .stat .sub { margin-top: 4px; color: var(--muted); font-size: 11px; }
-  .tools { display: flex; gap: 8px; margin-top: 14px; }
-  button.ghost {
-    min-height: 44px; border-radius: 12px; border: 1px solid var(--line);
-    background: transparent; color: var(--fg); padding: 0 14px; font: inherit;
+
+  .dc b {
+    display: block;
+    font-family: var(--md-sys-typescale-mono-family);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--md-sys-color-on-surface);
   }
-  pre {
-    display: none; margin: 12px 0 0; white-space: pre-wrap; word-break: break-word;
-    background: #0c0e12; border-radius: 14px; padding: 12px;
-    font: 12px/1.45 "IBM Plex Mono", ui-monospace, monospace; color: var(--muted);
-    max-height: 240px; overflow: auto;
+
+  .dc span {
+    display: block;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--md-sys-color-on-surface-variant);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  pre.show { display: block; }
+
+  .dc em {
+    display: block;
+    font-style: normal;
+    font-family: var(--md-sys-typescale-mono-family);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--md-sys-color-outline);
+    margin-top: 4px;
+  }
+
+  .dc.live {
+    background: var(--md-sys-color-primary-container);
+    border-color: var(--md-sys-color-primary);
+  }
+
+  .dc.live b {
+    color: var(--md-sys-color-on-primary-container);
+  }
+
+  .dc.live span {
+    color: var(--md-sys-color-on-primary-container);
+    opacity: 0.85;
+  }
+
+  .dc.live em {
+    color: var(--md-sys-color-on-primary-container);
+    font-weight: 700;
+  }
+
+  /* Meta Footer */
+  .m3-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--md-sys-color-outline-variant);
+    font-size: 13px;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .m3-meta-row strong {
+    font-family: var(--md-sys-typescale-mono-family);
+    color: var(--md-sys-color-on-surface);
+    font-weight: 600;
+  }
+
+  /* ==========================================================================
+     M3E Component: Metrics & Stats
+     ========================================================================== */
+  .m3-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .m3-stats-grid.cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  @media (max-width: 380px) {
+    .m3-stats-grid.cols-3 {
+      grid-template-columns: repeat(1, minmax(0, 1fr));
+    }
+  }
+
+  .m3-stat-item {
+    background: var(--md-sys-color-surface-container);
+    border-radius: var(--md-sys-shape-corner-medium);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .m3-stat-label {
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 16px;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .m3-stat-value {
+    font-family: var(--md-sys-typescale-mono-family);
+    font-size: 17px;
+    font-weight: 600;
+    line-height: 24px;
+    color: var(--md-sys-color-primary);
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+  }
+
+  .m3-stat-sub {
+    font-size: 11px;
+    line-height: 15px;
+    color: var(--md-sys-color-outline);
+    margin-top: 3px;
+  }
+
+  /* ==========================================================================
+     M3E Component: Buttons & Diagnostics
+     ========================================================================== */
+  .m3-button-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  button.m3-button {
+    height: 40px;
+    min-width: 84px;
+    padding: 0 16px;
+    border-radius: var(--md-sys-shape-corner-full);
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: var(--md-sys-color-surface-container-high);
+    color: var(--md-sys-color-primary);
+    font-family: var(--md-sys-typescale-font-family);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: background-color var(--md-sys-motion-duration-short) ease,
+                border-color var(--md-sys-motion-duration-short) ease,
+                box-shadow var(--md-sys-motion-duration-short) ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button.m3-button:active {
+    background: var(--md-sys-color-surface-container-highest);
+  }
+
+  button.m3-button svg {
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+  }
+
+  /* Pre Log Viewer */
+  pre.m3-log-viewer {
+    display: none;
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: var(--md-sys-color-surface-container-lowest);
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--md-sys-shape-corner-medium);
+    font-family: var(--md-sys-typescale-mono-family);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--md-sys-color-on-surface-variant);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+
+  pre.m3-log-viewer.show {
+    display: block;
+  }
+
+  /* ==========================================================================
+     M3E Component: Snackbar
+     ========================================================================== */
   #toast {
-    position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom));
-    max-width: 440px; margin: 0 auto; background: var(--surface-2); color: var(--fg);
-    border-radius: 14px; padding: 12px 14px; display: none;
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    max-width: 448px;
+    margin: 0 auto;
+    background: var(--md-sys-color-inverse-surface);
+    color: var(--md-sys-color-inverse-on-surface);
+    border-radius: var(--md-sys-shape-corner-small);
+    padding: 14px 16px;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 20px;
+    box-shadow: 0 3px 5px -1px rgba(0,0,0,.2), 0 6px 10px 0 rgba(0,0,0,.14), 0 1px 18px 0 rgba(0,0,0,.12);
+    display: none;
+    z-index: 9999;
+    align-items: center;
+    justify-content: space-between;
   }
+
+  /* Motion Accessibility */
   @media (prefers-reduced-motion: reduce) {
-    button.switch i { transition: none; }
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
   }
 </style>
 </head>
 <body>
 <main>
-  <header>
-    <h1>TG Open</h1>
-    <div class="mark">WEBSOCKET</div>
-  </header>
-  <section class="card">
-    <div class="row">
-      <div class="grow">
-        <div class="title">Обход блокировки</div>
-        <div class="hint">DC1–DC5 через WebSocket. Прокси в Telegram не нужен.</div>
+  <!-- M3 Top App Bar -->
+  <header class="m3-app-bar">
+    <div class="m3-app-bar-leading">
+      <div class="m3-app-bar-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 2L4 5V11.09C4 16.14 7.41 20.85 12 22C16.59 20.85 20 16.14 20 11.09V5L12 2ZM18 11.09C18 15.09 15.45 18.79 12 19.92C8.55 18.79 6 15.09 6 11.09V6.39L12 4.14L18 6.39V11.09Z"/></svg>
       </div>
-      <button id="sw" class="switch" type="button" role="switch" aria-checked="false" aria-label="Обход блокировки">
-        <i></i>
+      <div class="m3-app-bar-titles">
+        <h1 class="m3-app-bar-title">TG Open</h1>
+        <span class="m3-app-bar-subtitle">MTProto · WebSocket Bypass</span>
+      </div>
+    </div>
+    <div class="m3-chip" aria-label="Версия модуля">
+      <span class="m3-chip-dot" id="chipDot"></span>
+      <span>v2.1.48</span>
+    </div>
+  </header>
+
+  <!-- Card 1: Main Control & DC Matrix -->
+  <section class="m3-card">
+    <div class="m3-card-header">
+      <div class="m3-card-title-group">
+        <h2 class="m3-card-title">Обход блокировки</h2>
+        <div class="m3-card-hint">DC1–DC5 через WebSocket. Прокси в Telegram не нужен.</div>
+      </div>
+      <div class="m3-switch-wrapper">
+        <button id="sw" class="m3-switch" type="button" role="switch" aria-checked="false" aria-label="Обход блокировки Telegram">
+          <span class="m3-switch-thumb">
+            <svg class="m3-switch-icon" viewBox="0 0 24 24"><path d="M9.55 18L3.85 12.3L5.275 10.875L9.55 15.15L18.725 5.975L20.15 7.4L9.55 18Z"/></svg>
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <div id="status" class="m3-status-banner">
+      <span class="m3-status-indicator"></span>
+      <span id="statusText">Выключен</span>
+    </div>
+
+    <div class="m3-dc-grid" id="grid"></div>
+
+    <div class="m3-meta-row">
+      <span>Активно сейчас: <strong id="active">0</strong></span>
+      <span>Всего сессий: <strong id="ws">0</strong></span>
+    </div>
+  </section>
+
+  <!-- Card 2: Memory Diagnostics -->
+  <section class="m3-card">
+    <h2 class="m3-card-title">Потребление памяти</h2>
+    <div class="m3-stats-grid">
+      <div class="m3-stat-item">
+        <span class="m3-stat-label">Сейчас (RSS)</span>
+        <span class="m3-stat-value" id="memNow">—</span>
+        <span class="m3-stat-sub">Физическая память процесса</span>
+      </div>
+      <div class="m3-stat-item">
+        <span class="m3-stat-label">Пик с запуска</span>
+        <span class="m3-stat-value" id="memPeak">—</span>
+        <span class="m3-stat-sub">Максимальный RSS</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Card 3: Telegram Traffic Stats -->
+  <section class="m3-card">
+    <h2 class="m3-card-title">Обработанный трафик Telegram</h2>
+    <div class="m3-stats-grid cols-3">
+      <div class="m3-stat-item">
+        <span class="m3-stat-label">Всего</span>
+        <span class="m3-stat-value" id="trafficTotal">0 Б</span>
+        <span class="m3-stat-sub">С момента старта</span>
+      </div>
+      <div class="m3-stat-item">
+        <span class="m3-stat-label">Отправлено</span>
+        <span class="m3-stat-value" id="trafficUp">0 Б</span>
+        <span class="m3-stat-sub">Клиент → WSS</span>
+      </div>
+      <div class="m3-stat-item">
+        <span class="m3-stat-label">Получено</span>
+        <span class="m3-stat-value" id="trafficDown">0 Б</span>
+        <span class="m3-stat-sub">WSS → клиент</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Card 4: Diagnostics & Journal -->
+  <section class="m3-card">
+    <div class="m3-button-row">
+      <button id="logbtn" class="m3-button" type="button" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><path d="M19 3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19V5C21 3.9 20.1 3 19 3ZM19 19H5V5H19V19ZM7 10H17V12H7V10ZM7 14H14V16H7V14ZM7 6H17V8H7V6Z"/></svg>
+        <span>Журнал</span>
       </button>
     </div>
-    <p id="status" class="status">Выключен</p>
-    <div class="grid" id="grid"></div>
-    <div class="meta">
-      <span>Сейчас <strong id="active">0</strong></span>
-      <span>Сессий <strong id="ws">0</strong></span>
-    </div>
-  </section>
-  <section class="card">
-    <div class="title">Потребление памяти</div>
-    <div class="stats">
-      <div class="stat"><div class="label">Сейчас (RSS)</div><div class="value" id="memNow">—</div><div class="sub">Физическая память процесса</div></div>
-      <div class="stat"><div class="label">Пик с запуска</div><div class="value" id="memPeak">—</div><div class="sub">Максимальный RSS</div></div>
-    </div>
-  </section>
-  <section class="card">
-    <div class="title">Обработанный трафик Telegram</div>
-    <div class="stats">
-      <div class="stat"><div class="label">Всего</div><div class="value" id="trafficTotal">0 Б</div><div class="sub">С момента запуска демона</div></div>
-      <div class="stat"><div class="label">Отправлено</div><div class="value" id="trafficUp">0 Б</div><div class="sub">Клиент → WSS</div></div>
-      <div class="stat"><div class="label">Получено</div><div class="value" id="trafficDown">0 Б</div><div class="sub">WSS → клиент</div></div>
-    </div>
-  </section>
-  <section class="card">
-    <div class="tools">
-      <button id="logbtn" class="ghost" type="button">Журнал</button>
-    </div>
-    <pre id="log"></pre>
+    <pre id="log" class="m3-log-viewer" aria-live="polite"></pre>
   </section>
 </main>
-<div id="toast"></div>
+
+<!-- M3 Snackbar -->
+<div id="toast" role="status" aria-live="polite"></div>
+
 <script>
 const BIN = "/data/adb/modules/tgopen/bin/tgws";
 const DCS = [
@@ -151,13 +747,16 @@ const DCS = [
 ];
 const $ = (id) => document.getElementById(id);
 const grid = $("grid");
+
 DCS.forEach(([id, city]) => {
   const el = document.createElement("div");
   el.className = "dc";
   el.id = "dc" + id;
+  el.setAttribute("tabindex", "0");
   el.innerHTML = "<b>" + id + "</b><span>" + city + "</span><em>0</em>";
   grid.appendChild(el);
 });
+
 function formatBytes(value) {
   const n = Math.max(0, Number(value) || 0);
   if (n >= 1e9) return (n / 1e9).toFixed(n >= 10e9 ? 1 : 2).replace(/\.?0+$/, "") + " ГБ";
@@ -165,22 +764,26 @@ function formatBytes(value) {
   if (n >= 1e3) return (n / 1e3).toFixed(n >= 100e3 ? 0 : 1).replace(/\.?0+$/, "") + " КБ";
   return Math.round(n) + " Б";
 }
+
 function toast(msg) {
   const t = $("toast");
   t.textContent = msg;
-  t.style.display = "block";
+  t.style.display = "flex";
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { t.style.display = "none"; }, 2800);
 }
+
 function b64(s) {
   const bytes = new TextEncoder().encode(s);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
   return btoa(bin);
 }
+
 function hasBridge() {
   return typeof window.ksu !== "undefined" && typeof ksu.exec === "function";
 }
+
 function kexec(cmd) {
   return new Promise((resolve, reject) => {
     if (!hasBridge()) { reject(new Error("Откройте панель из Magisk, KernelSU или APatch")); return; }
@@ -195,11 +798,12 @@ function kexec(cmd) {
     setTimeout(() => {
       if (!done) {
         delete window[cb];
-        reject(new Error("Таймаут"));
+        reject(new Error("Таймаут выполнения команды"));
       }
     }, 20000);
   });
 }
+
 async function api(cmd, extra) {
   const payload = b64(JSON.stringify(Object.assign({ cmd }, extra || {})));
   const r = await kexec(BIN + " api '" + payload + "'");
@@ -210,22 +814,49 @@ async function api(cmd, extra) {
   if (!j.ok) throw new Error(j.error || "ошибка");
   return j.data;
 }
+
 let state = null;
 let busy = false;
 let refreshing = false;
+
 function render() {
   const on = !!(state && state.enabled);
   $("sw").setAttribute("aria-checked", on ? "true" : "false");
+  
   const st = $("status");
-  st.className = "status";
-  if (!state) { st.textContent = "Нет данных"; return; }
+  const stText = $("statusText") || st;
+  const chipDot = $("chipDot");
+  st.className = "m3-status-banner";
+  
+  if (!state) { 
+    stText.textContent = "Нет данных";
+    if (chipDot) chipDot.className = "m3-chip-dot";
+    return; 
+  }
+  
   const apps = (state.apps || []).map((a) => a.name).filter((v, i, arr) => arr.indexOf(v) === i);
   const appLabel = apps.length ? " · " + apps.join(", ") : "";
-  if (!on) st.textContent = "Выключен";
-  else if (!state.running) { st.textContent = "Перехватчик не запущен"; st.classList.add("bad"); }
-  else if ((state.ws || 0) > 0) { st.textContent = "WebSocket активен" + appLabel; st.classList.add("on"); }
-  else if ((state.fail || 0) > 0) { st.textContent = "Перехват запущен · ошибки соединения"; st.classList.add("bad"); }
-  else { st.textContent = "Перехват запущен · ожидание соединений" + appLabel; }
+  
+  if (!on) {
+    stText.textContent = "Выключен";
+    if (chipDot) chipDot.className = "m3-chip-dot";
+  } else if (!state.running) {
+    stText.textContent = "Перехватчик не запущен";
+    st.classList.add("bad");
+    if (chipDot) chipDot.className = "m3-chip-dot";
+  } else if ((state.ws || 0) > 0) {
+    stText.textContent = "WebSocket активен" + appLabel;
+    st.classList.add("on");
+    if (chipDot) chipDot.className = "m3-chip-dot active";
+  } else if ((state.fail || 0) > 0) {
+    stText.textContent = "Перехват запущен · ошибки соединения";
+    st.classList.add("bad");
+    if (chipDot) chipDot.className = "m3-chip-dot";
+  } else {
+    stText.textContent = "Перехват запущен · ожидание соединений" + appLabel;
+    if (chipDot) chipDot.className = "m3-chip-dot active";
+  }
+  
   const dc = (state && state.dc) || {};
   DCS.forEach(([id]) => {
     const el = $("dc" + id);
@@ -233,6 +864,7 @@ function render() {
     el.querySelector("em").textContent = String(n);
     el.classList.toggle("live", n > 0);
   });
+  
   $("active").textContent = String((state && state.active) || 0);
   $("ws").textContent = String((state && state.ws) || 0);
   $("memNow").textContent = formatBytes(state.memNowBytes);
@@ -240,16 +872,29 @@ function render() {
   $("trafficTotal").textContent = formatBytes(state.trafficTotalBytes);
   $("trafficUp").textContent = formatBytes(state.trafficUpBytes);
   $("trafficDown").textContent = formatBytes(state.trafficDownBytes);
-  if ($("log").classList.contains("show") && state.log) $("log").textContent = state.log || "Пусто";
+  
+  if ($("log").classList.contains("show") && state.log) {
+    $("log").textContent = state.log || "Пусто";
+  }
 }
+
 async function refresh() {
   if (refreshing || busy) return;
   refreshing = true;
-  try { state = await api("status"); }
-  catch (e) { $("status").textContent = e.message; $("status").className = "status bad"; return; }
-  finally { refreshing = false; }
+  try { 
+    state = await api("status"); 
+  } catch (e) { 
+    const st = $("status");
+    const stText = $("statusText") || st;
+    stText.textContent = e.message;
+    st.className = "m3-status-banner bad";
+    return; 
+  } finally { 
+    refreshing = false; 
+  }
   render();
 }
+
 $("sw").addEventListener("click", async () => {
   if (busy) return;
   const next = $("sw").getAttribute("aria-checked") !== "true";
@@ -264,31 +909,40 @@ $("sw").addEventListener("click", async () => {
   busy = false;
   render();
 });
+
 $("logbtn").addEventListener("click", async () => {
   const pre = $("log");
   const show = !pre.classList.contains("show");
   pre.classList.toggle("show", show);
+  $("logbtn").setAttribute("aria-expanded", show ? "true" : "false");
   if (!show) return;
   pre.textContent = "…";
   try {
     if (!state) state = await api("status");
     pre.textContent = (state && state.log) || "Пока пусто. Включите обход и откройте Telegram.";
-  } catch (e) { pre.textContent = e.message; }
+  } catch (e) { 
+    pre.textContent = e.message; 
+  }
 });
-// On returning from Android's app switcher, reassert interception rules
-// without toggling the module or restarting a healthy daemon.
+
 let lastResumeAt = 0;
 async function resumeTransport() {
   const now = Date.now();
   if (busy || now - lastResumeAt < 5000) return;
   lastResumeAt = now;
-  try { state = await api("resume"); render(); }
-  catch (e) { console.warn("TG Open resume:", e); }
+  try { 
+    state = await api("resume"); 
+    render(); 
+  } catch (e) { 
+    console.warn("TG Open resume:", e); 
+  }
 }
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") resumeTransport();
 });
 window.addEventListener("pageshow", () => resumeTransport());
+
 refresh();
 setInterval(refresh, 3000);
 </script>
