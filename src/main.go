@@ -65,6 +65,7 @@ var (
 	routeCacheDisk   = map[string]persistedRoute{}
 	routeHealthMu    sync.Mutex
 	routeHealth      = map[string]routeHealthState{} // host -> repeated early remote-close state
+	cfBalanceSeq     uint64
 	ioBufPool        = sync.Pool{
 		New: func() any {
 			b := make([]byte, 32*1024)
@@ -211,11 +212,19 @@ type Status struct {
 	TrafficDownBytes  int64          `json:"trafficDownBytes"`
 	TrafficTotalBytes int64          `json:"trafficTotalBytes"`
 	Log               string         `json:"log"`
+	CFPriority        bool           `json:"cfPriority"`
+	CFBalance         bool           `json:"cfBalance"`
+	CustomCFDomain    string         `json:"customCFDomain"`
+	DCOverrides       string         `json:"dcOverrides"`
 }
 
 type apiRequest struct {
-	Cmd     string `json:"cmd"`
-	Enabled *bool  `json:"enabled"`
+	Cmd            string  `json:"cmd"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	CFPriority     *bool   `json:"cfPriority,omitempty"`
+	CFBalance      *bool   `json:"cfBalance,omitempty"`
+	CustomCFDomain *string `json:"customCFDomain,omitempty"`
+	DCOverrides    *string `json:"dcOverrides,omitempty"`
 }
 
 func envOr(k, d string) string {
@@ -327,6 +336,131 @@ func writeEnabled(v bool) error {
 		s = "1\n"
 	}
 	return os.WriteFile(path("enabled"), []byte(s), 0600)
+}
+
+func readCFPriority() bool {
+	b, err := os.ReadFile(path("cf-priority"))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == "1"
+}
+
+func writeCFPriority(v bool) error {
+	ensureDir()
+	s := "0\n"
+	if v {
+		s = "1\n"
+	}
+	return os.WriteFile(path("cf-priority"), []byte(s), 0600)
+}
+
+func readCFBalance() bool {
+	b, err := os.ReadFile(path("cf-balance"))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == "1"
+}
+
+func writeCFBalance(v bool) error {
+	ensureDir()
+	s := "0\n"
+	if v {
+		s = "1\n"
+	}
+	return os.WriteFile(path("cf-balance"), []byte(s), 0600)
+}
+
+func readCustomCFDomain() string {
+	b, err := os.ReadFile(path("custom-cf-domain"))
+	if err != nil {
+		return ""
+	}
+	d := strings.ToLower(strings.TrimSpace(string(b)))
+	if d != "" && domainPattern.MatchString(d) && !strings.HasSuffix(d, ".web.telegram.org") && d != "web.telegram.org" {
+		return d
+	}
+	return ""
+}
+
+func writeCustomCFDomain(d string) error {
+	ensureDir()
+	d = strings.ToLower(strings.TrimSpace(d))
+	if d == "" {
+		_ = os.Remove(path("custom-cf-domain"))
+		return nil
+	}
+	if !domainPattern.MatchString(d) || strings.HasSuffix(d, ".web.telegram.org") || d == "web.telegram.org" {
+		return fmt.Errorf("недопустимый домен: %s", d)
+	}
+	return os.WriteFile(path("custom-cf-domain"), []byte(d+"\n"), 0600)
+}
+
+func readDCOverridesRaw() string {
+	b, err := os.ReadFile(path("dc-override"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func readDCOverrides() map[int]string {
+	raw := readDCOverridesRaw()
+	if raw == "" {
+		return nil
+	}
+	out := make(map[int]string)
+	pairs := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t' || r == ';'
+	})
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		dc, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || dc < 1 || dc > 5 {
+			continue
+		}
+		ipStr := strings.TrimSpace(parts[1])
+		addr, err := netip.ParseAddr(ipStr)
+		if err == nil && addr.IsValid() && addr.Is4() {
+			out[dc] = addr.String()
+		}
+	}
+	return out
+}
+
+func writeDCOverrides(raw string) error {
+	ensureDir()
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		_ = os.Remove(path("dc-override"))
+		return nil
+	}
+	pairs := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t' || r == ';'
+	})
+	var cleaned []string
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("неверный формат пары DC:IP (%s)", pair)
+		}
+		dc, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || dc < 1 || dc > 5 {
+			return fmt.Errorf("недопустимый номер DC (1-5): %s", parts[0])
+		}
+		ipStr := strings.TrimSpace(parts[1])
+		addr, err := netip.ParseAddr(ipStr)
+		if err != nil || !addr.IsValid() || !addr.Is4() {
+			return fmt.Errorf("недопустимый IPv4 адрес для DC%d: %s", dc, ipStr)
+		}
+		cleaned = append(cleaned, fmt.Sprintf("%d:%s", dc, addr.String()))
+	}
+	content := strings.Join(cleaned, ", ") + "\n"
+	return os.WriteFile(path("dc-override"), []byte(content), 0600)
 }
 func pidAlive() bool {
 	b, e := os.ReadFile(path("tgws.pid"))
@@ -1067,7 +1201,27 @@ func currentStatus() Status {
 	memNow, memPeak := processMemoryBytes()
 	up := atomic.LoadInt64(&trafficUpBytes)
 	down := atomic.LoadInt64(&trafficDownBytes)
-	return Status{Enabled: readEnabled(), Running: true, Uptime: int64(time.Since(startAt).Seconds()), Port: defaultPort, Apps: apps, Active: atomic.LoadInt64(&active), WS: atomic.LoadInt64(&wsCount), Fail: atomic.LoadInt64(&failCnt), DC: dc, MemNowBytes: memNow, MemPeakBytes: memPeak, TrafficUpBytes: up, TrafficDownBytes: down, TrafficTotalBytes: up + down, Log: tailLog(60)}
+	return Status{
+		Enabled:           readEnabled(),
+		Running:           true,
+		Uptime:            int64(time.Since(startAt).Seconds()),
+		Port:              defaultPort,
+		Apps:              apps,
+		Active:            atomic.LoadInt64(&active),
+		WS:                atomic.LoadInt64(&wsCount),
+		Fail:              atomic.LoadInt64(&failCnt),
+		DC:                dc,
+		MemNowBytes:       memNow,
+		MemPeakBytes:      memPeak,
+		TrafficUpBytes:    up,
+		TrafficDownBytes:  down,
+		TrafficTotalBytes: up + down,
+		Log:               tailLog(60),
+		CFPriority:        readCFPriority(),
+		CFBalance:         readCFBalance(),
+		CustomCFDomain:    readCustomCFDomain(),
+		DCOverrides:       readDCOverridesRaw(),
+	}
 }
 func status() Status {
 	if b, e := os.ReadFile(path("tgws.pid")); e == nil {
@@ -1084,10 +1238,29 @@ func status() Status {
 			s.Running = pidAlive()
 			s.Apps = apps
 			s.Log = tailLog(60)
+			s.CFPriority = readCFPriority()
+			s.CFBalance = readCFBalance()
+			s.CustomCFDomain = readCustomCFDomain()
+			s.DCOverrides = readDCOverridesRaw()
 			return s
 		}
 	}
-	return Status{Enabled: readEnabled(), Running: pidAlive(), Uptime: int64(time.Since(startAt).Seconds()), Port: defaultPort, Apps: apps, Active: atomic.LoadInt64(&active), WS: atomic.LoadInt64(&wsCount), Fail: atomic.LoadInt64(&failCnt), DC: map[string]int{}, Log: tailLog(60)}
+	return Status{
+		Enabled:        readEnabled(),
+		Running:        pidAlive(),
+		Uptime:         int64(time.Since(startAt).Seconds()),
+		Port:           defaultPort,
+		Apps:           apps,
+		Active:         atomic.LoadInt64(&active),
+		WS:             atomic.LoadInt64(&wsCount),
+		Fail:           atomic.LoadInt64(&failCnt),
+		DC:             map[string]int{},
+		Log:            tailLog(60),
+		CFPriority:     readCFPriority(),
+		CFBalance:      readCFBalance(),
+		CustomCFDomain: readCustomCFDomain(),
+		DCOverrides:    readDCOverridesRaw(),
+	}
 }
 func writeStatus() {
 	s := currentStatus()
@@ -1140,31 +1313,53 @@ func apiMain(arg string) {
 		}
 		logf("WebUI resume: правила перехвата повторно применены без перезапуска живого демона")
 		emitOK(status())
-	case "set":
-		if q.Enabled == nil {
-			emitErr(errors.New("нет параметра enabled"))
-			return
-		}
-		if err := writeEnabled(*q.Enabled); err != nil {
-			emitErr(err)
-			return
-		}
-		if *q.Enabled {
-			if err := setupRules(); err != nil {
-				_ = writeEnabled(false)
+	case "set", "setConfig":
+		if q.Enabled != nil {
+			if err := writeEnabled(*q.Enabled); err != nil {
 				emitErr(err)
 				return
 			}
-			if err := ensureServer(); err != nil {
+			if *q.Enabled {
+				if err := setupRules(); err != nil {
+					_ = writeEnabled(false)
+					emitErr(err)
+					return
+				}
+				if err := ensureServer(); err != nil {
+					emitErr(err)
+					return
+				}
+				if err := ensureWatchdog(); err != nil {
+					logf("не удалось запустить watchdog: %v", err)
+				}
+			} else {
+				stopWatchdog()
+				stopServer()
+			}
+		}
+		if q.CFPriority != nil {
+			if err := writeCFPriority(*q.CFPriority); err != nil {
 				emitErr(err)
 				return
 			}
-			if err := ensureWatchdog(); err != nil {
-				logf("не удалось запустить watchdog: %v", err)
+		}
+		if q.CFBalance != nil {
+			if err := writeCFBalance(*q.CFBalance); err != nil {
+				emitErr(err)
+				return
 			}
-		} else {
-			stopWatchdog()
-			stopServer()
+		}
+		if q.CustomCFDomain != nil {
+			if err := writeCustomCFDomain(*q.CustomCFDomain); err != nil {
+				emitErr(err)
+				return
+			}
+		}
+		if q.DCOverrides != nil {
+			if err := writeDCOverrides(*q.DCOverrides); err != nil {
+				emitErr(err)
+				return
+			}
 		}
 		emitOK(status())
 	default:
@@ -1756,9 +1951,11 @@ func wsHostsForDC(dc int, isMedia bool) []string {
 }
 
 func preferredIngressForDC(dc int) string {
-	// Experimental DC1 ingress based on the endpoint mapping supplied for this
-	// device. If it fails, dialTelegramWS still falls back to the CF-fronted
-	// WSS routes. Keep the known DC2/DC4 ingress unchanged.
+	if overrides := readDCOverrides(); len(overrides) > 0 {
+		if ip, ok := overrides[dc]; ok && ip != "" {
+			return ip
+		}
+	}
 	switch dc {
 	case 1:
 		// Telegram Desktop built-in production DC1 endpoint is 149.154.175.50.
@@ -1782,28 +1979,38 @@ var builtInCFDomains = []string{
 var domainPattern = regexp.MustCompile(`^(?i)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 func cfDomains() []string {
+	var list []string
 	if b, err := os.ReadFile(path("cf-domains")); err == nil {
 		input := strings.Split(string(b), "\n")
 		seen := map[string]bool{}
-		out := make([]string, 0, len(input))
 		for _, raw := range input {
 			d := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
 			if d == "" || strings.HasPrefix(d, "#") || !domainPattern.MatchString(d) || d == "web.telegram.org" || strings.HasSuffix(d, ".web.telegram.org") || seen[d] {
 				continue
 			}
 			seen[d] = true
-			out = append(out, d)
+			list = append(list, d)
 		}
-		if len(out) > 0 {
-			return out
+	}
+	if len(list) == 0 {
+		if dyn := getDynamicCFDomains(); len(dyn) > 0 {
+			list = dyn
+		} else {
+			list = append([]string(nil), builtInCFDomains...)
 		}
 	}
 
-	if dyn := getDynamicCFDomains(); len(dyn) > 0 {
-		return dyn
+	if custom := readCustomCFDomain(); custom != "" {
+		out := make([]string, 0, len(list)+1)
+		out = append(out, custom)
+		for _, d := range list {
+			if d != custom {
+				out = append(out, d)
+			}
+		}
+		return out
 	}
-
-	return append([]string(nil), builtInCFDomains...)
+	return list
 }
 
 func routeKey(dc int, isMedia bool) string {
@@ -2020,34 +2227,34 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 	resolver := androidDNSResolver()
 	var errorsSeen []string
 
-	// Honor the measured route before attempting the direct ingress. This is the
-	// adaptive policy used by the original module: Cloudflare first when direct
-	// is blocked or materially slower, with periodic re-measurement.
-	if v, ok := routeChoice.Load(key); ok {
-		if choice, ok := v.(routeDecision); ok {
-			if time.Now().Before(choice.expires) && choice.preferCF && choice.host != "" && !routeCoolingDown(choice.host) {
-				if ws, err := dialCFHost(ctx, resolver, choice.host); err == nil {
-					return ws, nil
-				} else {
-					logf("DC%d media=%t сохранённый маршрут %s отказал: %v; повторный подбор", dc, isMedia, choice.host, err)
-					cfHostCache.Delete(key)
+	cfPriority := readCFPriority()
+	cfBalance := readCFBalance()
+
+	// Honor the measured route before attempting the direct ingress.
+	if !cfBalance {
+		if v, ok := routeChoice.Load(key); ok {
+			if choice, ok := v.(routeDecision); ok {
+				if time.Now().Before(choice.expires) && choice.preferCF && choice.host != "" && !routeCoolingDown(choice.host) {
+					if ws, err := dialCFHost(ctx, resolver, choice.host); err == nil {
+						return ws, nil
+					} else {
+						logf("DC%d media=%t сохранённый маршрут %s отказал: %v; повторный подбор", dc, isMedia, choice.host, err)
+						cfHostCache.Delete(key)
+						routeChoice.Delete(key)
+					}
+				} else if !time.Now().Before(choice.expires) {
 					routeChoice.Delete(key)
 				}
-			} else if !time.Now().Before(choice.expires) {
-				routeChoice.Delete(key)
 			}
 		}
 	}
 
 	// DC1 previously succeeded on this device via kws1.pclead.co.uk. Try that
 	// observed-good WSS route first, then the documented DC1 ingress 149.154.175.50.
-	// If unavailable, continue through the remaining direct/CF fallbacks.
-	if dc == 1 {
+	if dc == 1 && !cfBalance {
 		const preferredDC1Host = "kws1.pclead.co.uk"
 		// Do not blindly retry the hard-coded DC1 host after the health tracker
-		// has cooled it down. Previously this branch ran before cached-route and
-		// route-pool selection, so the same early-EOF host could add 2-3 seconds
-		// to every reconnect despite being marked unhealthy.
+		// has cooled it down.
 		if !routeCoolingDown(preferredDC1Host) {
 			if ws, err := dialCFHost(ctx, resolver, preferredDC1Host); err == nil {
 				cfHostCache.Store(key, preferredDC1Host)
@@ -2065,27 +2272,35 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 	}
 
 	// Fast path: use the last known-good cached Cloudflare route before any
-	// direct-ingress timeout or multi-host discovery. This avoids adding 1-3 s
-	// to every app reconnect after Android closes the client's TCP sockets.
-	if cached, ok := cfHostCache.Load(key); ok {
-		if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
-			if ws, err := dialCFHost(ctx, resolver, host); err == nil && ws != nil {
-				routeChoice.Store(key, routeDecision{preferCF: true, host: host, expires: time.Now().Add(6 * time.Hour)})
-				saveRouteCache(key, host, nil)
-				return ws, nil
-			} else if err != nil {
-				errorsSeen = append(errorsSeen, host+": cached route: "+err.Error())
-				cfHostCache.Delete(key)
+	// direct-ingress timeout or multi-host discovery.
+	if !cfBalance {
+		if cached, ok := cfHostCache.Load(key); ok {
+			if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
+				if ws, err := dialCFHost(ctx, resolver, host); err == nil && ws != nil {
+					routeChoice.Store(key, routeDecision{preferCF: true, host: host, expires: time.Now().Add(6 * time.Hour)})
+					saveRouteCache(key, host, nil)
+					return ws, nil
+				} else if err != nil {
+					errorsSeen = append(errorsSeen, host+": cached route: "+err.Error())
+					cfHostCache.Delete(key)
+				}
 			}
 		}
 	}
 
 	// Prefer hosts preflighted by the background route-pool worker before
-	// starting a fresh multi-host discovery batch. These are route candidates,
-	// not reusable tunnels: every client still gets its own WSS connection.
+	// starting a fresh multi-host discovery batch.
 	if pooled, ok := routePool.Load(key); ok {
-		if candidates, ok := pooled.([]routeCandidate); ok {
-			for _, candidate := range candidates {
+		if candidates, ok := pooled.([]routeCandidate); ok && len(candidates) > 0 {
+			orderedCandidates := candidates
+			if cfBalance && len(candidates) > 1 {
+				offset := int(atomic.AddUint64(&cfBalanceSeq, 1) % uint64(len(candidates)))
+				orderedCandidates = make([]routeCandidate, len(candidates))
+				for i := range candidates {
+					orderedCandidates[i] = candidates[(offset+i)%len(candidates)]
+				}
+			}
+			for _, candidate := range orderedCandidates {
 				if candidate.host == "" || routeCoolingDown(candidate.host) {
 					continue
 				}
@@ -2093,21 +2308,25 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 				ws, err := dialCFHost(attemptCtx, resolver, candidate.host)
 				cancel()
 				if err == nil && ws != nil {
-					cfHostCache.Store(key, candidate.host)
-					routeChoice.Store(key, routeDecision{preferCF: true, host: candidate.host, expires: time.Now().Add(6 * time.Hour)})
-					saveRouteCache(key, candidate.host, nil)
+					if !cfBalance {
+						cfHostCache.Store(key, candidate.host)
+						routeChoice.Store(key, routeDecision{preferCF: true, host: candidate.host, expires: time.Now().Add(6 * time.Hour)})
+						saveRouteCache(key, candidate.host, nil)
+					}
 					return ws, nil
 				}
 			}
 		}
 	}
 
-	tryDirect := true
-	if v, ok := directFailUntil.Load(key); ok {
-		if until, ok := v.(time.Time); ok && time.Now().Before(until) {
-			tryDirect = false
-		} else {
-			directFailUntil.Delete(key)
+	tryDirect := !cfPriority
+	if tryDirect {
+		if v, ok := directFailUntil.Load(key); ok {
+			if until, ok := v.(time.Time); ok && time.Now().Before(until) {
+				tryDirect = false
+			} else {
+				directFailUntil.Delete(key)
+			}
 		}
 	}
 	if tryDirect {
@@ -2176,6 +2395,14 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 	domains := cfDomains()
 	if len(domains) == 0 {
 		return nil, fmt.Errorf("direct WSS failed and no Cloudflare domains configured: %s", strings.Join(errorsSeen, " | "))
+	}
+	if cfBalance && len(domains) > 1 {
+		offset := int(atomic.AddUint64(&cfBalanceSeq, 1) % uint64(len(domains)))
+		rotated := make([]string, len(domains))
+		for i := range domains {
+			rotated[i] = domains[(offset+i)%len(domains)]
+		}
+		domains = rotated
 	}
 	// Try four domains concurrently per batch. For media, try the -1 hostname
 	// first; Telegram documents it as an alternate hostname with a higher

@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -666,5 +667,174 @@ func TestRouteCachePersistence(t *testing.T) {
 	}
 	if candidates[0].host != testCandidates[0].host || candidates[0].latency != testCandidates[0].latency {
 		t.Errorf("candidate 0 mismatch: %#v vs %#v", candidates[0], testCandidates[0])
+	}
+}
+
+func TestCustomCFDomainPrecedence(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tgopen-custom-domain-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	if got := readCustomCFDomain(); got != "" {
+		t.Errorf("expected empty custom domain initially, got %s", got)
+	}
+
+	custom := "my-custom-cf.workers.dev"
+	if err := writeCustomCFDomain(custom); err != nil {
+		t.Fatalf("failed to write custom domain: %v", err)
+	}
+
+	if got := readCustomCFDomain(); got != custom {
+		t.Fatalf("readCustomCFDomain() = %q, want %q", got, custom)
+	}
+
+	domains := cfDomains()
+	if len(domains) == 0 {
+		t.Fatal("expected non-empty domains list")
+	}
+	if domains[0] != custom {
+		t.Errorf("expected custom domain %q as first element, got %q", custom, domains[0])
+	}
+
+	// Clearing custom domain
+	if err := writeCustomCFDomain(""); err != nil {
+		t.Fatalf("failed to clear custom domain: %v", err)
+	}
+	if got := readCustomCFDomain(); got != "" {
+		t.Errorf("expected empty domain after clear, got %s", got)
+	}
+}
+
+func TestDCOverridesParsing(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tgopen-dc-overrides-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	input := "1:149.154.175.55, 2:149.154.167.50, 4:149.154.167.99"
+	if err := writeDCOverrides(input); err != nil {
+		t.Fatalf("writeDCOverrides failed: %v", err)
+	}
+
+	overrides := readDCOverrides()
+	if len(overrides) != 3 {
+		t.Fatalf("expected 3 overrides, got %d: %#v", len(overrides), overrides)
+	}
+	if overrides[1] != "149.154.175.55" || overrides[2] != "149.154.167.50" || overrides[4] != "149.154.167.99" {
+		t.Errorf("overrides mismatch: %#v", overrides)
+	}
+
+	// Check preferredIngressForDC respects override
+	if got := preferredIngressForDC(1); got != "149.154.175.55" {
+		t.Errorf("preferredIngressForDC(1) = %q, want %q", got, "149.154.175.55")
+	}
+
+	// Invalid input format validation
+	badInput := "99:not-an-ip"
+	if err := writeDCOverrides(badInput); err == nil {
+		t.Error("expected error on invalid DC override input")
+	}
+}
+
+func TestCFPriorityAndBalanceStorage(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tgopen-flags-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	if readCFPriority() {
+		t.Error("expected cfPriority to be false by default")
+	}
+	if err := writeCFPriority(true); err != nil {
+		t.Fatal(err)
+	}
+	if !readCFPriority() {
+		t.Error("expected cfPriority to be true after write")
+	}
+
+	if readCFBalance() {
+		t.Error("expected cfBalance to be false by default")
+	}
+	if err := writeCFBalance(true); err != nil {
+		t.Fatal(err)
+	}
+	if !readCFBalance() {
+		t.Error("expected cfBalance to be true after write")
+	}
+}
+
+func TestApiMainSetConfig(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tgopen-api-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	cfPri := true
+	cfBal := true
+	customDom := "worker.test-api.co.uk"
+	dcOver := "1:149.154.175.50, 2:149.154.167.220"
+
+	req := apiRequest{
+		Cmd:            "setConfig",
+		CFPriority:     &cfPri,
+		CFBalance:      &cfBal,
+		CustomCFDomain: &customDom,
+		DCOverrides:    &dcOver,
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(b)
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	apiMain(encoded)
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+
+	var resp struct {
+		OK   bool   `json:"ok"`
+		Data Status `json:"data"`
+	}
+	if err := json.Unmarshal(outBytes, &resp); err != nil {
+		t.Fatalf("failed to parse API response: %v, raw: %s", err, string(outBytes))
+	}
+	if !resp.OK {
+		t.Fatalf("expected ok=true in API response, got: %s", string(outBytes))
+	}
+	if !resp.Data.CFPriority || !resp.Data.CFBalance || resp.Data.CustomCFDomain != customDom || resp.Data.DCOverrides != dcOver {
+		t.Errorf("status data mismatch in API response: %#v", resp.Data)
+	}
+
+	if !readCFPriority() || !readCFBalance() || readCustomCFDomain() != customDom || readDCOverridesRaw() != dcOver {
+		t.Errorf("persisted configuration mismatch: cfPriority=%t cfBalance=%t customDomain=%s dcOverrides=%s",
+			readCFPriority(), readCFBalance(), readCustomCFDomain(), readDCOverridesRaw())
 	}
 }
