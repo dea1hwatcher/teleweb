@@ -16,8 +16,8 @@
   color-scheme: dark light;
 
   /* Typography scale */
-  --md-font: Roboto, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --md-font-code: "Roboto Mono", "Cascadia Mono", ui-monospace, monospace;
+  --md-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --md-font-code: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --ts-display-large: 57px;   --lh-display-large: 64px;
   --ts-display-medium: 45px;  --lh-display-medium: 52px;
   --ts-headline-large: 32px;  --lh-headline-large: 40px;
@@ -548,7 +548,6 @@ html.no-anim *::after {
 .hstat-value {
   width: 100%;
   text-align: center;
-  font-family: var(--md-font-code);
   font-size: var(--ts-title-medium);
   line-height: var(--lh-title-medium);
   font-weight: var(--w-bold);
@@ -602,55 +601,61 @@ html.no-anim *::after {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
+  padding: 4px 0;
 }
 .dc-card {
-  background: var(--md-sys-color-surface-container-high);
+  background: transparent;
   border: none;
-  border-radius: var(--shape-medium);
-  min-height: 80px;
-  padding: 10px 4px 8px;
+  border-radius: 0;
+  min-height: auto;
+  padding: 4px 0;
   text-align: center;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  transition: background-color var(--dur-short) ease,
-              transform var(--dur-short) ease;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  transition: opacity var(--dur-short) ease;
 }
 .dc-card b {
   display: block;
-  font-family: var(--md-font-code);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: var(--w-bold);
   color: var(--md-sys-color-on-surface);
+  line-height: 18px;
 }
 .dc-card span {
   display: block;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: var(--w-medium);
   color: var(--md-sys-color-on-surface-variant);
+  line-height: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  width: 100%;
 }
 .dc-card em {
   display: block;
   font-style: normal;
-  font-family: var(--md-font-code);
-  font-size: 13px;
+  font-size: 16px;
+  line-height: 22px;
   font-weight: var(--w-bold);
+  font-variant-numeric: tabular-nums;
   color: var(--md-sys-color-outline);
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .dc-card.live {
-  background: var(--md-sys-color-primary-container);
+  background: transparent;
 }
-.dc-card.live b,
+.dc-card.live b {
+  color: var(--md-sys-color-primary);
+}
 .dc-card.live em {
-  color: var(--md-sys-color-on-primary-container);
+  color: var(--md-sys-color-primary);
 }
 .dc-card.live span {
-  color: var(--md-sys-color-on-primary-container);
-  opacity: .85;
+  color: var(--md-sys-color-on-surface);
 }
 
 .meta-row {
@@ -664,7 +669,7 @@ html.no-anim *::after {
   color: var(--md-sys-color-on-surface-variant);
 }
 .meta-row strong {
-  font-family: var(--md-font-code);
+  font-variant-numeric: tabular-nums;
   color: var(--md-sys-color-on-surface);
   font-weight: var(--w-bold);
 }
@@ -847,7 +852,7 @@ html.no-anim *::after {
   -webkit-appearance: none;
   color: var(--md-sys-color-on-surface);
   caret-color: var(--md-sys-color-primary);
-  font-family: var(--md-font-code);
+  font-family: inherit;
   font-size: var(--ts-body-medium);
 }
 .tf input::placeholder {
@@ -951,7 +956,7 @@ html.no-anim *::after {
   color: var(--md-sys-color-on-surface-variant);
 }
 .stat-num {
-  font-family: var(--md-font-code);
+  font-variant-numeric: tabular-nums;
   font-size: 20px;
   font-weight: var(--w-bold);
   line-height: 26px;
@@ -1375,7 +1380,8 @@ html.no-anim *::after {
   border: none;
   background: transparent;
   color: var(--md-sys-color-on-surface);
-  font-family: var(--md-font-code);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
   font-size: var(--ts-body-medium);
   font-weight: var(--w-bold);
   width: 100%;
@@ -2450,7 +2456,6 @@ DCS.forEach(([id, city]) => {
   const el = document.createElement("div");
   el.className = "dc-card";
   el.id = "dc" + id;
-  el.setAttribute("tabindex", "0");
   el.innerHTML = "<b>DC" + id + "</b><span>" + city + "</span><em>0</em>";
   dcGrid.appendChild(el);
 });
@@ -2888,7 +2893,7 @@ function initTabSwipe() {
 
   window.addEventListener("pointerdown", (e) => {
     if (!e.isPrimary) return;
-    if (e.target.closest("input, textarea, select, pre, .sheet, .scrim, #wheel, .wheel, button, .swatch-dot, .switch, .dc-card")) return;
+    if (e.target.closest("input, textarea, select, pre, .sheet, .scrim, #wheel, .wheel, button, .swatch-dot, .switch")) return;
     
     // Ignore extreme edges (24px) for Android system back gesture
     const edgeMargin = 24;
