@@ -1157,3 +1157,105 @@ func TestRaceCandidatesContextCancel(t *testing.T) {
 		t.Fatal("expected error on context timeout")
 	}
 }
+
+func TestWorkerCooldownAndRateLimit(t *testing.T) {
+	host := "test-worker-rate-limit.workers.dev"
+	clearWorkerCooldown(host)
+	defer clearWorkerCooldown(host)
+
+	if isWorkerInCooldown(host) {
+		t.Fatal("worker should not start in cooldown")
+	}
+
+	rle := &RateLimitError{StatusCode: 429, RetryAfter: 5 * time.Second, Message: "error code: 1015"}
+	if !strings.Contains(rle.Error(), "HTTP 429") || !strings.Contains(rle.Error(), "retry after 5s") {
+		t.Fatalf("unexpected RateLimitError string: %s", rle.Error())
+	}
+
+	markWorkerCooldown(host, rle.RetryAfter)
+	if !isWorkerInCooldown(host) {
+		t.Fatal("worker should be in cooldown after markWorkerCooldown")
+	}
+
+	clearWorkerCooldown(host)
+	if isWorkerInCooldown(host) {
+		t.Fatal("worker should not be in cooldown after clearWorkerCooldown")
+	}
+
+	// Exponential backoff test (strike 1 -> 30s)
+	markWorkerCooldown(host, 0)
+	v, ok := workerCooldowns.Load(host)
+	if !ok {
+		t.Fatal("workerCooldowns entry missing")
+	}
+	state := v.(workerCooldownState)
+	if state.strikes != 1 {
+		t.Fatalf("expected strike 1, got %d", state.strikes)
+	}
+	rem := time.Until(state.until)
+	if rem < 25*time.Second || rem > 35*time.Second {
+		t.Fatalf("expected cooldown ~30s, got %v", rem)
+	}
+
+	// Strike 2 -> 60s
+	markWorkerCooldown(host, 0)
+	v, ok = workerCooldowns.Load(host)
+	if !ok {
+		t.Fatal("workerCooldowns entry missing")
+	}
+	state = v.(workerCooldownState)
+	if state.strikes != 2 {
+		t.Fatalf("expected strike 2, got %d", state.strikes)
+	}
+	rem = time.Until(state.until)
+	if rem < 55*time.Second || rem > 65*time.Second {
+		t.Fatalf("expected cooldown ~60s, got %v", rem)
+	}
+}
+
+func TestDCLearnAndPersistence(t *testing.T) {
+	oldBase := baseDir
+	tmp := t.TempDir()
+	baseDir = tmp
+	defer func() { baseDir = oldBase }()
+
+	ip := "198.51.100.99"
+	learnedDCs.Delete(ip)
+	defer learnedDCs.Delete(ip)
+
+	if _, _, ok := lookupLearnedDC(ip); ok {
+		t.Fatal("IP should not be learned yet")
+	}
+
+	learnDC(ip, 4, true)
+
+	dc, isMedia, ok := lookupLearnedDC(ip)
+	if !ok || dc != 4 || !isMedia {
+		t.Fatalf("learnDC failed: got dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
+	}
+
+	addr := netip.MustParseAddr(ip)
+	if got := dcFor(addr); got != 4 {
+		t.Fatalf("dcFor(%s) = %d; want 4", ip, got)
+	}
+	if got := mediaForIP(addr); !got {
+		t.Fatalf("mediaForIP(%s) = false; want true", ip)
+	}
+
+	// Trigger persistence and reload
+	persistLearnedDCs()
+
+	// Clear memory map
+	learnedDCs.Delete(ip)
+	if _, _, ok := lookupLearnedDC(ip); ok {
+		t.Fatal("IP should be cleared from memory")
+	}
+
+	// Reload from disk
+	loadLearnedDCs()
+	dc, isMedia, ok = lookupLearnedDC(ip)
+	if !ok || dc != 4 || !isMedia {
+		t.Fatalf("loadLearnedDCs failed to restore: got dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
+	}
+}
+

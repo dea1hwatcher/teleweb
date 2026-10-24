@@ -1,7 +1,7 @@
 id=teleweb
 name=TeleWEB
-version=v2.1.48-multiarch
-versionCode=250
+version=v2.1.49-multiarch
+versionCode=251
 author=TeleWEB
-description=TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5). Поддержка Cloudflare domain fronting, автообновление CF доменов, zero-alloc буферы, нормализация DC 203, защита от Doze/Cgroups. Поддержка архитектур: ARM64, ARM, x86, x86_64.
+description=TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5). Защита звонков (STUN/TURN bypass), экспоненциальный кулдаун воркеров 429/503, динамический dc-learn MTProto, WebUI с экспортом логов и темами. Архитектуры: ARM64, ARM, x86, x86_64.
 webuiIcon=webroot/module_icon.png

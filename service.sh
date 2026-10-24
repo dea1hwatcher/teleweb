@@ -44,6 +44,12 @@ done
 # 3. Boot TeleWEB service (iptables redirection + daemon + watchdog)
 "$MODDIR/bin/tgws" boot >>/data/adb/teleweb/supervisor.log 2>&1
 
+# 3.1 Protect Telegram voice and video calls (UDP STUN 3478, TURN 596-599) from DPI interception (Zapret / nfqws)
+iptables -t mangle -C PREROUTING -p udp -m multiport --dports 3478,596:599 -j RETURN 2>/dev/null || \
+iptables -t mangle -I PREROUTING 1 -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null
+ip6tables -t mangle -C PREROUTING -p udp -m multiport --dports 3478,596:599 -j RETURN 2>/dev/null || \
+ip6tables -t mangle -I PREROUTING 1 -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null
+
 # 4. Supervisor loop to ensure daemon and rules stay active across network changes
 while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do
   sleep 60

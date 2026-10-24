@@ -764,6 +764,167 @@ func iptCleanup(bin string, uids []int, chain string) {
 	_ = runCmd(bin, "-t", "nat", "-F", chain)
 	_ = runCmd(bin, "-t", "nat", "-X", chain)
 }
+
+func setupCallsBypass(bin string) {
+	if bin == "" {
+		return
+	}
+	if runCmd(bin, "-t", "mangle", "-C", "PREROUTING", "-p", "udp", "-m", "multiport", "--dports", "3478,596:599", "-m", "comment", "--comment", "teleweb-calls", "-j", "RETURN") != nil {
+		_ = runCmd(bin, "-t", "mangle", "-I", "PREROUTING", "1", "-p", "udp", "-m", "multiport", "--dports", "3478,596:599", "-m", "comment", "--comment", "teleweb-calls", "-j", "RETURN")
+	}
+}
+
+func cleanupCallsBypass(bin string) {
+	if bin == "" {
+		return
+	}
+	for i := 0; i < 4; i++ {
+		if runCmd(bin, "-t", "mangle", "-D", "PREROUTING", "-p", "udp", "-m", "multiport", "--dports", "3478,596:599", "-m", "comment", "--comment", "teleweb-calls", "-j", "RETURN") != nil {
+			break
+		}
+	}
+}
+
+type RateLimitError struct {
+	StatusCode int
+	RetryAfter time.Duration
+	Message    string
+}
+
+func (e *RateLimitError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("HTTP %d (retry after %v): %s", e.StatusCode, e.RetryAfter, e.Message)
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Message)
+}
+
+type workerCooldownState struct {
+	until   time.Time
+	strikes int
+}
+
+var workerCooldowns sync.Map // host -> workerCooldownState
+
+func isWorkerInCooldown(host string) bool {
+	if v, ok := workerCooldowns.Load(host); ok {
+		cd := v.(workerCooldownState)
+		if time.Now().Before(cd.until) {
+			return true
+		}
+	}
+	return false
+}
+
+func markWorkerCooldown(host string, retryAfter time.Duration) {
+	var strikes int
+	if v, ok := workerCooldowns.Load(host); ok {
+		strikes = v.(workerCooldownState).strikes + 1
+	} else {
+		strikes = 1
+	}
+	if retryAfter <= 0 {
+		shift := strikes - 1
+		if shift > 5 {
+			shift = 5
+		}
+		delay := 30 * time.Second * (1 << shift)
+		if delay > 15*time.Minute {
+			delay = 15 * time.Minute
+		}
+		retryAfter = delay
+	}
+	workerCooldowns.Store(host, workerCooldownState{
+		until:   time.Now().Add(retryAfter),
+		strikes: strikes,
+	})
+	logf("worker %s: rate limited (HTTP 429/503); quarantined for %v", host, retryAfter)
+}
+
+func clearWorkerCooldown(host string) {
+	workerCooldowns.Delete(host)
+}
+
+type learnedDCEntry struct {
+	DC      int  `json:"dc"`
+	IsMedia bool `json:"is_media"`
+}
+
+var (
+	learnedDCs     sync.Map // ipStr -> learnedDCEntry
+	learnedDCMu    sync.Mutex
+	learnedDCDirty bool
+)
+
+func loadLearnedDCs() {
+	b, err := os.ReadFile(path("dc-learned.json"))
+	if err != nil {
+		return
+	}
+	var saved map[string]learnedDCEntry
+	if err := json.Unmarshal(b, &saved); err != nil {
+		return
+	}
+	count := 0
+	for ip, entry := range saved {
+		if entry.DC >= 1 && (entry.DC <= 5 || entry.DC == 203) {
+			learnedDCs.Store(ip, entry)
+			count++
+		}
+	}
+	if count > 0 {
+		logf("dc-learn: restored %d learned IP->DC endpoints from storage", count)
+	}
+}
+
+func persistLearnedDCs() {
+	learnedDCMu.Lock()
+	defer learnedDCMu.Unlock()
+	if !learnedDCDirty {
+		return
+	}
+	m := make(map[string]learnedDCEntry)
+	learnedDCs.Range(func(key, value any) bool {
+		m[key.(string)] = value.(learnedDCEntry)
+		return true
+	})
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := path("dc-learned.json.tmp")
+	dst := path("dc-learned.json")
+	if err := os.WriteFile(tmp, b, 0600); err == nil {
+		_ = os.Rename(tmp, dst)
+		learnedDCDirty = false
+	}
+}
+
+func learnDC(ip string, dc int, isMedia bool) {
+	if dc < 1 || (dc > 5 && dc != 203) || ip == "" {
+		return
+	}
+	if val, ok := learnedDCs.Load(ip); ok {
+		entry := val.(learnedDCEntry)
+		if entry.DC == dc && entry.IsMedia == isMedia {
+			return
+		}
+	}
+	learnedDCs.Store(ip, learnedDCEntry{DC: dc, IsMedia: isMedia})
+	learnedDCMu.Lock()
+	learnedDCDirty = true
+	learnedDCMu.Unlock()
+	go persistLearnedDCs()
+	logf("dc-learn: learned endpoint %s -> DC%d media=%t", ip, dc, isMedia)
+}
+
+func lookupLearnedDC(ip string) (int, bool, bool) {
+	if val, ok := learnedDCs.Load(ip); ok {
+		entry := val.(learnedDCEntry)
+		return entry.DC, entry.IsMedia, true
+	}
+	return 0, false, false
+}
+
 func setupRules() error {
 	apps, uids := installedApps()
 	if len(uids) == 0 {
@@ -772,6 +933,8 @@ func setupRules() error {
 	if err := iptSetup(findBin("iptables"), uids, telegramV4, "TELEWEB", "IPv4"); err != nil {
 		return err
 	}
+	setupCallsBypass(findBin("iptables"))
+	setupCallsBypass(findBin("ip6tables"))
 	logf("redirection enabled; apps: %s", appNames(apps))
 	return nil
 }
@@ -788,6 +951,8 @@ func cleanupRules() {
 	// Clean up the previous release's IPv6 redirect chain even though this
 	// experimental build does not install new IPv6 redirects.
 	iptCleanup(findBin("ip6tables"), uids, "TELEWEB")
+	cleanupCallsBypass(findBin("iptables"))
+	cleanupCallsBypass(findBin("ip6tables"))
 }
 func ensureServer() error {
 	if pidAlive() {
@@ -1583,6 +1748,7 @@ func serve() {
 	// Load last-known-good routes before accepting any client sockets. Otherwise
 	// a burst of connections at boot can race the cache load and trigger a full scan.
 	loadRouteCache()
+	loadLearnedDCs()
 	startCFDomainsUpdater(context.Background())
 	ln, e := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort))
 	if e != nil {
@@ -1645,6 +1811,9 @@ func dcFor(ip netip.Addr) int {
 	ip = ip.Unmap()
 	if !ip.Is4() {
 		return 0
+	}
+	if dc, _, ok := lookupLearnedDC(ip.String()); ok {
+		return dc
 	}
 	if d := knownDCMap[ip.String()]; d != 0 {
 		return d
@@ -1775,7 +1944,9 @@ func handleClient(c net.Conn) {
 		return
 	}
 	dc, isMedia, parsed := parseMTProtoDC(init)
-	if !parsed {
+	if parsed {
+		learnDC(orig.Addr().String(), dc, isMedia)
+	} else {
 		dc = dcFor(orig.Addr())
 		isMedia = mediaForIP(orig.Addr())
 		logf("conn #%d %s: DC not recognized in init, fallback by IP -> DC%d media=%t", id, orig, dc, isMedia)
@@ -2060,6 +2231,9 @@ func mediaForIP(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	if !ip.Is4() {
 		return false
+	}
+	if _, isMedia, ok := lookupLearnedDC(ip.String()); ok {
+		return isMedia
 	}
 	// Exact media endpoints observed in Telegram client/proxy tables. This is
 	// only a fallback for clients whose init DC field is random (useSecret=0).
@@ -3105,7 +3279,17 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("HTTP %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			var retryAfter time.Duration
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if sec, err := strconv.Atoi(strings.TrimSpace(ra)); err == nil && sec > 0 {
+					retryAfter = time.Duration(sec) * time.Second
+				}
+			}
+			return nil, &RateLimitError{StatusCode: resp.StatusCode, RetryAfter: retryAfter, Message: msg}
+		}
+		return nil, fmt.Errorf("HTTP %s: %s", resp.Status, msg)
 	}
 	want := base64.StdEncoding.EncodeToString(sha1Sum([]byte(key + wsGUID)))
 	if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("Sec-WebSocket-Accept")), want) {
@@ -3193,6 +3377,10 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string) (*wsConn, e
 		host = host[:slash]
 	}
 
+	if isWorkerInCooldown(host) {
+		return nil, fmt.Errorf("worker %s is in rate limit cooldown", host)
+	}
+
 	path := fmt.Sprintf("/apiws?dst=%s&dc=%d", dstIP, dc)
 	if query != "" {
 		path += "&" + query
@@ -3222,7 +3410,13 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string) (*wsConn, e
 		ws, e := finishWorkerWS(attemptCtx, raw, host, path)
 		cancel()
 		if e == nil {
+			clearWorkerCooldown(host)
 			return ws, nil
+		}
+		var rle *RateLimitError
+		if errors.As(e, &rle) {
+			markWorkerCooldown(host, rle.RetryAfter)
+			return nil, e
 		}
 		lastErr = e
 	}
