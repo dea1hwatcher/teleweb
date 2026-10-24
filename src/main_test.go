@@ -625,7 +625,7 @@ func TestNoteRouteHTTPFailureCooldown(t *testing.T) {
 }
 
 func TestRouteCachePersistence(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "tgopen-route-cache-test-*")
+	tmpDir, err := os.MkdirTemp("", "teleweb-route-cache-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +675,7 @@ func TestRouteCachePersistence(t *testing.T) {
 }
 
 func TestCustomCFDomainPrecedence(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "tgopen-custom-domain-*")
+	tmpDir, err := os.MkdirTemp("", "teleweb-custom-domain-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,7 +716,7 @@ func TestCustomCFDomainPrecedence(t *testing.T) {
 }
 
 func TestDCOverridesParsing(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "tgopen-dc-overrides-*")
+	tmpDir, err := os.MkdirTemp("", "teleweb-dc-overrides-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -752,7 +752,7 @@ func TestDCOverridesParsing(t *testing.T) {
 }
 
 func TestCFPriorityAndBalanceStorage(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "tgopen-flags-*")
+	tmpDir, err := os.MkdirTemp("", "teleweb-flags-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -784,7 +784,7 @@ func TestCFPriorityAndBalanceStorage(t *testing.T) {
 }
 
 func TestApiMainSetConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "tgopen-api-*")
+	tmpDir, err := os.MkdirTemp("", "teleweb-api-*")
 	if err != nil {
 		t.Fatal(err)
 	}

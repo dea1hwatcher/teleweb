@@ -1,4 +1,4 @@
-module tgopen
+module teleweb
 
 go 1.24
 

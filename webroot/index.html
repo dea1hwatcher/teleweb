@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#121316">
-<title>TG Open</title>
+<title>TeleWEB</title>
 <style>
 /* ==========================================================================
-   TG Open WebUI — Material 3 Expressive Design System
+   TeleWEB WebUI — Material 3 Expressive Design System
    Based on nfqws2-android architecture & M3 Expressive guidelines
    Self-contained, Zero-CDN, 100% Offline-Safe for Android Magisk/KernelSU/APatch
    ========================================================================== */
@@ -1645,7 +1645,7 @@ body.kb-open .nav-bar {
         <div class="list-item two-line">
           <span class="li-icon"><svg class="icon s20"><use href="#i-shield"/></svg></span>
           <span class="li-text">
-            <span class="li-primary">TG Open v2.1.48</span>
+            <span class="li-primary">TeleWEB v2.1.48</span>
             <span class="li-secondary">MTProto прозрачный WebSocket обходчик</span>
           </span>
         </div>
@@ -1654,7 +1654,7 @@ body.kb-open .nav-bar {
           <span class="li-icon"><svg class="icon s20"><use href="#i-memory"/></svg></span>
           <span class="li-text">
             <span class="li-primary">Бинарный движок</span>
-            <span class="li-secondary">/data/adb/modules/tgopen/bin/tgws (Go Zero-Copy)</span>
+            <span class="li-secondary">/data/adb/modules/teleweb/bin/tgws (Go Zero-Copy)</span>
           </span>
         </div>
 
@@ -2415,10 +2415,10 @@ function initTheme() {
 }
 
 /* ==========================================================================
-   TG Open Application Logic & Bridge Controller
+   TeleWEB Application Logic & Bridge Controller
    ========================================================================== */
 
-const BIN = "/data/adb/modules/tgopen/bin/tgws";
+const BIN = "/data/adb/modules/teleweb/bin/tgws";
 const DCS = [
   ["1", "Майами"],
   ["2", "Амстердам"],
@@ -3045,7 +3045,7 @@ $("btn-export-logs").addEventListener("click", () => {
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "tgopen-logs-" + new Date().toISOString().slice(0, 10) + ".txt";
+    a.download = "teleweb-logs-" + new Date().toISOString().slice(0, 10) + ".txt";
     a.click();
     URL.revokeObjectURL(a.href);
     toast("Журнал экспортирован");
@@ -3096,7 +3096,7 @@ async function resumeTransport() {
     state = await api("resume");
     render();
   } catch (e) {
-    console.warn("TG Open resume:", e);
+    console.warn("TeleWEB resume:", e);
   }
 }
 
@@ -3110,7 +3110,7 @@ try {
   initTheme();
   initTabSwipe();
 } catch (e) {
-  console.warn("TG Open init:", e);
+  console.warn("TeleWEB init:", e);
 }
 refresh();
 setInterval(refresh, 3000);

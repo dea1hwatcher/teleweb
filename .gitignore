@@ -1,5 +1,6 @@
-# TG Open build & packaging artifacts
+# TeleWEB build & packaging artifacts
 *.zip
 *.tmp
 *.log
+src/teleweb
 src/tgopen

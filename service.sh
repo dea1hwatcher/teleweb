@@ -1,11 +1,15 @@
 #!/system/bin/sh
-# TG Open - Transparent WSS proxy for Telegram
+# TeleWEB - Transparent WSS proxy for Telegram
 # Late-start service launcher and watchdog supervisor
 
 MODDIR=${0%/*}
 case "$MODDIR" in
   ""|"$0"|".")
-    if [ -d "/data/adb/modules/tgopen" ]; then
+    if [ -d "/data/adb/modules/teleweb" ]; then
+      MODDIR="/data/adb/modules/teleweb"
+    elif [ -d "/data/adb/modules_update/teleweb" ]; then
+      MODDIR="/data/adb/modules_update/teleweb"
+    elif [ -d "/data/adb/modules/tgopen" ]; then
       MODDIR="/data/adb/modules/tgopen"
     elif [ -d "/data/adb/modules_update/tgopen" ]; then
       MODDIR="/data/adb/modules_update/tgopen"
@@ -19,9 +23,11 @@ esac
 [ -f "$MODDIR/remove" ] && exit 0
 
 umask 077
-mkdir -p /data/adb/tgopen
-chmod 700 /data/adb/tgopen 2>/dev/null
-export TGOPEN_DIR=/data/adb/tgopen
+mkdir -p /data/adb/teleweb
+chmod 700 /data/adb/teleweb 2>/dev/null
+export TELEWEB_DIR=/data/adb/teleweb
+export TELEWEB_MOD="$MODDIR"
+export TGOPEN_DIR=/data/adb/teleweb
 export TGOPEN_MOD="$MODDIR"
 
 chmod 0755 "$MODDIR/bin/tgws" 2>/dev/null
@@ -41,13 +47,13 @@ while ! pm path android >/dev/null 2>&1 && [ $count -lt 15 ]; do
   count=$((count + 1))
 done
 
-# 3. Boot TG Open service (iptables redirection + daemon + watchdog)
-"$MODDIR/bin/tgws" boot >>/data/adb/tgopen/supervisor.log 2>&1
+# 3. Boot TeleWEB service (iptables redirection + daemon + watchdog)
+"$MODDIR/bin/tgws" boot >>/data/adb/teleweb/supervisor.log 2>&1
 
 # 4. Supervisor loop to ensure daemon and rules stay active across network changes
 while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do
   sleep 60
   [ -f "$MODDIR/disable" ] && break
   [ -f "$MODDIR/remove" ] && break
-  "$MODDIR/bin/tgws" ensure >>/data/adb/tgopen/supervisor.log 2>&1
+  "$MODDIR/bin/tgws" ensure >>/data/adb/teleweb/supervisor.log 2>&1
 done

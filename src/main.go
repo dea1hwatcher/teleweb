@@ -1,4 +1,4 @@
-// TG Open transparent WebSocket transport for Telegram.
+// TeleWEB transparent WebSocket transport for Telegram.
 // SPDX-License-Identifier: MIT
 package main
 
@@ -41,7 +41,7 @@ const (
 )
 
 var (
-	baseDir          = envOr("TGOPEN_DIR", "/data/adb/tgopen")
+	baseDir          = envOr("TELEWEB_DIR", envOr("TGOPEN_DIR", "/data/adb/teleweb"))
 	startAt          = time.Now()
 	active           int64
 	wsCount          int64
@@ -769,7 +769,7 @@ func setupRules() error {
 	if len(uids) == 0 {
 		return errors.New("no installed Telegram app found (e.g., org.telegram.messenger)")
 	}
-	if err := iptSetup(findBin("iptables"), uids, telegramV4, "TGOPEN", "IPv4"); err != nil {
+	if err := iptSetup(findBin("iptables"), uids, telegramV4, "TELEWEB", "IPv4"); err != nil {
 		return err
 	}
 	logf("redirection enabled; apps: %s", appNames(apps))
@@ -784,9 +784,11 @@ func appNames(a []App) string {
 }
 func cleanupRules() {
 	_, uids := installedApps()
+	iptCleanup(findBin("iptables"), uids, "TELEWEB")
 	iptCleanup(findBin("iptables"), uids, "TGOPEN")
 	// Clean up the previous release's IPv6 redirect chain even though this
 	// experimental build does not install new IPv6 redirects.
+	iptCleanup(findBin("ip6tables"), uids, "TELEWEB")
 	iptCleanup(findBin("ip6tables"), uids, "TGOPEN")
 }
 func ensureServer() error {
@@ -1144,12 +1146,12 @@ func rulesHealthy() bool {
 		return false
 	}
 	for _, uid := range uids {
-		if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TGOPEN") != nil {
+		if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
 			return false
 		}
 	}
 	for _, cidr := range telegramV4 {
-		if runCmd(bin, "-t", "nat", "-C", "TGOPEN", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
+		if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
 			return false
 		}
 	}
@@ -1511,7 +1513,7 @@ func main() {
 			stopWatchdog()
 			stopServer()
 			if !readEnabled() {
-				fmt.Println("TG Open disabled")
+				fmt.Println("TeleWEB disabled")
 				return
 			}
 			var lastErr error
@@ -1539,12 +1541,12 @@ func main() {
 			if e := ensureWatchdog(); e != nil {
 				logf("boot: failed to start watchdog: %v", e)
 			}
-			fmt.Println("TG Open transport started")
+			fmt.Println("TeleWEB transport started")
 			return
 		case "stop":
 			stopWatchdog()
 			stopServer()
-			fmt.Println("TG Open stopped")
+			fmt.Println("TeleWEB stopped")
 			return
 		case "watchdog":
 			watchdog()
@@ -1564,7 +1566,7 @@ func main() {
 			return
 		}
 	}
-	fmt.Println("TG Open transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | api BASE64_JSON | check")
+	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | api BASE64_JSON | check")
 }
 
 func serve() {
@@ -3366,7 +3368,7 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 }
 
 func runChecks() {
-	fmt.Println("TG Open engine checks")
+	fmt.Println("TeleWEB engine checks")
 	for ip, want := range map[string]int{"149.154.175.54": 1, "149.154.167.51": 2, "149.154.175.211": 1, "149.154.167.223": 2, "91.108.56.100": 5} {
 		a := netip.MustParseAddr(ip)
 		got := dcFor(a)

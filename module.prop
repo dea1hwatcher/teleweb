@@ -1,7 +1,7 @@
-id=tgopen
-name=TG Open
+id=teleweb
+name=TeleWEB
 version=v2.1.48-multiarch
 versionCode=250
-author=TG Open
-description=TG Open: прозрачный WSS-транспорт для Telegram (DC1-DC5). Поддержка Cloudflare domain fronting, автообновление CF доменов, zero-alloc буферы, нормализация DC 203, защита от Doze/Cgroups. Поддержка архитектур: ARM64, ARM, x86, x86_64.
+author=TeleWEB
+description=TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5). Поддержка Cloudflare domain fronting, автообновление CF доменов, zero-alloc буферы, нормализация DC 203, защита от Doze/Cgroups. Поддержка архитектур: ARM64, ARM, x86, x86_64.
 webuiIcon=webroot/module_icon.png

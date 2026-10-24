@@ -48,12 +48,14 @@ rm -rf "$MODPATH/bin/arm64" "$MODPATH/bin/arm" "$MODPATH/bin/x86" "$MODPATH/bin/
 chmod 0755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh" \
   "$MODPATH/action.sh" "$MODPATH/uninstall.sh" "$MODPATH/bin/tgws" 2>/dev/null
 
-mkdir -p /data/adb/tgopen
+mkdir -p /data/adb/teleweb
 
 # Остановка предыдущего процесса tgws перед запуском
-export TGOPEN_DIR=/data/adb/tgopen
+export TELEWEB_DIR=/data/adb/teleweb
+export TELEWEB_MOD="$MODPATH"
+export TGOPEN_DIR=/data/adb/teleweb
 export TGOPEN_MOD="$MODPATH"
 [ -x "$MODPATH/bin/tgws" ] && "$MODPATH/bin/tgws" stop >/dev/null 2>&1
 
-ui_print "TG Open: прозрачный WSS-транспорт для Telegram (DC1-DC5)"
+ui_print "TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)"
 ui_print "Успешно установлен бинарник для архитектуры $ABI"

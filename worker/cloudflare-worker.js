@@ -1,7 +1,7 @@
-// TG Open Gateway for Cloudflare Workers (cloudflare:sockets).
+// TeleWEB Gateway for Cloudflare Workers (cloudflare:sockets).
 //
 // Deploy this to Cloudflare Workers to bypass DPI blocking of Telegram WebSockets.
-// When deployed, set your worker domain (e.g. worker.user.workers.dev) in TG Open WebUI.
+// When deployed, set your worker domain (e.g. worker.user.workers.dev) in TeleWEB WebUI.
 //
 // Contract:
 //   wss://<worker-domain>/apiws?dst=<telegram-ip>&dc=<dc-id>
@@ -34,7 +34,8 @@ export default {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("expected a websocket upgrade", { status: 426 });
     }
-    if (env.TGOPEN_TOKEN && url.searchParams.get("token") !== env.TGOPEN_TOKEN) {
+    const token = env.TELEWEB_TOKEN || env.TGOPEN_TOKEN;
+    if (token && url.searchParams.get("token") !== token) {
       return new Response("forbidden", { status: 403 });
     }
 

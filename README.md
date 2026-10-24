@@ -1,4 +1,4 @@
-# TG Open v2.1.48 — Multi-Arch (ARM64, ARM, x86, x86_64) & Performance Release
+# TeleWEB v2.1.48 — Multi-Arch (ARM64, ARM, x86, x86_64) & Performance Release
 
 ## Что нового в v2.1.48
 
@@ -25,7 +25,7 @@
 
 ---
 
-# TG Open v2.1.44 — DC1 route cooldown fix
+# TeleWEB v2.1.44 — DC1 route cooldown fix
 
 ## DC2 minute pulse and adaptive DC learning (v2.1.47)
 
@@ -46,7 +46,7 @@
 
 ---
 
-# TG Open v2.1.34 — Abridged Quick ACK framing fix
+# TeleWEB v2.1.34 — Abridged Quick ACK framing fix
 
 
 ## v2.1.34 — исправление обрыва при отправке сообщений
@@ -60,7 +60,7 @@
 
 - `service.sh` теперь остаётся активным и каждые 30 секунд вызывает идемпотентную команду `ensure`. Она восстанавливает daemon, watchdog и правила перехвата, если запуск при загрузке опередил готовность Package Manager/iptables или один из процессов завершился.
 - Проверка не перезапускает здоровый daemon и не требует открывать WebUI. Если обход выключен в настройках модуля, supervisor не включает его сам.
-- Ошибки раннего запуска пишутся в `/data/adb/tgopen/supervisor.log`; повторная попытка происходит через 30 секунд.
+- Ошибки раннего запуска пишутся в `/data/adb/teleweb/supervisor.log`; повторная попытка происходит через 30 секунд.
 
 
 - Сохранена логика транспорта v2.1.26; новые изменения предназначены для сбора причин сбоя, а не для смены WSS-маршрутов.
@@ -73,9 +73,9 @@
 
 ---
 
-# TG Open v2.1.14 — DC4 media IP mapping fix
+# TeleWEB v2.1.14 — DC4 media IP mapping fix
 
-TG Open перехватывает TCP-соединения поддерживаемых клиентов Telegram и прозрачно переносит поток через WebSocket. В Telegram не нужно включать прокси. Сборка предназначена для Magisk / KernelSU / APatch на Android ARM64.
+TeleWEB перехватывает TCP-соединения поддерживаемых клиентов Telegram и прозрачно переносит поток через WebSocket. В Telegram не нужно включать прокси. Сборка предназначена для Magisk / KernelSU / APatch на Android ARM64.
 
 ## Исправление маршрута медиа DC4 (v2.1.14)
 
@@ -120,7 +120,7 @@ Cloudflare-путь использует TLS к домену Cloudflare и WSS `
 
 Чтобы заменить список или указать собственные домены, создай файл:
 
-`/data/adb/tgopen/cf-domains`
+`/data/adb/teleweb/cf-domains`
 
 Добавляй по одному домену на строку. Строки `#` считаются комментариями. Если файл существует, он **заменяет** встроенный список; не добавляй схему `https://`, поддомены `kwsN` или путь. Пример:
 
@@ -134,7 +134,7 @@ another-domain.example
 
 ## Диагностика и откат
 
-- Лог: `/data/adb/tgopen/tgws.log`
+- Лог: `/data/adb/teleweb/tgws.log`
 - Статус/последние строки: кнопка действия модуля.
 - Для отката отключи/удали v2.1.0 и верни исходный архив. Не держи одновременно два модуля, устанавливающих перехват Telegram.
 
@@ -156,7 +156,7 @@ another-domain.example
 ## v2.1.31 changes
 
 - Adds an idempotent `ensure` command and a persistent Android service loop (30-second interval). It retries startup after package-manager/iptables boot races and recovers missing daemon/watchdog/rules without opening WebUI or restarting a healthy daemon.
-- Logs supervisor recovery/errors to `/data/adb/tgopen/supervisor.log`.
+- Logs supervisor recovery/errors to `/data/adb/teleweb/supervisor.log`.
 
 ## v2.1.30 changes
 
@@ -187,12 +187,12 @@ another-domain.example
 
 ## v2.1.38 — background client process protection
 
-The watchdog now periodically finds the installed Telegram client process(es) by exact package command line and UID, then best-effort moves those processes out of the Android cached-app freezer cgroup. Unlike the transport daemon, client app processes are not assigned `oom_score_adj=-1000`; Android retains normal memory-pressure handling. This is a root/OEM-dependent mitigation, not a guarantee of instant notifications: app-owned sockets still depend on the client staying connected, and FCM/system notification policy is outside TG Open. Moving an app process to the root cgroup may affect Android scheduling/accounting and can increase background battery use. Check `watchdog.log` for `protect-app:` and `protect:` warnings.
+The watchdog now periodically finds the installed Telegram client process(es) by exact package command line and UID, then best-effort moves those processes out of the Android cached-app freezer cgroup. Unlike the transport daemon, client app processes are not assigned `oom_score_adj=-1000`; Android retains normal memory-pressure handling. This is a root/OEM-dependent mitigation, not a guarantee of instant notifications: app-owned sockets still depend on the client staying connected, and FCM/system notification policy is outside TeleWEB. Moving an app process to the root cgroup may affect Android scheduling/accounting and can increase background battery use. Check `watchdog.log` for `protect-app:` and `protect:` warnings.
 
 
 ## v2.1.41 — persistent route cache and quiet cache hits
 
-- Saves the last known-good WSS hostname and ranked preflight candidates to `/data/adb/tgopen/route-cache.json`, outside the module directory, so module/daemon restarts do not discard the route pool.
+- Saves the last known-good WSS hostname and ranked preflight candidates to `/data/adb/teleweb/route-cache.json`, outside the module directory, so module/daemon restarts do not discard the route pool.
 - Loads the cache **before opening the local listener**, so startup connection bursts can use the saved route immediately instead of racing a background scan.
 - Starts background route refresh immediately after startup; refresh remains independent of Exteragram activity and repeats every 30 minutes. Failed refreshes do not erase the previously saved pool.
 - Successful route choices update the persistent cache atomically. A saved route is still tested on use; if it fails, the engine can fall back to other candidates and refresh the cache.

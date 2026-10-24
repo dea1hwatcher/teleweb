@@ -2,7 +2,7 @@ import os
 import zipfile
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_ZIP = os.path.join(ROOT_DIR, "tgopen-v2.1.48-multiarch.zip")
+OUTPUT_ZIP = os.path.join(ROOT_DIR, "teleweb-v2.1.48-multiarch.zip")
 
 FILES_TO_PACK = [
     # Metadata & installer scripts

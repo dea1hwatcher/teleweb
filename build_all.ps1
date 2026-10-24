@@ -1,4 +1,4 @@
-# PowerShell Multi-Arch Build Script for TG Open
+# PowerShell Multi-Arch Build Script for TeleWEB
 $ErrorActionPreference = "Stop"
 
 $GoPath = "C:\Program Files\Go\bin\go.exe"
@@ -22,7 +22,7 @@ $Targets = @(
     @{ Arch = "x86_64"; GOOS = "linux"; GOARCH = "amd64"; GOARM = "";  OutDir = "$BinDir\x86_64" }
 )
 
-Write-Host "Building TG Open for all target architectures..." -ForegroundColor Cyan
+Write-Host "Building TeleWEB for all target architectures..." -ForegroundColor Cyan
 
 foreach ($target in $Targets) {
     $archName = $target.Arch
