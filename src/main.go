@@ -472,7 +472,13 @@ func pidAlive() bool {
 	if p <= 1 {
 		return false
 	}
-	return isPidAlive(p)
+	if !isPidAlive(p) {
+		return false
+	}
+	if _, err := os.Stat("/proc"); err == nil {
+		return processHasArg(p, "serve")
+	}
+	return true
 }
 func tailLog(n int) string {
 	b, e := os.ReadFile(path("tgws.log"))
@@ -508,7 +514,9 @@ var packageNames = []struct{ Pkg, Name string }{
 
 func packageUID(pkg string) int {
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
-		out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		cancel()
 		if err == nil {
 			re := regexp.MustCompile(`uid:(\d+)`)
 			m := re.FindSubmatch(out)
@@ -520,7 +528,9 @@ func packageUID(pkg string) int {
 			}
 		}
 	}
-	out, _ := exec.Command("dumpsys", "package", pkg).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	out, _ := exec.CommandContext(ctx, "dumpsys", "package", pkg).CombinedOutput()
+	cancel()
 	for _, pat := range []string{`userId=(\d+)`, `appId=(\d+)`} {
 		m := regexp.MustCompile(pat).FindSubmatch(out)
 		if len(m) > 1 {
@@ -542,7 +552,9 @@ func discoverApps() ([]App, []int) {
 	}
 	// Android's package manager can return all package UIDs in one call.
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U"}, {"pm", "list", "packages", "-U"}} {
-		out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		cancel()
 		if err != nil {
 			continue
 		}
@@ -584,11 +596,60 @@ func discoverApps() ([]App, []int) {
 	}
 	return apps, uids
 }
+
+func loadCachedApps() ([]App, []int) {
+	b, err := os.ReadFile(path("apps.json"))
+	if err != nil {
+		return nil, nil
+	}
+	var apps []App
+	if err := json.Unmarshal(b, &apps); err != nil || len(apps) == 0 {
+		return nil, nil
+	}
+	var uids []int
+	seen := map[int]bool{}
+	for _, a := range apps {
+		if a.UID > 0 && !seen[a.UID] {
+			uids = append(uids, a.UID)
+			seen[a.UID] = true
+		}
+	}
+	return apps, uids
+}
+
+func saveCachedApps(apps []App) {
+	if len(apps) == 0 {
+		return
+	}
+	b, err := json.Marshal(apps)
+	if err == nil {
+		ensureDir()
+		_ = os.WriteFile(path("apps.json"), b, 0600)
+	}
+}
+
 func installedApps() ([]App, []int) {
 	appCacheMu.Lock()
 	defer appCacheMu.Unlock()
 	if len(appCache) == 0 {
-		appCache, uidCache = discoverApps()
+		appCache, uidCache = loadCachedApps()
+		if len(appCache) == 0 {
+			appCache, uidCache = discoverApps()
+			if len(appCache) > 0 {
+				saveCachedApps(appCache)
+			}
+		} else {
+			// Trigger asynchronous verification to keep app cache up to date
+			go func() {
+				freshApps, freshUIDs := discoverApps()
+				if len(freshApps) > 0 {
+					appCacheMu.Lock()
+					appCache, uidCache = freshApps, freshUIDs
+					appCacheMu.Unlock()
+					saveCachedApps(freshApps)
+				}
+			}()
+		}
 	}
 	return append([]App(nil), appCache...), append([]int(nil), uidCache...)
 }
@@ -597,7 +658,9 @@ func installedApps() ([]App, []int) {
 var telegramV4 = []string{"149.154.160.0/20", "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22", "91.108.16.0/22", "91.108.20.0/22", "91.108.56.0/22", "185.76.151.0/24", "91.105.192.0/23"}
 
 func runCmd(name string, args ...string) error {
-	c := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := exec.CommandContext(ctx, name, args...)
 	b, e := c.CombinedOutput()
 	if e != nil {
 		return fmt.Errorf("%s %s: %v (%s)", name, strings.Join(args, " "), e, strings.TrimSpace(string(b)))
@@ -1165,7 +1228,15 @@ func ensureRuntime() error {
 
 func stopServer() {
 	pid := readPIDFile("tgws.pid")
-	stopPID(pid)
+	if pid > 1 && pid != os.Getpid() {
+		hasProc := false
+		if _, err := os.Stat("/proc"); err == nil {
+			hasProc = true
+		}
+		if !hasProc || processHasArg(pid, "serve") {
+			stopPID(pid)
+		}
+	}
 	_ = os.Remove(path("tgws.pid"))
 	cleanupRules()
 }
@@ -1397,24 +1468,37 @@ func main() {
 			emitOK(status())
 			return
 		case "boot":
-			// An in-place upgrade can leave old helpers and the daemon alive.
+			// Clean up stale instances from prior boot or upgrade
 			stopWatchdog()
 			stopServer()
 			if !readEnabled() {
 				fmt.Println("TG Open выключен")
 				return
 			}
-			if e := setupRules(); e != nil {
-				logf("ошибка настройки перехвата: %v", e)
-				fmt.Fprintln(os.Stderr, e)
+			var lastErr error
+			for attempt := 1; attempt <= 5; attempt++ {
+				if lastErr = setupRules(); lastErr == nil {
+					break
+				}
+				logf("boot: попытка #%d настройки перехвата не удалась: %v; повтор через 2с", attempt, lastErr)
+				time.Sleep(2 * time.Second)
+			}
+			if lastErr != nil {
+				logf("ошибка настройки перехвата при загрузке: %v", lastErr)
+				fmt.Fprintln(os.Stderr, lastErr)
 				os.Exit(1)
 			}
 			if e := ensureServer(); e != nil {
+				logf("ошибка запуска сервера при загрузке: %v", e)
 				fmt.Fprintln(os.Stderr, e)
 				os.Exit(1)
 			}
+			deadline := time.Now().Add(4 * time.Second)
+			for !serverListening() && time.Now().Before(deadline) {
+				time.Sleep(100 * time.Millisecond)
+			}
 			if e := ensureWatchdog(); e != nil {
-				logf("не удалось запустить watchdog: %v", e)
+				logf("не удалось запустить watchdog при загрузке: %v", e)
 			}
 			fmt.Println("TG Open transport started")
 			return

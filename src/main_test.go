@@ -961,3 +961,33 @@ func TestPrepareUTLSForHTTP1(t *testing.T) {
 		t.Fatal("ALPNExtension not found on UConn after prepareUTLSForHTTP1")
 	}
 }
+
+func TestAppsCachePersistence(t *testing.T) {
+	tempDir := t.TempDir()
+	origBaseDir := baseDir
+	baseDir = tempDir
+	defer func() { baseDir = origBaseDir }()
+
+	// Initially no cache
+	apps, uids := loadCachedApps()
+	if len(apps) != 0 || len(uids) != 0 {
+		t.Fatalf("expected empty cache initially, got %#v, %#v", apps, uids)
+	}
+
+	testApps := []App{
+		{Name: "Telegram", Pkg: "org.telegram.messenger", UID: 10123},
+		{Name: "exteraGram", Pkg: "com.exteragram.messenger", UID: 10124},
+	}
+	saveCachedApps(testApps)
+
+	loadedApps, loadedUIDs := loadCachedApps()
+	if len(loadedApps) != 2 || len(loadedUIDs) != 2 {
+		t.Fatalf("expected 2 apps and 2 UIDs, got %#v, %#v", loadedApps, loadedUIDs)
+	}
+	if loadedApps[0].UID != 10123 || loadedApps[1].UID != 10124 {
+		t.Errorf("UID mismatch in loaded apps: %#v", loadedApps)
+	}
+	if loadedUIDs[0] != 10123 || loadedUIDs[1] != 10124 {
+		t.Errorf("UID mismatch in loaded UIDs: %#v", loadedUIDs)
+	}
+}
