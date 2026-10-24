@@ -1631,7 +1631,7 @@ body.kb-open .nav-bar {
           <span>Очистить</span>
         </button>
       </div>
-      <pre class="log-view" id="logView" tabindex="0" aria-label="Содержимое журнала">Загрузка журнала…</pre>
+      <pre class="log-view" id="logView" tabindex="0" aria-label="Log contents">Loading logs…</pre>
     </div>
   </section>
 
@@ -2645,7 +2645,7 @@ function render() {
   const logView = $("logView");
   if (logView && state && state.log) {
     const atBottom = logView.scrollHeight - logView.scrollTop <= logView.clientHeight + 48;
-    logView.textContent = state.log || "Журнал пуст";
+    logView.textContent = state.log || "Log is empty";
     if (atBottom) {
       logView.scrollTop = logView.scrollHeight;
     }
@@ -3012,7 +3012,7 @@ $("saveConfigBtn").addEventListener("click", async () => {
 $("btn-copy-logs").addEventListener("click", async () => {
   haptic(10);
   const text = $("logView").textContent || "";
-  if (!text || text === "Загрузка журнала…") {
+  if (!text || text === "Loading logs…" || text === "Log is empty" || text === "Загрузка журнала…") {
     toast("Журнал пуст");
     return;
   }
@@ -3037,7 +3037,7 @@ $("btn-copy-logs").addEventListener("click", async () => {
 $("btn-export-logs").addEventListener("click", () => {
   haptic(10);
   const text = $("logView").textContent || "";
-  if (!text) {
+  if (!text || text === "Loading logs…" || text === "Log is empty") {
     toast("Журнал пуст");
     return;
   }
@@ -3057,7 +3057,7 @@ $("btn-export-logs").addEventListener("click", () => {
 // Log Action: Clear
 $("btn-clear-logs").addEventListener("click", () => {
   haptic(10);
-  $("logView").textContent = "Журнал очищен.";
+  $("logView").textContent = "Log cleared.";
   toast("Журнал очищен");
 });
 

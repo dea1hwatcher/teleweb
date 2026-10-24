@@ -106,7 +106,7 @@ func loadRouteCache() {
 	}
 	var saved map[string]persistedRoute
 	if err := json.Unmarshal(b, &saved); err != nil {
-		logf("route-cache: сохранённый пул повреждён; будет собран заново: %v", err)
+		logf("route-cache: saved pool corrupted; rebuilding: %v", err)
 		return
 	}
 	n := 0
@@ -130,7 +130,7 @@ func loadRouteCache() {
 		routeCacheDisk[key] = entry
 	}
 	if n > 0 {
-		logf("route-cache: восстановлены ранее успешные WSS-маршруты для %d DC/media-профилей", n)
+		logf("route-cache: restored previously successful WSS routes for %d DC/media profiles", n)
 	}
 }
 
@@ -284,7 +284,7 @@ func logStack(prefix string) {
 
 func procSummary(pid int) string {
 	if pid <= 1 {
-		return "pid=нет"
+		return "pid=none"
 	}
 	cmd, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	state := "?"
@@ -319,7 +319,7 @@ func startSignalLogger() {
 	notifySignals(ch)
 	go func() {
 		for sig := range ch {
-			logf("process: получен сигнал %s; завершаюсь", sig)
+			logf("process: received signal %s; shutting down", sig)
 			os.Exit(0)
 		}
 	}()
@@ -395,7 +395,7 @@ func writeCustomCFDomain(d string) error {
 		return nil
 	}
 	if !domainPattern.MatchString(d) || strings.HasSuffix(d, ".web.telegram.org") || d == "web.telegram.org" {
-		return fmt.Errorf("недопустимый домен: %s", d)
+		return fmt.Errorf("invalid domain: %s", d)
 	}
 	return os.WriteFile(path("custom-cf-domain"), []byte(d+"\n"), 0600)
 }
@@ -477,16 +477,16 @@ func writeDCOverrides(raw string) error {
 	for _, pair := range pairs {
 		parts := strings.SplitN(pair, ":", 2)
 		if len(parts) != 2 {
-			return fmt.Errorf("неверный формат пары DC:IP (%s)", pair)
+			return fmt.Errorf("invalid DC:IP pair format (%s)", pair)
 		}
 		dc, err := strconv.Atoi(strings.TrimSpace(parts[0]))
 		if err != nil || dc < 1 || dc > 5 {
-			return fmt.Errorf("недопустимый номер DC (1-5): %s", parts[0])
+			return fmt.Errorf("invalid DC number (1-5): %s", parts[0])
 		}
 		ipStr := strings.TrimSpace(parts[1])
 		addr, err := netip.ParseAddr(ipStr)
 		if err != nil || !addr.IsValid() || !addr.Is4() {
-			return fmt.Errorf("недопустимый IPv4 адрес для DC%d: %s", dc, ipStr)
+			return fmt.Errorf("invalid IPv4 address for DC%d: %s", dc, ipStr)
 		}
 		cleaned = append(cleaned, fmt.Sprintf("%d:%s", dc, addr.String()))
 	}
@@ -710,7 +710,7 @@ func findBin(name string) string {
 }
 func iptSetup(bin string, uids []int, cidrs []string, chain string, family string) error {
 	if bin == "" {
-		return fmt.Errorf("%s отсутствует", family)
+		return fmt.Errorf("%s is missing", family)
 	}
 	// Remove both previous global and UID-scoped jumps before selecting a mode.
 	for i := 0; i < 16; i++ {
@@ -729,12 +729,12 @@ func iptSetup(bin string, uids []int, cidrs []string, chain string, family strin
 	_ = runCmd(bin, "-t", "nat", "-F", chain)
 	if err := runCmd(bin, "-t", "nat", "-N", chain); err != nil { // likely already exists
 		if e := runCmd(bin, "-t", "nat", "-F", chain); e != nil {
-			return fmt.Errorf("не удалось создать цепочку %s: %w", chain, err)
+			return fmt.Errorf("failed to create chain %s: %w", chain, err)
 		}
 	}
 	for _, cidr := range cidrs {
 		if e := runCmd(bin, "-t", "nat", "-A", chain, "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)); e != nil {
-			logf("правило %s пропущено: %v", cidr, e)
+			logf("rule %s skipped: %v", cidr, e)
 		}
 	}
 	for _, uid := range uids {
@@ -767,12 +767,12 @@ func iptCleanup(bin string, uids []int, chain string) {
 func setupRules() error {
 	apps, uids := installedApps()
 	if len(uids) == 0 {
-		return errors.New("не найдено установленное приложение Telegram (например, com.exteragram.messenger)")
+		return errors.New("no installed Telegram app found (e.g., org.telegram.messenger)")
 	}
 	if err := iptSetup(findBin("iptables"), uids, telegramV4, "TGOPEN", "IPv4"); err != nil {
 		return err
 	}
-	logf("перехват включён; приложения: %s", appNames(apps))
+	logf("redirection enabled; apps: %s", appNames(apps))
 	return nil
 }
 func appNames(a []App) string {
@@ -880,19 +880,19 @@ func protectProcess(pid int) {
 	}
 	if err := os.WriteFile(fmt.Sprintf("/proc/%d/oom_score_adj", pid), []byte("-1000\n"), 0644); err != nil {
 		if oldErr := os.WriteFile(fmt.Sprintf("/proc/%d/oom_adj", pid), []byte("-17\n"), 0644); oldErr != nil {
-			warnProtect(pid, "не удалось выставить oom protection: "+oldErr.Error())
+			warnProtect(pid, "failed to set oom protection: "+oldErr.Error())
 		}
 	}
 
 	cgRaw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
 	if err != nil {
-		warnProtect(pid, "не удалось прочитать cgroup: "+err.Error())
+		warnProtect(pid, "failed to read cgroup: "+err.Error())
 		return
 	}
 	entries := parseProcCgroups(string(cgRaw))
 	for _, entry := range entries {
 		if processFrozen(pid, entry) {
-			logf("protect: PID %d находился в замороженной cgroup %s (controllers=%s); пытаюсь вывести в корень", pid, entry.path, entry.controllers)
+			logf("protect: PID %d was in frozen cgroup %s (controllers=%s); moving to root group", pid, entry.path, entry.controllers)
 		}
 		if entry.path == "/" {
 			continue
@@ -913,10 +913,10 @@ func protectProcess(pid int) {
 			continue
 		}
 		if moveErr := writePIDToCgroup(pid, target); moveErr != nil {
-			warnProtect(pid, fmt.Sprintf("не удалось переместить PID %d из cgroup %s в %s: %v", pid, entry.path, target, moveErr))
+			warnProtect(pid, fmt.Sprintf("failed to move PID %d from cgroup %s to %s: %v", pid, entry.path, target, moveErr))
 			continue
 		}
-		logf("protect: PID %d перемещён из cgroup %s в корневую группу через %s", pid, entry.path, target)
+		logf("protect: PID %d moved from cgroup %s to root group via %s", pid, entry.path, target)
 	}
 }
 
@@ -1001,9 +1001,9 @@ func protectAppPID(pid int) {
 			// cached-app freezing; Android may move it back, so watchdog retries.
 			target := "/sys/fs/cgroup/cgroup.procs"
 			if err := writePIDToCgroup(pid, target); err != nil {
-				warnProtect(pid, fmt.Sprintf("не удалось вывести процесс приложения из cgroup freezer: %v", err))
+				warnProtect(pid, fmt.Sprintf("failed to move app process out of cgroup freezer: %v", err))
 			} else {
-				logf("protect-app: PID %d перемещён из %s в корневую cgroup (oom_score_adj не менялся)", pid, entry.path)
+				logf("protect-app: PID %d moved from %s to root cgroup (oom_score_adj untouched)", pid, entry.path)
 			}
 			return
 		}
@@ -1016,13 +1016,13 @@ func protectAppPID(pid int) {
 				}
 			}
 			if target == "" {
-				warnProtect(pid, "обнаружен cgroup-v1 freezer, но корневой файл переноса не найден")
+				warnProtect(pid, "cgroup-v1 freezer detected, but root migration file not found")
 				return
 			}
 			if err := writePIDToCgroup(pid, target); err != nil {
-				warnProtect(pid, fmt.Sprintf("не удалось вывести процесс приложения из freezer cgroup %s: %v", entry.path, err))
+				warnProtect(pid, fmt.Sprintf("failed to move app process out of freezer cgroup %s: %v", entry.path, err))
 			} else {
-				logf("protect-app: PID %d перемещён из freezer cgroup %s в корень", pid, entry.path)
+				logf("protect-app: PID %d moved from freezer cgroup %s to root", pid, entry.path)
 			}
 			return
 		}
@@ -1162,7 +1162,7 @@ func watchdog() {
 	_ = os.WriteFile(path("watchdog.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600)
 	protectProcess(pid)
 	protectTargetAppProcesses()
-	logf("watchdog: запущен, проверка каждые 30 секунд; %s", procSummary(pid))
+	logf("watchdog: started, checking every 30s; %s", procSummary(pid))
 	tickCount := 0
 	lastDaemonOK, lastRulesOK := daemonHealthy(), rulesHealthy()
 	ticker := time.NewTicker(30 * time.Second)
@@ -1184,14 +1184,14 @@ func watchdog() {
 		protectTargetAppProcesses()
 		daemonOK, rulesOK := daemonHealthy(), rulesHealthy()
 		if daemonOK != lastDaemonOK || rulesOK != lastRulesOK {
-			logf("watchdog: изменение состояния daemon %t→%t, rules %t→%t; %s", lastDaemonOK, daemonOK, lastRulesOK, rulesOK, procSummary(readPIDFile("tgws.pid")))
+			logf("watchdog: state change daemon %t->%t, rules %t->%t; %s", lastDaemonOK, daemonOK, lastRulesOK, rulesOK, procSummary(readPIDFile("tgws.pid")))
 		}
 		lastDaemonOK, lastRulesOK = daemonOK, rulesOK
 		if !daemonOK {
-			logf("watchdog: tgws не отвечает, автоперезапуск; %s; listener=%t", procSummary(readPIDFile("tgws.pid")), serverListening())
+			logf("watchdog: tgws unresponsive, auto-restarting; %s; listener=%t", procSummary(readPIDFile("tgws.pid")), serverListening())
 			stopServer() // removes stale redirect rules before the listener is replaced
 			if err := ensureServer(); err != nil {
-				logf("watchdog: не удалось запустить tgws: %v", err)
+				logf("watchdog: failed to start tgws: %v", err)
 				continue
 			}
 			deadline := time.Now().Add(3 * time.Second)
@@ -1199,19 +1199,19 @@ func watchdog() {
 				time.Sleep(100 * time.Millisecond)
 			}
 			if !serverListening() {
-				logf("watchdog: tgws не начал слушать порт %d", defaultPort)
+				logf("watchdog: tgws failed to listen on port %d", defaultPort)
 				continue
 			}
 			if err := setupRules(); err != nil {
-				logf("watchdog: правила после перезапуска не восстановлены: %v", err)
+				logf("watchdog: rules not restored after restart: %v", err)
 				continue
 			}
 		}
 		protectProcess(readPIDFile("tgws.pid"))
 		if !rulesHealthy() {
-			logf("watchdog: правила iptables сброшены или повреждены — восстановление; iptables=%q", findBin("iptables"))
+			logf("watchdog: iptables rules reset or corrupted, restoring; iptables=%q", findBin("iptables"))
 			if err := setupRules(); err != nil {
-				logf("watchdog: не удалось восстановить iptables: %v", err)
+				logf("watchdog: failed to restore iptables: %v", err)
 			}
 		}
 	}
@@ -1227,7 +1227,7 @@ func ensureRuntime() error {
 		return nil
 	}
 	if !daemonHealthy() {
-		logf("supervisor: daemon/listener отсутствует — восстановление")
+		logf("supervisor: daemon/listener missing, restoring")
 		stopServer()
 		if err := setupRules(); err != nil {
 			return err
@@ -1240,10 +1240,10 @@ func ensureRuntime() error {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if !serverListening() {
-			return fmt.Errorf("tgws не начал слушать порт %d", defaultPort)
+			return fmt.Errorf("tgws failed to listen on port %d", defaultPort)
 		}
 	} else if !rulesHealthy() {
-		logf("supervisor: правила перехвата отсутствуют — восстановление")
+		logf("supervisor: redirection rules missing, restoring")
 		if err := setupRules(); err != nil {
 			return err
 		}
@@ -1414,9 +1414,9 @@ func apiMain(arg string) {
 		}
 		protectTargetAppProcesses()
 		if err := ensureWatchdog(); err != nil {
-			logf("resume: не удалось запустить watchdog: %v", err)
+			logf("resume: failed to start watchdog: %v", err)
 		}
-		logf("WebUI resume: правила перехвата повторно применены без перезапуска живого демона")
+		logf("WebUI resume: redirection rules reapplied without restarting live daemon")
 		emitOK(status())
 	case "set", "setConfig":
 		if q.Enabled != nil {
@@ -1435,7 +1435,7 @@ func apiMain(arg string) {
 					return
 				}
 				if err := ensureWatchdog(); err != nil {
-					logf("не удалось запустить watchdog: %v", err)
+					logf("failed to start watchdog: %v", err)
 				}
 			} else {
 				stopWatchdog()
@@ -1474,7 +1474,7 @@ func apiMain(arg string) {
 		}
 		emitOK(status())
 	default:
-		emitErr(fmt.Errorf("неизвестная команда: %s", q.Cmd))
+		emitErr(fmt.Errorf("unknown command: %s", q.Cmd))
 	}
 }
 func emitOK(v any) {
@@ -1489,7 +1489,7 @@ func emitErr(e error) {
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
-			logStack(fmt.Sprintf("FATAL panic в main: %v", r))
+			logStack(fmt.Sprintf("FATAL panic in main: %v", r))
 			os.Exit(2)
 		}
 	}()
@@ -1511,7 +1511,7 @@ func main() {
 			stopWatchdog()
 			stopServer()
 			if !readEnabled() {
-				fmt.Println("TG Open выключен")
+				fmt.Println("TG Open disabled")
 				return
 			}
 			var lastErr error
@@ -1519,16 +1519,16 @@ func main() {
 				if lastErr = setupRules(); lastErr == nil {
 					break
 				}
-				logf("boot: попытка #%d настройки перехвата не удалась: %v; повтор через 2с", attempt, lastErr)
+				logf("boot: redirection setup attempt #%d failed: %v; retrying in 2s", attempt, lastErr)
 				time.Sleep(2 * time.Second)
 			}
 			if lastErr != nil {
-				logf("ошибка настройки перехвата при загрузке: %v", lastErr)
+				logf("boot: failed to setup redirection rules: %v", lastErr)
 				fmt.Fprintln(os.Stderr, lastErr)
 				os.Exit(1)
 			}
 			if e := ensureServer(); e != nil {
-				logf("ошибка запуска сервера при загрузке: %v", e)
+				logf("boot: failed to start server: %v", e)
 				fmt.Fprintln(os.Stderr, e)
 				os.Exit(1)
 			}
@@ -1537,7 +1537,7 @@ func main() {
 				time.Sleep(100 * time.Millisecond)
 			}
 			if e := ensureWatchdog(); e != nil {
-				logf("не удалось запустить watchdog при загрузке: %v", e)
+				logf("boot: failed to start watchdog: %v", e)
 			}
 			fmt.Println("TG Open transport started")
 			return
@@ -1586,11 +1586,11 @@ func serve() {
 	startCFDomainsUpdater(context.Background())
 	ln, e := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort))
 	if e != nil {
-		logf("не удалось открыть локальный порт: %v", e)
+		logf("failed to open local port: %v", e)
 		return
 	}
 	defer ln.Close()
-	logf("локальный перехватчик слушает 127.0.0.1:%d; %s; go=%s", defaultPort, procSummary(os.Getpid()), runtimeVersion())
+	logf("local proxy listening on 127.0.0.1:%d; %s; go=%s", defaultPort, procSummary(os.Getpid()), runtimeVersion())
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
@@ -1607,7 +1607,7 @@ func serve() {
 		go func(conn net.Conn) {
 			defer func() {
 				if r := recover(); r != nil {
-					logStack(fmt.Sprintf("FATAL panic в handleClient remote=%s: %v", conn.RemoteAddr(), r))
+					logStack(fmt.Sprintf("FATAL panic in handleClient remote=%s: %v", conn.RemoteAddr(), r))
 					_ = conn.Close()
 				}
 			}()
@@ -1755,7 +1755,7 @@ func handleClient(c net.Conn) {
 	if err != nil {
 		if !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
-			logf("не удалось определить исходный адрес: %v", err)
+			logf("failed to determine original destination: %v", err)
 		}
 		return
 	}
@@ -1770,7 +1770,7 @@ func handleClient(c net.Conn) {
 	if err != nil {
 		if !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
-			logf("соединение #%d %s: не удалось прочитать MTProto init: %v", id, orig, err)
+			logf("conn #%d %s: failed to read MTProto init: %v", id, orig, err)
 		}
 		return
 	}
@@ -1778,7 +1778,7 @@ func handleClient(c net.Conn) {
 	if !parsed {
 		dc = dcFor(orig.Addr())
 		isMedia = mediaForIP(orig.Addr())
-		logf("соединение #%d %s: DC из init не распознан, fallback по IP → DC%d media=%t", id, orig, dc, isMedia)
+		logf("conn #%d %s: DC not recognized in init, fallback by IP -> DC%d media=%t", id, orig, dc, isMedia)
 	}
 	if orig.Addr().String() == "91.105.192.100" || dc == 203 {
 		handleCDN203(c, orig, init, id)
@@ -1786,7 +1786,7 @@ func handleClient(c net.Conn) {
 	}
 	if dc < 1 || dc > 5 {
 		atomic.AddInt64(&failCnt, 1)
-		logf("неизвестный DC для %s (соединение %d); не отправляю напрямую", orig, id)
+		logf("unknown DC for %s (conn %d); refusing direct send", orig, id)
 		return
 	}
 	statsMu.Lock()
@@ -1798,14 +1798,14 @@ func handleClient(c net.Conn) {
 	if err != nil {
 		if !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
-			logf("DC%d media=%t WSS failed: %v; WSS-only, соединение закрыто", dc, isMedia, err)
+			logf("DC%d media=%t WSS failed: %v; WSS-only, connection closed", dc, isMedia, err)
 		}
 		return
 	}
 	atomic.AddInt64(&wsCount, 1)
 	defer atomic.AddInt64(&wsCount, -1)
 	defer ws.Close()
-	logf("соединение #%d %s → DC%d media=%t через WSS", id, orig, dc, isMedia)
+	logf("conn #%d %s -> DC%d media=%t via WSS", id, orig, dc, isMedia)
 	pipeWSTunnel(c, ws, init, id, dc, isMedia)
 }
 
@@ -1823,12 +1823,12 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		ws, err := dialCFWorker(ctx, 203, "91.105.192.100", worker)
 		cancel()
 		if err == nil {
-			logf("соединение #%d %s → CDN203 через Cloudflare Worker %s", id, orig, worker)
+			logf("conn #%d %s -> CDN203 via Cloudflare Worker %s", id, orig, worker)
 			defer ws.Close()
 			pipeWSTunnel(c, ws, init, id, 203, false)
 			return
 		}
-		logf("соединение #%d CDN203: Cloudflare Worker %s не ответил: %v; переход на прямой TCP", id, worker, err)
+		logf("conn #%d CDN203: Cloudflare Worker %s did not respond: %v; falling back to direct TCP", id, worker, err)
 	}
 
 	// Dedicated native TCP pass-through for CDN203 (91.105.192.100:443)
@@ -1837,7 +1837,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	if err != nil {
 		if !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
-			logf("соединение #%d CDN203 (91.105.192.100:443) TCP dial failed: %v", id, err)
+			logf("conn #%d CDN203 (91.105.192.100:443) TCP dial failed: %v", id, err)
 		}
 		return
 	}
@@ -1845,10 +1845,10 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	setConnSockOpts(remote)
 
 	if err := writeFull(remote, init); err != nil {
-		logf("соединение #%d CDN203 write init failed: %v", id, err)
+		logf("conn #%d CDN203 write init failed: %v", id, err)
 		return
 	}
-	logf("соединение #%d %s → CDN203 (91.105.192.100:443) через прямой TCP pass-through", id, orig)
+	logf("conn #%d %s -> CDN203 (91.105.192.100:443) via direct TCP pass-through", id, orig)
 	pipeTCPToTCP(c, remote, id, 203)
 }
 
@@ -1878,7 +1878,7 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 				return
 			case <-ticker.C:
 				if time.Since(time.Unix(0, lastActivity.Load())) > 5*time.Minute {
-					logf("соединение #%d DC%d (raw TCP) закрыто по таймауту бездействия (5 мин)", id, dc)
+					logf("conn #%d DC%d (raw TCP) closed due to idle timeout (5m)", id, dc)
 					closeBoth()
 					return
 				}
@@ -1951,7 +1951,7 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 				return
 			case <-ticker.C:
 				if time.Since(time.Unix(0, lastActivity.Load())) > 5*time.Minute {
-					logf("соединение #%d DC%d закрыто по таймауту бездействия (5 мин)", id, dc)
+					logf("conn #%d DC%d closed due to idle timeout (5m)", id, dc)
 					closeBoth()
 					return
 				}
@@ -1964,7 +1964,7 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 	go func() {
 		defer wg.Done()
 		if err := pipeTCPToWSCount(c, ws, init, &upBytes, &lastActivity); err != nil && !isNeutralError(err) {
-			logf("соединение #%d DC%d клиент→WSS ошибка: %T: %v (up=%d down=%d)", id, dc, err, err, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
+			logf("conn #%d DC%d client->WSS error: %T: %v (up=%d down=%d)", id, dc, err, err, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 		}
 		closeBoth()
 	}()
@@ -1976,7 +1976,7 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 			if readErr != nil {
 				if !strings.Contains(readErr.Error(), "use of closed network connection") {
 					noteEarlyRemoteClose(routeKey(dc, isMedia), ws.host, readErr, time.Since(startedAt), atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
-					logf("соединение #%d DC%d WSS→клиент ошибка: %T: %v (up=%d down=%d)", id, dc, readErr, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
+					logf("conn #%d DC%d WSS->client error: %T: %v (up=%d down=%d)", id, dc, readErr, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 				}
 				break
 			}
@@ -1985,7 +1985,7 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 			case 2, 0:
 				if len(payload) > 0 {
 					if readErr = writeFull(c, payload); readErr != nil {
-						logf("соединение #%d DC%d запись WSS→клиент завершена: %v (up=%d down=%d)", id, dc, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
+						logf("conn #%d DC%d write WSS->client finished: %v (up=%d down=%d)", id, dc, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 						closeBoth()
 						return
 					}
@@ -1999,7 +1999,7 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 				return
 			case 10:
 			default:
-				logf("DC%d неизвестный opcode WebSocket: %d", dc, op)
+				logf("DC%d unknown WebSocket opcode: %d", dc, op)
 			}
 		}
 		closeBoth()
@@ -2112,7 +2112,7 @@ func getSystemRootCAs() *x509.CertPool {
 			}
 		}
 		if added > 0 {
-			logf("tls: успешно загружено %d системных CA сертификатов Android", added)
+			logf("tls: successfully loaded %d Android system CA certificates", added)
 		}
 		systemRootCAs = pool
 	})
@@ -2210,7 +2210,7 @@ func androidDNSResolver() *net.Resolver {
 			last = err
 		}
 		if last == nil {
-			last = errors.New("не найдены доступные DNS-серверы Android")
+			last = errors.New("no available Android DNS servers found")
 		}
 		return nil, last
 	}}
@@ -2517,9 +2517,9 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 				routeChoice.Delete(key)
 			}
 		}
-		logf("WSS-маршрут %s временно исключён на 3 минуты после повторного раннего EOF (age=%s up=%d down=%d): %v", host, age.Round(time.Second), up, down, err)
+		logf("WSS route %s temporarily excluded for 3m after repeated early EOF (age=%s up=%d down=%d): %v", host, age.Round(time.Second), up, down, err)
 	} else {
-		logf("WSS-маршрут %s: ранний удалённый EOF #%d (age=%s up=%d down=%d): %v", host, state.count, age.Round(time.Second), up, down, err)
+		logf("WSS route %s: early remote EOF #%d (age=%s up=%d down=%d): %v", host, state.count, age.Round(time.Second), up, down, err)
 	}
 }
 
@@ -2530,7 +2530,7 @@ type dialCandidate struct {
 
 func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger time.Duration, maxParallel int) (*wsConn, string, error) {
 	if len(candidates) == 0 {
-		return nil, "", errors.New("нет доступных кандидатов для подключения")
+		return nil, "", errors.New("no available candidates for connection")
 	}
 	if len(candidates) == 1 {
 		ws, err := candidates[0].dial(ctx)
@@ -2603,13 +2603,13 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 		}
 	}
 
-	return nil, "", fmt.Errorf("все %d кандидатов завершились с ошибкой: %s", len(candidates), strings.Join(errorsSeen, " | "))
+	return nil, "", fmt.Errorf("all %d candidates failed: %s", len(candidates), strings.Join(errorsSeen, " | "))
 }
 
 func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) {
 	hosts := wsHostsForDC(dc, isMedia)
 	if len(hosts) == 0 {
-		return nil, fmt.Errorf("неизвестный DC: %d", dc)
+		return nil, fmt.Errorf("unknown DC: %d", dc)
 	}
 	key := routeKey(dc, isMedia)
 	resolver := androidDNSResolver()
@@ -2749,7 +2749,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 	candidates = append(candidates, deferCandidates...)
 
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("нет доступных маршрутов для DC%d media=%t", dc, isMedia)
+		return nil, fmt.Errorf("no available routes for DC%d media=%t", dc, isMedia)
 	}
 
 	if cfBalance && len(candidates) > 1 {
@@ -2767,7 +2767,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 		return nil, err
 	}
 
-	logf("DC%d media=%t Happy Eyeballs победил: %s", dc, isMedia, winningRoute)
+	logf("DC%d media=%t Happy Eyeballs winner: %s", dc, isMedia, winningRoute)
 	if strings.HasPrefix(winningRoute, "cf-") {
 		if start := strings.IndexByte(winningRoute, '('); start != -1 {
 			if end := strings.IndexByte(winningRoute[start:], ')'); end != -1 {
@@ -2859,7 +2859,7 @@ func maybeProbeCloudflare(key string, dc int, isMedia bool, directDuration time.
 	}
 	if best.host == "" {
 		routeChoice.Store(key, routeDecision{preferCF: false, expires: time.Now().Add(6 * time.Hour)})
-		logf("DC%d media=%t подбор маршрута: CF не ответил, оставляем direct", dc, isMedia)
+		logf("DC%d media=%t route selection: CF unresponsive, keeping direct", dc, isMedia)
 		return
 	}
 	prefer := best.elapsed*3 < directDuration*2
@@ -2874,7 +2874,7 @@ func maybeProbeCloudflare(key string, dc int, isMedia bool, directDuration time.
 	if prefer {
 		pick = "Cloudflare"
 	}
-	logf("DC%d media=%t подбор маршрута: direct=%dms, CF %s=%dms, выбор=%s", dc, isMedia, directDuration.Milliseconds(), best.host, best.elapsed.Milliseconds(), pick)
+	logf("DC%d media=%t route selection: direct=%dms, CF %s=%dms, choice=%s", dc, isMedia, directDuration.Milliseconds(), best.host, best.elapsed.Milliseconds(), pick)
 }
 
 func isTimeout(err error) bool {
@@ -2948,7 +2948,7 @@ func noteRouteHTTPFailure(host string, err error) {
 	}
 
 	if !wasCooling {
-		logf("WSS-маршрут %s временно исключён на %s после %s: %v", host, cooldown.Round(time.Second), reason, err)
+		logf("WSS route %s temporarily excluded for %s after %s: %v", host, cooldown.Round(time.Second), reason, err)
 	}
 }
 
@@ -3092,13 +3092,13 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 	}
 	want := base64.StdEncoding.EncodeToString(sha1Sum([]byte(key + wsGUID)))
 	if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("Sec-WebSocket-Accept")), want) {
-		return nil, errors.New("неверный Sec-WebSocket-Accept")
+		return nil, errors.New("invalid Sec-WebSocket-Accept")
 	}
 	if !headerToken(resp.Header.Get("Upgrade"), "websocket") || !headerToken(resp.Header.Get("Connection"), "upgrade") {
-		return nil, errors.New("неверные Upgrade/Connection заголовки")
+		return nil, errors.New("invalid Upgrade/Connection headers")
 	}
 	if p := resp.Header.Get("Sec-WebSocket-Protocol"); p != "" && p != "binary" {
-		return nil, fmt.Errorf("сервер выбрал неизвестный subprotocol %q", p)
+		return nil, fmt.Errorf("server selected unknown subprotocol %q", p)
 	}
 	return &wsConn{conn: conn, r: r, host: host}, nil
 }
@@ -3158,7 +3158,7 @@ func workerDstForDC(dc int) string {
 func dialCFWorker(ctx context.Context, dc int, dstIP, worker string) (*wsConn, error) {
 	worker = strings.TrimSpace(worker)
 	if worker == "" {
-		return nil, errors.New("worker не настроен")
+		return nil, errors.New("worker is not configured")
 	}
 	worker = strings.TrimPrefix(worker, "https://")
 	worker = strings.TrimPrefix(worker, "wss://")

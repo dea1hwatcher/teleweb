@@ -72,7 +72,7 @@ func loadRemoteCFDomainsCache() {
 		dynamicCFMu.Lock()
 		dynamicCFDomains = domains
 		dynamicCFMu.Unlock()
-		logf("cf-domains: загружен сохранённый пул из cf-domains.remote (%d доменов)", len(domains))
+		logf("cf-domains: loaded cached pool from cf-domains.remote (%d domains)", len(domains))
 	}
 }
 
@@ -127,7 +127,7 @@ func fetchCFDomainsFromURL(ctx context.Context, client *http.Client, targetURL s
 		out = append(out, domain)
 	}
 	if len(out) < 3 {
-		return nil, fmt.Errorf("получено слишком мало валидных доменов (%d)", len(out))
+		return nil, fmt.Errorf("received too few valid domains (%d)", len(out))
 	}
 	return out, nil
 }
@@ -152,7 +152,7 @@ func refreshCFDomains(ctx context.Context) error {
 	dynamicCFDomains = domains
 	dynamicCFMu.Unlock()
 	saveRemoteCFDomainsCache(domains)
-	logf("cf-domains: успешно обновлён пул Cloudflare-доменов из сети (%d доменов)", len(domains))
+	logf("cf-domains: successfully updated Cloudflare domains pool from network (%d domains)", len(domains))
 	return nil
 }
 
@@ -166,7 +166,7 @@ func startCFDomainsUpdater(ctx context.Context) {
 			return
 		case <-time.After(15 * time.Second):
 			if err := refreshCFDomains(ctx); err != nil {
-				logf("cf-domains: первичное обновление не удалось: %v; используется локальный/встроенный список", err)
+				logf("cf-domains: initial update failed: %v; falling back to local/embedded list", err)
 			}
 		}
 
@@ -178,7 +178,7 @@ func startCFDomainsUpdater(ctx context.Context) {
 				return
 			case <-ticker.C:
 				if err := refreshCFDomains(ctx); err != nil {
-					logf("cf-domains: плановое обновление не удалось: %v", err)
+					logf("cf-domains: scheduled update failed: %v", err)
 				}
 			}
 		}
