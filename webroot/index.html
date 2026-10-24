@@ -368,6 +368,10 @@ html.no-anim *::after {
   -webkit-tap-highlight-color: transparent;
   transition: color var(--dur-short) var(--standard);
 }
+.nav-ind > * {
+  position: relative;
+  z-index: 1;
+}
 .nav-ind::before {
   content: "";
   position: absolute;
@@ -749,7 +753,7 @@ html.no-anim *::after {
 .li-icon {
   width: 40px;
   height: 40px;
-  border-radius: var(--shape-small);
+  border-radius: var(--shape-full);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-primary);
   display: grid;
@@ -847,9 +851,9 @@ html.no-anim *::after {
   place-items: center;
 }
 .app-ico-wrap {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--shape-full);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -865,7 +869,7 @@ html.no-anim *::after {
 .app-ico-img {
   width: 40px;
   height: 40px;
-  border-radius: 10px;
+  border-radius: var(--shape-full);
   object-fit: contain;
   display: block;
 }
@@ -1650,7 +1654,6 @@ html.no-anim *::after {
           <span class="li-icon"><svg class="icon s20"><use href="#i-apps"/></svg></span>
           <span class="li-text">
             <span class="li-primary">Ожидание трафика Telegram</span>
-            <span class="li-secondary">Запустите Telegram, чтобы перехватчик зафиксировал соединение</span>
           </span>
         </div>
       </div>
@@ -1665,11 +1668,10 @@ html.no-anim *::after {
       <h2 class="subhead">Режим WebSocket & Cloudflare</h2>
       <div class="list">
         <!-- CF Priority -->
-        <label class="list-item two-line clickable state">
+        <label class="list-item clickable state">
           <span class="li-icon"><svg class="icon s20"><use href="#i-tune"/></svg></span>
           <span class="li-text">
             <span class="li-primary">Форсировать Cloudflare (CF Priority)</span>
-            <span class="li-secondary">Сразу подключаться через Cloudflare без задержек на прямой опрос IP</span>
           </span>
           <span class="li-trail">
             <input type="checkbox" class="switch" role="switch" id="swCFPriority" aria-label="Форсировать Cloudflare">
@@ -1677,11 +1679,10 @@ html.no-anim *::after {
         </label>
 
         <!-- CF Balance -->
-        <label class="list-item two-line clickable state">
+        <label class="list-item clickable state">
           <span class="li-icon"><svg class="icon s20"><use href="#i-globe"/></svg></span>
           <span class="li-text">
             <span class="li-primary">Балансировка доменов (CF Balance)</span>
-            <span class="li-secondary">Распределять новые сессии (Round-Robin) между проверенными узлами</span>
           </span>
           <span class="li-trail">
             <input type="checkbox" class="switch" role="switch" id="swCFBalance" aria-label="Балансировка доменов">
@@ -1699,7 +1700,6 @@ html.no-anim *::after {
             <input type="text" id="inputCustomDomain" placeholder="например, my-worker.example.com" autocomplete="off" autocapitalize="off" spellcheck="false">
             <label for="inputCustomDomain">Свой Cloudflare-домен (Фронтинг)</label>
           </div>
-          <span class="helper">Домен фронтинга будет опрашиваться первым с наивысшим приоритетом</span>
         </div>
 
         <!-- Custom CF Worker -->
@@ -1708,7 +1708,6 @@ html.no-anim *::after {
             <input type="text" id="inputCustomWorker" placeholder="например, my-worker.username.workers.dev" autocomplete="off" autocapitalize="off" spellcheck="false">
             <label for="inputCustomWorker">Шлюз Cloudflare Worker (cloudflare:sockets)</label>
           </div>
-          <span class="helper">Шлюз на Cloudflare Worker с поддержкой прямого TCP-коннекта к Telegram</span>
         </div>
 
         <!-- DC IP Overrides -->
@@ -1717,7 +1716,6 @@ html.no-anim *::after {
             <input type="text" id="inputDCOverrides" placeholder="1:149.154.175.50, 2:149.154.167.220" autocomplete="off" autocapitalize="off" spellcheck="false">
             <label for="inputDCOverrides">Ручные IP для DC (опционально)</label>
           </div>
-          <span class="helper">Переопределение точек входа в формате: DC:IP, DC:IP</span>
         </div>
 
         <div style="margin-top: 4px;">
@@ -1737,17 +1735,14 @@ html.no-anim *::after {
           <div class="stat-box">
             <span class="stat-title">Всего</span>
             <span class="stat-num" id="trafficTotal">0 Б</span>
-            <span class="stat-sub">С момента запуска</span>
           </div>
           <div class="stat-box">
             <span class="stat-title">Отправлено</span>
             <span class="stat-num" id="trafficUp">0 Б</span>
-            <span class="stat-sub">Клиент → WSS</span>
           </div>
           <div class="stat-box">
             <span class="stat-title">Получено</span>
             <span class="stat-num" id="trafficDown">0 Б</span>
-            <span class="stat-sub">WSS → Клиент</span>
           </div>
         </div>
       </div>
@@ -1786,19 +1781,17 @@ html.no-anim *::after {
     <div class="stack">
       <h2 class="subhead">Внешний вид</h2>
       <div class="list">
-        <div class="list-item two-line clickable state" role="button" tabindex="0" onclick="openThemeSheet()">
+        <div class="list-item clickable state" role="button" tabindex="0" onclick="openThemeSheet()">
           <span class="li-icon"><svg class="icon s20"><use href="#i-palette"/></svg></span>
           <span class="li-text">
             <span class="li-primary">Тема оформления</span>
-            <span class="li-secondary" id="theme-settings-sub">Светлая, тёмная, AMOLED и цвет акцента</span>
           </span>
           <span class="li-trail"><svg class="icon s20"><use href="#i-chevron-right"/></svg></span>
         </div>
-        <label class="list-item two-line clickable state">
+        <label class="list-item clickable state">
           <span class="li-icon"><svg class="icon s20"><use href="#i-motion"/></svg></span>
           <span class="li-text">
             <span class="li-primary">Отключение анимаций</span>
-            <span class="li-secondary">Уменьшить визуальные эффекты и задержки</span>
           </span>
           <span class="li-trail">
             <input type="checkbox" class="switch" role="switch" id="swDisableAnimations" aria-label="Отключение анимаций" onchange="toggleDisableAnimations(this.checked)">
@@ -1861,7 +1854,6 @@ html.no-anim *::after {
     <span class="li-icon"><svg class="icon s24"><use href="#i-contrast"/></svg></span>
     <span class="li-text">
       <span class="li-primary">Чёрный фон AMOLED</span>
-      <span class="li-secondary">Чистый #000000 в тёмной теме</span>
     </span>
     <span class="li-trail">
       <input type="checkbox" class="switch" role="switch" id="amoled-toggle" aria-label="Чёрный фон AMOLED" onchange="toggleAmoled(this.checked)">
@@ -1873,7 +1865,6 @@ html.no-anim *::after {
     <span class="li-icon"><svg class="icon s24"><use href="#i-contrast"/></svg></span>
     <span class="li-text">
       <span class="li-primary">Монохромная тема</span>
-      <span class="li-secondary">Чёрно-белая схема без акцента</span>
     </span>
     <span class="li-trail">
       <input type="checkbox" class="switch" role="switch" id="monochrome-toggle" aria-label="Монохромная тема" onchange="toggleMonochrome(this.checked)">
@@ -1885,7 +1876,6 @@ html.no-anim *::after {
     <span class="li-icon"><svg class="icon s24"><use href="#i-palette"/></svg></span>
     <span class="li-text">
       <span class="li-primary">Monet-иконки клиентов</span>
-      <span class="li-secondary">Тематические значки в стиле Material You</span>
     </span>
     <span class="li-trail">
       <input type="checkbox" class="switch" role="switch" id="monet-icons-toggle" aria-label="Monet-иконки клиентов" onchange="toggleMonetIcons(this.checked)">
@@ -2565,11 +2555,7 @@ function initSheetDrag(sheet) {
 }
 
 function updateThemeSummary() {
-  const el = $('theme-settings-sub');
-  if (!el) return;
-  const isAmoled = store.get('m3_amoled') === 'true' && isDark();
-  const modeName = isAmoled ? 'AMOLED' : currentMode === 'dark' ? 'Тёмная' : currentMode === 'light' ? 'Светлая' : 'Системная';
-  el.textContent = `Светлая, тёмная, AMOLED и цвет акцента · ${modeName}`;
+  // Subtitle omitted in single-line layout
 }
 
 function isAnimationsDisabled() {
@@ -2817,7 +2803,6 @@ function render() {
         <span class="li-icon">${iconHtml}</span>
         <span class="li-text">
           <span class="li-primary">${esc(app.name || "Telegram Client")}</span>
-          <span class="li-secondary">Трафик перенаправляется в WSS</span>
         </span>
       `;
       appsList.appendChild(item);
