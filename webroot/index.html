@@ -157,6 +157,7 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  -webkit-tap-highlight-color: transparent;
 }
 
 html, body {
@@ -345,6 +346,12 @@ html.no-anim *::after {
   padding: 12px 0 16px;
   color: var(--md-sys-color-on-surface-variant);
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+.nav-dest:active {
+  transform: none;
 }
 .nav-dest:focus-visible .nav-ind {
   outline: 3px solid var(--md-sys-color-primary);
@@ -358,21 +365,8 @@ html.no-anim *::after {
   display: grid;
   place-items: center;
   position: relative;
+  -webkit-tap-highlight-color: transparent;
   transition: color var(--dur-short) var(--standard);
-}
-.nav-badge {
-  position: absolute;
-  top: 4px;
-  right: 18px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--md-sys-color-error);
-  display: none;
-  z-index: 2;
-}
-.nav-badge.show {
-  display: block;
 }
 .nav-ind::before {
   content: "";
@@ -733,6 +727,73 @@ html.no-anim *::after {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* M3 Component: Divider */
+.divider {
+  height: 1px;
+  width: 100%;
+  background: var(--md-sys-color-outline-variant);
+  border: none;
+  margin: 16px 0;
+  flex: none;
+}
+
+/* Page Routing: Remove inner containers & apply MD3E dividers */
+#page-routing .list {
+  gap: 0;
+}
+#page-routing .list-item {
+  background: transparent;
+  border-radius: 0;
+  padding: 12px 0;
+  min-height: 56px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+#page-routing .list-item:last-child {
+  border-bottom: none;
+}
+#page-routing .list-item .li-icon {
+  background: transparent;
+  color: var(--md-sys-color-primary);
+}
+
+/* Page Routing: Traffic Stats without inner container boxes */
+#page-routing .stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+}
+#page-routing .stat-box {
+  background: transparent;
+  border-radius: 0;
+  padding: 10px 14px;
+  border: none;
+  position: relative;
+}
+@media (min-width: 481px) {
+  #page-routing .stat-box:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    top: 15%;
+    height: 70%;
+    width: 1px;
+    background: var(--md-sys-color-outline-variant);
+  }
+}
+@media (max-width: 480px) {
+  #page-routing .stats-grid.cols-3 {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  #page-routing .stat-box {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  }
+  #page-routing .stat-box:last-child {
+    border-bottom: none;
+  }
 }
 
 /* Detected Clients List - Transparent items without inner containers */
@@ -1593,7 +1654,9 @@ html.no-anim *::after {
         </label>
       </div>
 
-      <h2 class="subhead" style="margin-top: 8px;">Тонкая настройка адресов</h2>
+      <div class="divider"></div>
+
+      <h2 class="subhead">Тонкая настройка адресов</h2>
       <div class="group">
         <!-- Custom CF Domain -->
         <div class="field">
@@ -1623,7 +1686,9 @@ html.no-anim *::after {
         </div>
       </div>
 
-      <div class="row" style="margin-top: 8px;">
+      <div class="divider"></div>
+
+      <div class="row">
         <button class="btn primary with-icon state" id="saveConfigBtn" type="button">
           <svg class="icon s18"><use href="#i-check"/></svg>
           <span>Сохранить настройки</span>
@@ -1713,18 +1778,15 @@ html.no-anim *::after {
 <nav class="nav-bar" id="nav-bar" aria-label="Разделы приложения">
   <div class="nav-bar-inner">
     <button class="nav-dest" data-page="control" aria-current="page">
-      <span class="nav-ind state"><svg class="icon"><use href="#i-status"/></svg></span>
+      <span class="nav-ind"><svg class="icon"><use href="#i-status"/></svg></span>
       <span class="nav-label">Состояние</span>
     </button>
     <button class="nav-dest" data-page="routing">
-      <span class="nav-ind state"><svg class="icon"><use href="#i-tune"/></svg></span>
+      <span class="nav-ind"><svg class="icon"><use href="#i-tune"/></svg></span>
       <span class="nav-label">Маршруты</span>
     </button>
     <button class="nav-dest" data-page="logs">
-      <span class="nav-ind state">
-        <svg class="icon"><use href="#i-logs"/></svg>
-        <span class="nav-badge" id="logsNavBadge"></span>
-      </span>
+      <span class="nav-ind"><svg class="icon"><use href="#i-logs"/></svg></span>
       <span class="nav-label">Журналы</span>
     </button>
   </div>
@@ -2761,11 +2823,7 @@ function render() {
     }
   }
 
-  // Logs Badge on nav bar (signals connection errors in real time)
-  const logsBadge = $("logsNavBadge");
-  if (logsBadge) {
-    logsBadge.classList.toggle("show", !!(state && (state.fail || 0) > 0));
-  }
+
 }
 
 // Data Refresh
@@ -3256,6 +3314,7 @@ window.addEventListener("scroll", () => {
 
 // Dynamic Ripple Effect
 document.addEventListener("pointerdown", (e) => {
+  if (e.target.closest(".nav-bar") || e.target.closest(".nav-dest")) return;
   const target = e.target.closest(".state");
   if (!target) return;
   const rect = target.getBoundingClientRect();
