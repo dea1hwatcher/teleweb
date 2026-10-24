@@ -1394,9 +1394,6 @@ func ensureRuntime() error {
 	if !daemonHealthy() {
 		logf("supervisor: daemon/listener missing, restoring")
 		stopServer()
-		if err := setupRules(); err != nil {
-			return err
-		}
 		if err := ensureServer(); err != nil {
 			return err
 		}
@@ -1406,6 +1403,9 @@ func ensureRuntime() error {
 		}
 		if !serverListening() {
 			return fmt.Errorf("tgws failed to listen on port %d", defaultPort)
+		}
+		if err := setupRules(); err != nil {
+			return err
 		}
 	} else if !rulesHealthy() {
 		logf("supervisor: redirection rules missing, restoring")
@@ -2769,6 +2769,8 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 		case <-timer.C:
 			if active < maxParallel && nextIdx < len(candidates) {
 				startNext()
+			}
+			if nextIdx < len(candidates) {
 				timer.Reset(stagger)
 			}
 
@@ -2787,7 +2789,7 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 				return res.ws, res.cand.name, nil
 			}
 			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: %v", res.cand.name, res.err))
-			if active == 0 && nextIdx < len(candidates) {
+			if active < maxParallel && nextIdx < len(candidates) {
 				startNext()
 				timer.Reset(stagger)
 			}

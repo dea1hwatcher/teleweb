@@ -2,7 +2,7 @@
 MODDIR=${0%/*}
 export TELEWEB_DIR=/data/adb/teleweb
 export TELEWEB_MOD="$MODDIR"
-echo "TeleWEB $(grep -E '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2 || echo "v2.1.48")"
+echo "TeleWEB $(grep -E '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2 || echo "module")"
 echo "ABI: $(getprop ro.product.cpu.abi 2>/dev/null)"
 echo
 "$MODDIR/bin/tgws" status 2>&1

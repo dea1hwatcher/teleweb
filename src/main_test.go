@@ -1259,3 +1259,51 @@ func TestDCLearnAndPersistence(t *testing.T) {
 	}
 }
 
+func TestRaceCandidatesFastFailureRecoversSlot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	candidates := []dialCandidate{
+		{
+			name: "cand-slow",
+			dial: func(c context.Context) (*wsConn, error) {
+				select {
+				case <-time.After(300 * time.Millisecond):
+					return nil, errors.New("slow failed")
+				case <-c.Done():
+					return nil, c.Err()
+				}
+			},
+		},
+		{
+			name: "cand-fast-fail",
+			dial: func(c context.Context) (*wsConn, error) {
+				time.Sleep(5 * time.Millisecond)
+				return nil, errors.New("fast error")
+			},
+		},
+		{
+			name: "cand-fast-winner",
+			dial: func(c context.Context) (*wsConn, error) {
+				time.Sleep(5 * time.Millisecond)
+				return &wsConn{host: "winner.test"}, nil
+			},
+		},
+	}
+
+	ws, winner, err := raceCandidates(ctx, candidates, 20*time.Millisecond, 2)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("raceCandidates failed: %v", err)
+	}
+	if ws == nil {
+		t.Fatal("expected non-nil ws")
+	}
+	if winner != "cand-fast-winner" {
+		t.Fatalf("expected cand-fast-winner, got %q", winner)
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("race took too long (%v > 150ms), slot recovery stalled", elapsed)
+	}
+}
