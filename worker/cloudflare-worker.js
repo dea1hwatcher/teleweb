@@ -34,7 +34,7 @@ export default {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("expected a websocket upgrade", { status: 426 });
     }
-    const token = env.TELEWEB_TOKEN || env.TGOPEN_TOKEN;
+    const token = env.TELEWEB_TOKEN;
     if (token && url.searchParams.get("token") !== token) {
       return new Response("forbidden", { status: 403 });
     }

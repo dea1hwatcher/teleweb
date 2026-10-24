@@ -9,10 +9,6 @@ case "$MODDIR" in
       MODDIR="/data/adb/modules/teleweb"
     elif [ -d "/data/adb/modules_update/teleweb" ]; then
       MODDIR="/data/adb/modules_update/teleweb"
-    elif [ -d "/data/adb/modules/tgopen" ]; then
-      MODDIR="/data/adb/modules/tgopen"
-    elif [ -d "/data/adb/modules_update/tgopen" ]; then
-      MODDIR="/data/adb/modules_update/tgopen"
     else
       MODDIR="$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")"
     fi
@@ -27,8 +23,6 @@ mkdir -p /data/adb/teleweb
 chmod 700 /data/adb/teleweb 2>/dev/null
 export TELEWEB_DIR=/data/adb/teleweb
 export TELEWEB_MOD="$MODDIR"
-export TGOPEN_DIR=/data/adb/teleweb
-export TGOPEN_MOD="$MODDIR"
 
 chmod 0755 "$MODDIR/bin/tgws" 2>/dev/null
 

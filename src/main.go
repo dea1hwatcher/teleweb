@@ -41,7 +41,7 @@ const (
 )
 
 var (
-	baseDir          = envOr("TELEWEB_DIR", envOr("TGOPEN_DIR", "/data/adb/teleweb"))
+	baseDir          = envOr("TELEWEB_DIR", "/data/adb/teleweb")
 	startAt          = time.Now()
 	active           int64
 	wsCount          int64
@@ -785,11 +785,9 @@ func appNames(a []App) string {
 func cleanupRules() {
 	_, uids := installedApps()
 	iptCleanup(findBin("iptables"), uids, "TELEWEB")
-	iptCleanup(findBin("iptables"), uids, "TGOPEN")
 	// Clean up the previous release's IPv6 redirect chain even though this
 	// experimental build does not install new IPv6 redirects.
 	iptCleanup(findBin("ip6tables"), uids, "TELEWEB")
-	iptCleanup(findBin("ip6tables"), uids, "TGOPEN")
 }
 func ensureServer() error {
 	if pidAlive() {

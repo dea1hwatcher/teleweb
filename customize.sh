@@ -51,8 +51,6 @@ mkdir -p /data/adb/teleweb
 # Остановка предыдущего процесса tgws перед запуском
 export TELEWEB_DIR=/data/adb/teleweb
 export TELEWEB_MOD="$MODPATH"
-export TGOPEN_DIR=/data/adb/teleweb
-export TGOPEN_MOD="$MODPATH"
 [ -x "$MODPATH/bin/tgws" ] && "$MODPATH/bin/tgws" stop >/dev/null 2>&1
 
 ui_print "TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)"

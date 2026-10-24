@@ -5,4 +5,3 @@ chmod 700 /data/adb/teleweb 2>/dev/null
 
 # Clean up stale PID files left from previous device boot to prevent PID collisions
 rm -f /data/adb/teleweb/tgws.pid /data/adb/teleweb/watchdog.pid
-rm -f /data/adb/tgopen/tgws.pid /data/adb/tgopen/watchdog.pid 2>/dev/null
