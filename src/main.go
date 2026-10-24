@@ -41,7 +41,6 @@ const (
 
 var (
 	baseDir          = envOr("TGOPEN_DIR", "/data/adb/tgopen")
-	modDir           = envOr("TGOPEN_MOD", "/data/adb/modules/tgopen")
 	startAt          = time.Now()
 	active           int64
 	wsCount          int64
@@ -1298,6 +1297,29 @@ func serve() {
 	}
 }
 
+var (
+	knownDCMap = map[string]int{
+		"149.154.175.50": 1, "149.154.175.51": 1, "149.154.175.53": 1, "149.154.175.54": 1, "149.154.175.55": 1,
+		"149.154.175.100": 3, "149.154.175.101": 3, "149.154.175.211": 1,
+		"149.154.167.50": 2, "149.154.167.51": 2, "149.154.167.52": 2, "149.154.167.91": 4, "149.154.167.92": 4,
+		"149.154.167.99": 2, "149.154.167.118": 4, "149.154.167.151": 2, "149.154.167.220": 2, "149.154.167.222": 2,
+		"149.154.167.223": 2, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4,
+		"149.154.166.121": 4, "149.154.175.52": 1, "149.154.175.102": 3, "149.154.174.100": 1, "149.154.170.100": 5,
+		"149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.128": 5, "91.108.56.151": 5,
+		"91.105.192.100": 2,
+	}
+
+	prefix149_160 = netip.MustParsePrefix("149.154.160.0/20")
+	prefix185_151 = netip.MustParsePrefix("185.76.151.0/24")
+	prefix91_192  = netip.MustParsePrefix("91.105.192.0/23")
+	prefix91_56   = netip.MustParsePrefix("91.108.56.0/22")
+	prefix91_4    = netip.MustParsePrefix("91.108.4.0/22")
+	prefix91_8    = netip.MustParsePrefix("91.108.8.0/22")
+	prefix91_12   = netip.MustParsePrefix("91.108.12.0/22")
+	prefix91_16   = netip.MustParsePrefix("91.108.16.0/22")
+	prefix91_20   = netip.MustParsePrefix("91.108.20.0/22")
+)
+
 func dcFor(ip netip.Addr) int {
 	// SO_ORIGINAL_DST may yield IPv4-mapped IPv6 addresses such as
 	// ::ffff:149.154.167.51. Normalize these before IPv4 DC matching.
@@ -1305,15 +1327,13 @@ func dcFor(ip netip.Addr) int {
 	if !ip.Is4() {
 		return 0
 	}
-	s := ip.String()
-	known := map[string]int{"149.154.175.50": 1, "149.154.175.51": 1, "149.154.175.53": 1, "149.154.175.54": 1, "149.154.175.55": 1, "149.154.175.100": 3, "149.154.175.101": 3, "149.154.175.211": 1, "149.154.167.50": 2, "149.154.167.51": 2, "149.154.167.52": 2, "149.154.167.91": 4, "149.154.167.92": 4, "149.154.167.99": 2, "149.154.167.118": 4, "149.154.167.151": 2, "149.154.167.220": 2, "149.154.167.222": 2, "149.154.167.223": 2, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4, "149.154.166.121": 4, "149.154.175.52": 1, "149.154.175.102": 3, "149.154.174.100": 1, "149.154.170.100": 5, "149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.128": 5, "91.108.56.151": 5, "91.105.192.100": 2}
-	if d := known[s]; d != 0 {
+	if d := knownDCMap[ip.String()]; d != 0 {
 		return d
 	}
 	if ip.IsPrivate() {
 		return 0
 	}
-	if netip.MustParsePrefix("149.154.160.0/20").Contains(ip) {
+	if prefix149_160.Contains(ip) {
 		b := ip.As4()
 		// Telegram has several DC pools in the same aggregate. These rules
 		// cover common production addresses; explicit addresses above take
@@ -1347,28 +1367,28 @@ func dcFor(ip netip.Addr) int {
 			return 1
 		}
 	}
-	if netip.MustParsePrefix("185.76.151.0/24").Contains(ip) {
+	if prefix185_151.Contains(ip) {
 		return 2
 	}
-	if netip.MustParsePrefix("91.105.192.0/23").Contains(ip) {
+	if prefix91_192.Contains(ip) {
 		return 2
 	}
-	if netip.MustParsePrefix("91.108.56.0/22").Contains(ip) {
+	if prefix91_56.Contains(ip) {
 		return 5
 	}
-	if netip.MustParsePrefix("91.108.4.0/22").Contains(ip) {
+	if prefix91_4.Contains(ip) {
 		return 1
 	}
-	if netip.MustParsePrefix("91.108.8.0/22").Contains(ip) {
+	if prefix91_8.Contains(ip) {
 		return 2
 	}
-	if netip.MustParsePrefix("91.108.12.0/22").Contains(ip) {
+	if prefix91_12.Contains(ip) {
 		return 3
 	}
-	if netip.MustParsePrefix("91.108.16.0/22").Contains(ip) {
+	if prefix91_16.Contains(ip) {
 		return 4
 	}
-	if netip.MustParsePrefix("91.108.20.0/22").Contains(ip) {
+	if prefix91_20.Contains(ip) {
 		return 5
 	}
 	return 0
@@ -1473,8 +1493,6 @@ func handleClient(c net.Conn) {
 			if readErr != nil {
 				if !strings.Contains(readErr.Error(), "use of closed network connection") {
 					noteEarlyRemoteClose(routeKey(dc, isMedia), ws.host, readErr, time.Since(startedAt), atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
-				}
-				if !strings.Contains(readErr.Error(), "use of closed network connection") {
 					logf("соединение #%d DC%d WSS→клиент ошибка: %T: %v (up=%d down=%d)", id, dc, readErr, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 				}
 				break
@@ -1523,9 +1541,10 @@ func parseMTProtoDC(init []byte) (dc int, isMedia bool, ok bool) {
 	// advanced over those 56 bytes before decrypting the encrypted 8-byte
 	// tail; after the full 64-byte header, payload decryption starts at offset 64.
 	stream := cipher.NewCTR(block, init[40:56])
-	stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-	plainTail := make([]byte, 8)
-	stream.XORKeyStream(plainTail, init[56:64])
+	var zero56 [56]byte
+	stream.XORKeyStream(zero56[:], zero56[:])
+	var plainTail [8]byte
+	stream.XORKeyStream(plainTail[:], init[56:64])
 	proto := binary.LittleEndian.Uint32(plainTail[0:4])
 	if proto != 0xEFEFEFEF && proto != 0xEEEEEEEE && proto != 0xDDDDDDDD {
 		return 0, false, false
@@ -1619,10 +1638,29 @@ func getSystemRootCAs() *x509.CertPool {
 	return systemRootCAs
 }
 
+var (
+	dnsCacheMu      sync.RWMutex
+	dnsCacheServers []string
+	dnsCacheAt      time.Time
+)
+
 // androidDNSServers finds resolver addresses exposed by Android's netd.
-// Some rooted environments expose only a loopback nameserver in resolv.conf;
-// that address is not necessarily listening inside a standalone module process.
+// Caches discovered resolvers for 45 seconds to avoid repeatedly spawning getprop processes.
 func androidDNSServers() []string {
+	dnsCacheMu.RLock()
+	if time.Since(dnsCacheAt) < 45*time.Second && len(dnsCacheServers) > 0 {
+		cached := append([]string(nil), dnsCacheServers...)
+		dnsCacheMu.RUnlock()
+		return cached
+	}
+	dnsCacheMu.RUnlock()
+
+	dnsCacheMu.Lock()
+	defer dnsCacheMu.Unlock()
+	if time.Since(dnsCacheAt) < 45*time.Second && len(dnsCacheServers) > 0 {
+		return append([]string(nil), dnsCacheServers...)
+	}
+
 	var out []string
 	seen := map[string]bool{}
 	add := func(raw string) {
@@ -1640,10 +1678,10 @@ func androidDNSServers() []string {
 			out = append(out, v)
 		}
 	}
-	// 1. Android property dumps (catches net.wlan0.dns1, net.rmnet_data0.dns1, dhcp.wlan0.dns1, etc.)
-	if b, err := exec.Command("getprop").Output(); err == nil {
+	// 1. Android property dumps (catches net.wlan0.dns1, net.rmnet_data0.dns1, net.dns1..4, etc.)
+	if b, err := exec.Command("getprop").Output(); err == nil && len(b) > 0 {
 		for _, line := range strings.Split(string(b), "\n") {
-			if strings.Contains(line, "dns") {
+			if strings.Contains(strings.ToLower(line), "dns") {
 				parts := strings.SplitN(line, "]: [", 2)
 				if len(parts) == 2 {
 					val := strings.Trim(parts[1], "]\r\n ")
@@ -1651,12 +1689,13 @@ func androidDNSServers() []string {
 				}
 			}
 		}
-	}
-	// 2. Legacy net.dns1..4
-	for i := 1; i <= 4; i++ {
-		b, err := exec.Command("getprop", fmt.Sprintf("net.dns%d", i)).Output()
-		if err == nil {
-			add(string(b))
+	} else {
+		// 2. Legacy net.dns1..4 fallback if full getprop dump is unavailable
+		for i := 1; i <= 4; i++ {
+			b, err := exec.Command("getprop", fmt.Sprintf("net.dns%d", i)).Output()
+			if err == nil {
+				add(string(b))
+			}
 		}
 	}
 	// 3. /etc/resolv.conf
@@ -1672,7 +1711,10 @@ func androidDNSServers() []string {
 	for _, fallback := range []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"} {
 		add(fallback)
 	}
-	return out
+
+	dnsCacheServers = out
+	dnsCacheAt = time.Now()
+	return append([]string(nil), out...)
 }
 
 func androidDNSResolver() *net.Resolver {
@@ -1798,9 +1840,10 @@ func newMTProtoPacketFramer(initial []byte) (*mtprotoPacketFramer, error) {
 	// The first 56 bytes are key/IV material. The encrypted tail uses the
 	// CTR keystream at offset 56; payload bytes follow the complete 64-byte
 	// header, so advance this stream to offset 64 before framing packets.
-	stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-	tail := make([]byte, 8)
-	stream.XORKeyStream(tail, initial[56:64])
+	var zero56 [56]byte
+	stream.XORKeyStream(zero56[:], zero56[:])
+	var tail [8]byte
+	stream.XORKeyStream(tail[:], initial[56:64])
 	proto := binary.LittleEndian.Uint32(tail[:4])
 	if proto != 0xEFEFEFEF && proto != 0xEEEEEEEE && proto != 0xDDDDDDDD {
 		return nil, fmt.Errorf("unsupported MTProto transport tag %#x", proto)
@@ -1858,10 +1901,10 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 	if len(encrypted) == 0 {
 		return nil
 	}
-	plain := make([]byte, len(encrypted))
-	f.stream.XORKeyStream(plain, encrypted)
+	prevPlain := len(f.plain)
+	f.plain = append(f.plain, encrypted...)
+	f.stream.XORKeyStream(f.plain[prevPlain:], encrypted)
 	f.raw = append(f.raw, encrypted...)
-	f.plain = append(f.plain, plain...)
 	for {
 		n, ready, err := f.nextPacketSize()
 		if err != nil {
@@ -1884,6 +1927,10 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 		}
 		f.raw = f.raw[n:]
 		f.plain = f.plain[n:]
+		if len(f.raw) == 0 {
+			f.raw = f.raw[:0]
+			f.plain = f.plain[:0]
+		}
 	}
 }
 
@@ -2028,6 +2075,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 				return ws, nil
 			} else if err != nil {
 				errorsSeen = append(errorsSeen, host+": cached route: "+err.Error())
+				cfHostCache.Delete(key)
 			}
 		}
 	}
@@ -2128,18 +2176,6 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 	domains := cfDomains()
 	if len(domains) == 0 {
 		return nil, fmt.Errorf("direct WSS failed and no Cloudflare domains configured: %s", strings.Join(errorsSeen, " | "))
-	}
-	if cached, ok := cfHostCache.Load(key); ok {
-		if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
-			if ws, err := dialCFHost(ctx, resolver, host); err == nil {
-				routeChoice.Store(key, routeDecision{preferCF: true, host: host, expires: time.Now().Add(6 * time.Hour)})
-				saveRouteCache(key, host, nil)
-				return ws, nil
-			} else {
-				errorsSeen = append(errorsSeen, host+": "+err.Error())
-				cfHostCache.Delete(key)
-			}
-		}
 	}
 	// Try four domains concurrently per batch. For media, try the -1 hostname
 	// first; Telegram documents it as an alternate hostname with a higher
@@ -2271,11 +2307,13 @@ func maybeProbeCloudflare(key string, dc int, isMedia bool, directDuration time.
 		}(host)
 	}
 	var best result
+	var poolCandidates []routeCandidate
 	for i := 0; i < len(domains); i++ {
 		select {
 		case r := <-ch:
 			if r.ws != nil && r.err == nil {
 				_ = r.ws.Close()
+				poolCandidates = append(poolCandidates, routeCandidate{host: r.host, latency: r.elapsed})
 				if best.host == "" || r.elapsed < best.elapsed {
 					best = r
 				}
@@ -2297,6 +2335,9 @@ func maybeProbeCloudflare(key string, dc int, isMedia bool, directDuration time.
 			i = len(domains)
 		}
 	}
+	if len(poolCandidates) > 0 {
+		routePool.Store(key, poolCandidates)
+	}
 	if best.host == "" {
 		routeChoice.Store(key, routeDecision{preferCF: false, expires: time.Now().Add(6 * time.Hour)})
 		logf("DC%d media=%t подбор маршрута: CF не ответил, оставляем direct", dc, isMedia)
@@ -2306,7 +2347,9 @@ func maybeProbeCloudflare(key string, dc int, isMedia bool, directDuration time.
 	routeChoice.Store(key, routeDecision{preferCF: prefer, host: best.host, expires: time.Now().Add(6 * time.Hour)})
 	cfHostCache.Store(key, best.host)
 	if prefer {
-		saveRouteCache(key, best.host, nil)
+		saveRouteCache(key, best.host, poolCandidates)
+	} else if len(poolCandidates) > 0 {
+		saveRouteCache(key, "", poolCandidates)
 	}
 	pick := "direct"
 	if prefer {
@@ -2415,7 +2458,11 @@ func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, 
 		InsecureSkipVerify: true,
 	}
 	tc := tls.Client(raw, tlsConfig)
-	_ = tc.SetDeadline(time.Now().Add(8 * time.Second))
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = tc.SetDeadline(deadline)
+	} else {
+		_ = tc.SetDeadline(time.Now().Add(8 * time.Second))
+	}
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -2435,7 +2482,7 @@ func websocketUpgrade(conn net.Conn, host string) (*wsConn, error) {
 		return nil, err
 	}
 	key := base64.StdEncoding.EncodeToString(keyBytes)
-	if _, err := fmt.Fprintf(conn, "GET /apiws HTTP/1.1\r\nHost: %s\r\nOrigin: https://web.telegram.org\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\nUser-Agent: TG-Open/2.0\r\n\r\n", host, key); err != nil {
+	if _, err := fmt.Fprintf(conn, "GET /apiws HTTP/1.1\r\nHost: %s\r\nOrigin: https://web.telegram.org\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\nUser-Agent: TG-Open/2.1\r\n\r\n", host, key); err != nil {
 		return nil, err
 	}
 	r := bufio.NewReaderSize(conn, 32*1024)
@@ -2540,8 +2587,8 @@ func writeFull(w io.Writer, p []byte) error {
 }
 func (w *wsConn) readFrame() (byte, []byte, error) {
 	for {
-		h := make([]byte, 2)
-		if _, err := io.ReadFull(w.r, h); err != nil {
+		var h [2]byte
+		if _, err := io.ReadFull(w.r, h[:]); err != nil {
 			return 0, nil, err
 		}
 		fin, op, masked := h[0]&0x80 != 0, h[0]&0x0f, h[1]&0x80 != 0

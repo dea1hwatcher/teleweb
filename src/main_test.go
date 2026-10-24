@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -499,5 +500,171 @@ func TestFrontingSNIConfig(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tmp, "fronting-sni"), []byte("disable\n"), 0600)
 	if got := configuredFrontingSNI(); got != "" {
 		t.Errorf("expected disabled fronting SNI, got %q", got)
+	}
+}
+
+func TestPackageNamesValidity(t *testing.T) {
+	seen := map[string]bool{}
+	for _, p := range packageNames {
+		if p.Pkg == "" || p.Name == "" {
+			t.Errorf("empty package or name: %#v", p)
+		}
+		if seen[p.Pkg] {
+			t.Errorf("duplicate package in packageNames: %s", p.Pkg)
+		}
+		seen[p.Pkg] = true
+		if strings.ContainsAny(p.Pkg, " ,;:/\\") {
+			t.Errorf("invalid character in package name: %s", p.Pkg)
+		}
+	}
+	if len(packageNames) < 15 {
+		t.Errorf("expected at least 15 supported packages, got %d", len(packageNames))
+	}
+}
+
+func TestSystemRootCAs(t *testing.T) {
+	pool := getSystemRootCAs()
+	if pool == nil {
+		t.Fatal("expected non-nil system root CA pool")
+	}
+}
+
+func TestAndroidDNSServersCaching(t *testing.T) {
+	servers1 := androidDNSServers()
+	if len(servers1) == 0 {
+		t.Fatal("expected at least fallback DNS servers")
+	}
+	foundYandex := false
+	for _, s := range servers1 {
+		ip, err := netip.ParseAddr(s)
+		if err != nil || !ip.IsValid() {
+			t.Errorf("invalid DNS server IP: %s", s)
+		}
+		if s == "77.88.8.8" {
+			foundYandex = true
+		}
+	}
+	if !foundYandex {
+		t.Error("expected 77.88.8.8 in DNS server list")
+	}
+
+	servers2 := androidDNSServers()
+	if len(servers1) != len(servers2) {
+		t.Errorf("cached server list length mismatch: %d vs %d", len(servers1), len(servers2))
+	}
+}
+
+func TestMTProtoIntermediateAndPaddedTransport(t *testing.T) {
+	for _, proto := range []uint32{0xEEEEEEEE, 0xDDDDDDDD} {
+		// Valid intermediate packet: 4 bytes length (e.g., 16) + 16 bytes payload = 20 bytes total
+		payloadLen := uint32(16)
+		plain := make([]byte, 4+payloadLen)
+		binary.LittleEndian.PutUint32(plain[:4], payloadLen)
+		for i := 4; i < len(plain); i++ {
+			plain[i] = byte(i)
+		}
+
+		f := &mtprotoPacketFramer{proto: proto, plain: plain}
+		total, ready, err := f.nextPacketSize()
+		if err != nil {
+			t.Fatalf("proto %#x: nextPacketSize error: %v", proto, err)
+		}
+		if !ready {
+			t.Fatalf("proto %#x: expected ready=true", proto)
+		}
+		if total != 20 {
+			t.Fatalf("proto %#x: expected total=20, got %d", proto, total)
+		}
+
+		// Partial packet (< 4 bytes)
+		fPartial := &mtprotoPacketFramer{proto: proto, plain: plain[:2]}
+		total, ready, err = fPartial.nextPacketSize()
+		if err != nil || ready || total != 0 {
+			t.Fatalf("proto %#x partial: expected ready=false, got ready=%t, total=%d, err=%v", proto, ready, total, err)
+		}
+
+		// Zero length packet must return error
+		zeroPlain := make([]byte, 4)
+		fZ := &mtprotoPacketFramer{proto: proto, plain: zeroPlain}
+		_, _, err = fZ.nextPacketSize()
+		if err == nil {
+			t.Fatalf("proto %#x: expected error on zero-length packet", proto)
+		}
+	}
+}
+
+func TestNoteRouteHTTPFailureCooldown(t *testing.T) {
+	testHost := "badhost-test.invalid"
+	if routeCoolingDown(testHost) {
+		t.Fatalf("host %s should not be cooling down initially", testHost)
+	}
+
+	// Non-5xx error should NOT trigger cooldown
+	noteRouteHTTPFailure(testHost, errors.New("HTTP 404 Not Found"))
+	if routeCoolingDown(testHost) {
+		t.Fatalf("host %s should not cool down on HTTP 404", testHost)
+	}
+
+	// HTTP 502 Bad Gateway MUST trigger cooldown
+	noteRouteHTTPFailure(testHost, errors.New("HTTP 502 Bad Gateway: upstream connect error"))
+	if !routeCoolingDown(testHost) {
+		t.Fatalf("host %s must cool down after HTTP 502", testHost)
+	}
+
+	// HTTP 503 Service Unavailable MUST trigger cooldown
+	testHost503 := "badhost-503.invalid"
+	noteRouteHTTPFailure(testHost503, errors.New("HTTP 503 Service Unavailable"))
+	if !routeCoolingDown(testHost503) {
+		t.Fatalf("host %s must cool down after HTTP 503", testHost503)
+	}
+}
+
+func TestRouteCachePersistence(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tgopen-route-cache-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	testKey := "2"
+	testHost := "kws2.testpersist.co.uk"
+	testCandidates := []routeCandidate{
+		{host: "kws2.testpersist.co.uk", latency: 45 * time.Millisecond},
+		{host: "kws2.fallbackpersist.co.uk", latency: 70 * time.Millisecond},
+	}
+
+	saveRouteCache(testKey, testHost, testCandidates)
+
+	cacheFile := filepath.Join(tmpDir, "route-cache.json")
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("expected route-cache.json to exist: %v", err)
+	}
+
+	// Clear memory state before load
+	cfHostCache.Delete(testKey)
+	routeChoice.Delete(testKey)
+	routePool.Delete(testKey)
+
+	loadRouteCache()
+
+	v, ok := cfHostCache.Load(testKey)
+	if !ok || v.(string) != testHost {
+		t.Fatalf("expected cached host %s, got %#v", testHost, v)
+	}
+
+	pooled, ok := routePool.Load(testKey)
+	if !ok {
+		t.Fatalf("expected routePool for %s", testKey)
+	}
+	candidates, ok := pooled.([]routeCandidate)
+	if !ok || len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates in routePool, got %#v", pooled)
+	}
+	if candidates[0].host != testCandidates[0].host || candidates[0].latency != testCandidates[0].latency {
+		t.Errorf("candidate 0 mismatch: %#v vs %#v", candidates[0], testCandidates[0])
 	}
 }
