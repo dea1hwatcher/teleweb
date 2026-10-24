@@ -15,8 +15,30 @@ case "$MODDIR" in
     ;;
 esac
 
-[ -f "$MODDIR/disable" ] && exit 0
-[ -f "$MODDIR/remove" ] && exit 0
+DESC_BASE="TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)"
+update_description() { # running | stopped | error
+  local prop="$MODDIR/module.prop" d tmp
+  if [ ! -f "$prop" ] || [ ! -w "$prop" ]; then return 0; fi
+  case "$1" in
+    running)
+      d="✅ Работает · WSS" ;;
+    error)
+      d="⚠️ Сбой службы" ;;
+    *)
+      d="⛔ Остановлено" ;;
+  esac
+  d=$(printf '%s' "$d | $DESC_BASE" | tr -d '\n\r')
+  tmp="/data/adb/teleweb/module.prop.$$"
+  awk -v d="$d" 'BEGIN { done = 0 } /^description=/ { print "description=" d; done = 1; next } { print }
+    END { if (!done) print "description=" d }' "$prop" > "$tmp" 2>/dev/null && cat "$tmp" > "$prop" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+  return 0
+}
+
+if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
+  update_description stopped
+  exit 0
+fi
 
 umask 077
 mkdir -p /data/adb/teleweb
@@ -42,7 +64,11 @@ while ! pm path android >/dev/null 2>&1 && [ $count -lt 15 ]; do
 done
 
 # 3. Boot TeleWEB service (iptables redirection + daemon + watchdog)
-"$MODDIR/bin/tgws" boot >>/data/adb/teleweb/supervisor.log 2>&1
+if "$MODDIR/bin/tgws" boot >>/data/adb/teleweb/supervisor.log 2>&1; then
+  update_description running
+else
+  update_description error
+fi
 
 # 3.1 Protect Telegram voice and video calls (UDP STUN 3478, TURN 596-599) from DPI interception (Zapret / nfqws)
 iptables -t mangle -C PREROUTING -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null || \
@@ -57,3 +83,5 @@ while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do
   [ -f "$MODDIR/remove" ] && break
   "$MODDIR/bin/tgws" ensure >>/data/adb/teleweb/supervisor.log 2>&1
 done
+
+update_description stopped

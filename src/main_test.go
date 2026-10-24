@@ -1353,3 +1353,50 @@ func TestExtractAPKIconsMock(t *testing.T) {
 		t.Errorf("expected monet icon, got %s", monet)
 	}
 }
+func TestUpdateModuleDescription(t *testing.T) {
+	tmpDir := t.TempDir()
+	propFile := filepath.Join(tmpDir, "module.prop")
+	initialContent := "id=teleweb\nname=TeleWEB\nversion=0.1.0\nversionCode=100\nauthor=TeleWEB\ndescription=Initial description\nwebuiIcon=webroot/module_icon.png\n"
+	if err := os.WriteFile(propFile, []byte(initialContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TELEWEB_MOD", tmpDir)
+
+	// Test updating to running
+	updateModuleDescription("✅ Работает · WSS")
+	content, err := os.ReadFile(propFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedRunning := "description=✅ Работает · WSS | " + defaultDescBase
+	if !strings.Contains(string(content), expectedRunning) {
+		t.Errorf("expected %q in module.prop, got:\n%s", expectedRunning, string(content))
+	}
+
+	// Test updating to stopped
+	updateModuleDescription("⛔ Остановлено")
+	content, err = os.ReadFile(propFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedStopped := "description=⛔ Остановлено | " + defaultDescBase
+	if !strings.Contains(string(content), expectedStopped) {
+		t.Errorf("expected %q in module.prop, got:\n%s", expectedStopped, string(content))
+	}
+
+	// Verify idempotence (calling again doesn't alter content or duplicate)
+	updateModuleDescription("⛔ Остановлено")
+	content2, _ := os.ReadFile(propFile)
+	if string(content2) != string(content) {
+		t.Errorf("idempotent call altered file content")
+	}
+
+	// Verify currentStatusDesc when disabled
+	t.Setenv("TELEWEB_DIR", tmpDir)
+	_ = writeEnabled(false)
+	desc := currentStatusDesc()
+	if desc != "⛔ Остановлено" {
+		t.Errorf("expected ⛔ Остановлено when disabled, got %s", desc)
+	}
+}

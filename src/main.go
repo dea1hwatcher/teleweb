@@ -241,6 +241,117 @@ func envOr(k, d string) string {
 }
 func path(name string) string { return filepath.Join(baseDir, name) }
 func ensureDir()              { _ = os.MkdirAll(baseDir, 0700) }
+
+const defaultDescBase = "TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)"
+
+var (
+	descMu          sync.Mutex
+	lastWrittenDesc string
+)
+
+func getModulePropPath() string {
+	candidates := []string{
+		os.Getenv("TELEWEB_MOD"),
+		"/data/adb/modules/teleweb",
+		"/data/adb/modules_update/teleweb",
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Dir(filepath.Dir(exe)))
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		p := filepath.Join(c, "module.prop")
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+func currentStatusDesc() string {
+	if !readEnabled() {
+		return "⛔ Остановлено"
+	}
+	running := daemonHealthy()
+	rules := rulesHealthy()
+	if !running || !rules {
+		return "⚠️ Сбой службы"
+	}
+	mode := "WSS"
+	if readCFPriority() {
+		mode = "WSS (CF Priority)"
+	}
+	return "✅ Работает · " + mode
+}
+
+func updateModuleDescription(statusText string) {
+	descMu.Lock()
+	defer descMu.Unlock()
+
+	propPath := getModulePropPath()
+	if propPath == "" {
+		return
+	}
+
+	data, err := os.ReadFile(propPath)
+	if err != nil {
+		return
+	}
+
+	fullDesc := statusText + " | " + defaultDescBase
+	if statusText == "" {
+		fullDesc = defaultDescBase
+	}
+
+	if fullDesc == lastWrittenDesc {
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var newLines []string
+	found := false
+	changed := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, "\r")
+		if strings.HasPrefix(trimmed, "description=") {
+			currentVal := strings.TrimPrefix(trimmed, "description=")
+			if currentVal != fullDesc {
+				newLines = append(newLines, "description="+fullDesc)
+				changed = true
+			} else {
+				newLines = append(newLines, trimmed)
+			}
+			found = true
+		} else {
+			newLines = append(newLines, trimmed)
+		}
+	}
+	if !found {
+		newLines = append(newLines, "description="+fullDesc)
+		changed = true
+	}
+	if !changed {
+		lastWrittenDesc = fullDesc
+		return
+	}
+
+	out := strings.Join(newLines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+
+	tmp := propPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0644); err == nil {
+		if err := os.Rename(tmp, propPath); err == nil {
+			lastWrittenDesc = fullDesc
+		} else {
+			_ = os.Remove(tmp)
+		}
+	}
+}
 func logf(format string, a ...any) {
 	msg := time.Now().Format("2006/01/02 15:04:05 ") + fmt.Sprintf(format, a...)
 	logMu.Lock()
@@ -1578,6 +1689,7 @@ func watchdog() {
 		daemonOK, rulesOK := daemonHealthy(), rulesHealthy()
 		if daemonOK != lastDaemonOK || rulesOK != lastRulesOK {
 			logf("watchdog: state change daemon %t->%t, rules %t->%t; %s", lastDaemonOK, daemonOK, lastRulesOK, rulesOK, procSummary(readPIDFile("tgws.pid")))
+			updateModuleDescription(currentStatusDesc())
 		}
 		lastDaemonOK, lastRulesOK = daemonOK, rulesOK
 		if !daemonOK {
@@ -1617,6 +1729,7 @@ func ensureRuntime() error {
 	if !readEnabled() {
 		stopWatchdog()
 		stopServer()
+		updateModuleDescription("⛔ Остановлено")
 		return nil
 	}
 	if !daemonHealthy() {
@@ -1820,19 +1933,26 @@ func apiMain(arg string) {
 			if *q.Enabled {
 				if err := setupRules(); err != nil {
 					_ = writeEnabled(false)
+					updateModuleDescription("⚠️ Сбой правил перехвата")
 					emitErr(err)
 					return
 				}
 				if err := ensureServer(); err != nil {
+					_ = writeEnabled(false)
+					cleanupRules()
+					updateModuleDescription("⚠️ Ошибка запуска tgws")
 					emitErr(err)
 					return
 				}
+				protectTargetAppProcesses()
 				if err := ensureWatchdog(); err != nil {
 					logf("failed to start watchdog: %v", err)
 				}
+				updateModuleDescription(currentStatusDesc())
 			} else {
 				stopWatchdog()
 				stopServer()
+				updateModuleDescription("⛔ Остановлено")
 			}
 		}
 		if q.CFPriority != nil {
@@ -1840,6 +1960,7 @@ func apiMain(arg string) {
 				emitErr(err)
 				return
 			}
+			updateModuleDescription(currentStatusDesc())
 		}
 		if q.CFBalance != nil {
 			if err := writeCFBalance(*q.CFBalance); err != nil {
@@ -1904,6 +2025,7 @@ func main() {
 			stopWatchdog()
 			stopServer()
 			if !readEnabled() {
+				updateModuleDescription("⛔ Остановлено")
 				fmt.Println("TeleWEB disabled")
 				return
 			}
@@ -1918,11 +2040,13 @@ func main() {
 			if lastErr != nil {
 				logf("boot: failed to setup redirection rules: %v", lastErr)
 				fmt.Fprintln(os.Stderr, lastErr)
+				updateModuleDescription("⚠️ Сбой правил перехвата")
 				os.Exit(1)
 			}
 			if e := ensureServer(); e != nil {
 				logf("boot: failed to start server: %v", e)
 				fmt.Fprintln(os.Stderr, e)
+				updateModuleDescription("⚠️ Ошибка запуска tgws")
 				os.Exit(1)
 			}
 			deadline := time.Now().Add(4 * time.Second)
@@ -1932,11 +2056,13 @@ func main() {
 			if e := ensureWatchdog(); e != nil {
 				logf("boot: failed to start watchdog: %v", e)
 			}
+			updateModuleDescription(currentStatusDesc())
 			fmt.Println("TeleWEB transport started")
 			return
 		case "stop":
 			stopWatchdog()
 			stopServer()
+			updateModuleDescription("⛔ Остановлено")
 			fmt.Println("TeleWEB stopped")
 			return
 		case "watchdog":
@@ -1946,8 +2072,10 @@ func main() {
 			if err := ensureRuntime(); err != nil {
 				logf("supervisor: %v", err)
 				fmt.Fprintln(os.Stderr, err)
+				updateModuleDescription("⚠️ Сбой службы")
 				os.Exit(1)
 			}
+			updateModuleDescription(currentStatusDesc())
 			return
 		case "serve":
 			serve()

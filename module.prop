@@ -3,5 +3,5 @@ name=TeleWEB
 version=0.1.0
 versionCode=100
 author=TeleWEB
-description=TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5). Защита звонков (STUN/TURN bypass), экспоненциальный кулдаун воркеров 429/503, динамический dc-learn MTProto, WebUI с экспортом логов и темами. Архитектуры: ARM64, ARM, x86, x86_64.
+description=⛔ Остановлено | TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)
 webuiIcon=webroot/module_icon.png
