@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -479,12 +480,12 @@ func TestDC203Normalization(t *testing.T) {
 		return init
 	}
 	dc, isMedia, ok := parseMTProtoDC(makeInit(203))
-	if !ok || dc != 2 || isMedia {
-		t.Fatalf("DC 203 normalization failed: dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
+	if !ok || dc != 203 || isMedia {
+		t.Fatalf("DC 203 detection failed: dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
 	}
 	dc, isMedia, ok = parseMTProtoDC(makeInit(-203))
-	if !ok || dc != 2 || !isMedia {
-		t.Fatalf("DC -203 media normalization failed: dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
+	if !ok || dc != 203 || !isMedia {
+		t.Fatalf("DC -203 media detection failed: dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
 	}
 }
 
@@ -989,5 +990,95 @@ func TestAppsCachePersistence(t *testing.T) {
 	}
 	if loadedUIDs[0] != 10123 || loadedUIDs[1] != 10124 {
 		t.Errorf("UID mismatch in loaded UIDs: %#v", loadedUIDs)
+	}
+}
+
+func TestCustomCFWorkerConfig(t *testing.T) {
+	oldDir := baseDir
+	tmp := t.TempDir()
+	baseDir = tmp
+	defer func() { baseDir = oldDir }()
+
+	if got := readCustomCFWorker(); got != "" {
+		t.Errorf("expected empty worker initially, got %q", got)
+	}
+
+	workerURL := "https://my-tg-worker.example.workers.dev/"
+	if err := writeCustomCFWorker(workerURL); err != nil {
+		t.Fatalf("failed to write worker: %v", err)
+	}
+
+	expected := "my-tg-worker.example.workers.dev"
+	if got := readCustomCFWorker(); got != expected {
+		t.Errorf("worker mismatch: got %q, want %q", got, expected)
+	}
+
+	// Clearing
+	if err := writeCustomCFWorker(""); err != nil {
+		t.Fatalf("failed to clear worker: %v", err)
+	}
+	if got := readCustomCFWorker(); got != "" {
+		t.Errorf("expected empty worker after clear, got %q", got)
+	}
+}
+
+func TestCloudflareWorkerContract(t *testing.T) {
+	cases := []struct {
+		dc       int
+		expected string
+	}{
+		{1, "149.154.175.50"},
+		{2, "149.154.167.51"},
+		{3, "149.154.175.100"},
+		{4, "149.154.167.91"},
+		{5, "149.154.171.5"},
+		{203, "91.105.192.100"},
+	}
+	for _, tc := range cases {
+		dst := workerDstForDC(tc.dc)
+		if dst != tc.expected {
+			t.Errorf("workerDstForDC(%d)=%q, want %q", tc.dc, dst, tc.expected)
+		}
+	}
+}
+
+func TestRaceCandidatesFastWinner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var startedCount atomic.Int32
+	candidates := []dialCandidate{
+		{
+			name: "cand-slow-failing",
+			dial: func(c context.Context) (*wsConn, error) {
+				startedCount.Add(1)
+				select {
+				case <-time.After(500 * time.Millisecond):
+					return nil, errors.New("timeout")
+				case <-c.Done():
+					return nil, c.Err()
+				}
+			},
+		},
+		{
+			name: "cand-fast-winner",
+			dial: func(c context.Context) (*wsConn, error) {
+				startedCount.Add(1)
+				// Return a fake wsConn
+				return &wsConn{host: "winner.test"}, nil
+			},
+		},
+	}
+
+	// 50ms stagger
+	ws, winner, err := raceCandidates(ctx, candidates, 50*time.Millisecond, 2)
+	if err != nil {
+		t.Fatalf("raceCandidates failed: %v", err)
+	}
+	if ws == nil {
+		t.Fatal("expected non-nil ws")
+	}
+	if winner != "cand-fast-winner" {
+		t.Errorf("expected winner cand-fast-winner, got %q", winner)
 	}
 }

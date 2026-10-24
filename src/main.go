@@ -216,6 +216,7 @@ type Status struct {
 	CFPriority        bool           `json:"cfPriority"`
 	CFBalance         bool           `json:"cfBalance"`
 	CustomCFDomain    string         `json:"customCFDomain"`
+	CustomCFWorker    string         `json:"customCFWorker"`
 	DCOverrides       string         `json:"dcOverrides"`
 }
 
@@ -225,6 +226,7 @@ type apiRequest struct {
 	CFPriority     *bool   `json:"cfPriority,omitempty"`
 	CFBalance      *bool   `json:"cfBalance,omitempty"`
 	CustomCFDomain *string `json:"customCFDomain,omitempty"`
+	CustomCFWorker *string `json:"customCFWorker,omitempty"`
 	DCOverrides    *string `json:"dcOverrides,omitempty"`
 }
 
@@ -396,6 +398,34 @@ func writeCustomCFDomain(d string) error {
 		return fmt.Errorf("недопустимый домен: %s", d)
 	}
 	return os.WriteFile(path("custom-cf-domain"), []byte(d+"\n"), 0600)
+}
+
+func readCustomCFWorker() string {
+	b, err := os.ReadFile(path("custom-cf-worker"))
+	if err != nil {
+		return ""
+	}
+	w := strings.TrimSpace(string(b))
+	w = strings.TrimPrefix(w, "https://")
+	w = strings.TrimPrefix(w, "wss://")
+	w = strings.TrimPrefix(w, "http://")
+	w = strings.TrimPrefix(w, "ws://")
+	return strings.TrimRight(w, "/")
+}
+
+func writeCustomCFWorker(w string) error {
+	ensureDir()
+	w = strings.TrimSpace(w)
+	w = strings.TrimPrefix(w, "https://")
+	w = strings.TrimPrefix(w, "wss://")
+	w = strings.TrimPrefix(w, "http://")
+	w = strings.TrimPrefix(w, "ws://")
+	w = strings.TrimRight(w, "/")
+	if w == "" {
+		_ = os.Remove(path("custom-cf-worker"))
+		return nil
+	}
+	return os.WriteFile(path("custom-cf-worker"), []byte(w+"\n"), 0600)
 }
 
 func readDCOverridesRaw() string {
@@ -1292,6 +1322,7 @@ func currentStatus() Status {
 		CFPriority:        readCFPriority(),
 		CFBalance:         readCFBalance(),
 		CustomCFDomain:    readCustomCFDomain(),
+		CustomCFWorker:    readCustomCFWorker(),
 		DCOverrides:       readDCOverridesRaw(),
 	}
 }
@@ -1313,6 +1344,7 @@ func status() Status {
 			s.CFPriority = readCFPriority()
 			s.CFBalance = readCFBalance()
 			s.CustomCFDomain = readCustomCFDomain()
+			s.CustomCFWorker = readCustomCFWorker()
 			s.DCOverrides = readDCOverridesRaw()
 			return s
 		}
@@ -1331,6 +1363,7 @@ func status() Status {
 		CFPriority:     readCFPriority(),
 		CFBalance:      readCFBalance(),
 		CustomCFDomain: readCustomCFDomain(),
+		CustomCFWorker: readCustomCFWorker(),
 		DCOverrides:    readDCOverridesRaw(),
 	}
 }
@@ -1423,6 +1456,12 @@ func apiMain(arg string) {
 		}
 		if q.CustomCFDomain != nil {
 			if err := writeCustomCFDomain(*q.CustomCFDomain); err != nil {
+				emitErr(err)
+				return
+			}
+		}
+		if q.CustomCFWorker != nil {
+			if err := writeCustomCFWorker(*q.CustomCFWorker); err != nil {
 				emitErr(err)
 				return
 			}
@@ -1586,7 +1625,7 @@ var (
 		"149.154.167.223": 2, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4,
 		"149.154.166.121": 4, "149.154.175.52": 1, "149.154.175.102": 3, "149.154.174.100": 1, "149.154.170.100": 5,
 		"149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.128": 5, "91.108.56.151": 5,
-		"91.105.192.100": 2,
+		"91.105.192.100": 203,
 	}
 
 	prefix149_160 = netip.MustParsePrefix("149.154.160.0/20")
@@ -1741,6 +1780,10 @@ func handleClient(c net.Conn) {
 		isMedia = mediaForIP(orig.Addr())
 		logf("соединение #%d %s: DC из init не распознан, fallback по IP → DC%d media=%t", id, orig, dc, isMedia)
 	}
+	if orig.Addr().String() == "91.105.192.100" || dc == 203 {
+		handleCDN203(c, orig, init, id)
+		return
+	}
 	if dc < 1 || dc > 5 {
 		atomic.AddInt64(&failCnt, 1)
 		logf("неизвестный DC для %s (соединение %d); не отправляю напрямую", orig, id)
@@ -1763,8 +1806,132 @@ func handleClient(c net.Conn) {
 	defer atomic.AddInt64(&wsCount, -1)
 	defer ws.Close()
 	logf("соединение #%d %s → DC%d media=%t через WSS", id, orig, dc, isMedia)
+	pipeWSTunnel(c, ws, init, id, dc, isMedia)
+}
+
+func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
+	statsMu.Lock()
+	dcCounts["203"]++
+	statsMu.Unlock()
+	atomic.AddInt64(&wsCount, 1)
+	defer atomic.AddInt64(&wsCount, -1)
+	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
+
+	worker := readCustomCFWorker()
+	if worker != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		ws, err := dialCFWorker(ctx, 203, "91.105.192.100", worker)
+		cancel()
+		if err == nil {
+			logf("соединение #%d %s → CDN203 через Cloudflare Worker %s", id, orig, worker)
+			defer ws.Close()
+			pipeWSTunnel(c, ws, init, id, 203, false)
+			return
+		}
+		logf("соединение #%d CDN203: Cloudflare Worker %s не ответил: %v; переход на прямой TCP", id, worker, err)
+	}
+
+	// Dedicated native TCP pass-through for CDN203 (91.105.192.100:443)
+	d := net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	remote, err := d.Dial("tcp4", "91.105.192.100:443")
+	if err != nil {
+		if !isNeutralError(err) {
+			atomic.AddInt64(&failCnt, 1)
+			logf("соединение #%d CDN203 (91.105.192.100:443) TCP dial failed: %v", id, err)
+		}
+		return
+	}
+	defer remote.Close()
+	setConnSockOpts(remote)
+
+	if err := writeFull(remote, init); err != nil {
+		logf("соединение #%d CDN203 write init failed: %v", id, err)
+		return
+	}
+	logf("соединение #%d %s → CDN203 (91.105.192.100:443) через прямой TCP pass-through", id, orig)
+	pipeTCPToTCP(c, remote, id, 203)
+}
+
+func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
+	setConnSockOpts(c)
+	setConnSockOpts(remote)
+	var upBytes, downBytes int64
+	var once sync.Once
+	closeBoth := func() {
+		once.Do(func() {
+			_ = c.Close()
+			_ = remote.Close()
+		})
+	}
+	defer closeBoth()
+
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+	stopIdle := make(chan struct{})
+	defer close(stopIdle)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopIdle:
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, lastActivity.Load())) > 5*time.Minute {
+					logf("соединение #%d DC%d (raw TCP) закрыто по таймауту бездействия (5 мин)", id, dc)
+					closeBoth()
+					return
+				}
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		buf := make([]byte, 64*1024)
+		for {
+			nr, err := c.Read(buf)
+			if nr > 0 {
+				lastActivity.Store(time.Now().UnixNano())
+				if ew := writeFull(remote, buf[:nr]); ew != nil {
+					break
+				}
+				atomic.AddInt64(&upBytes, int64(nr))
+				atomic.AddInt64(&trafficUpBytes, int64(nr))
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		buf := make([]byte, 64*1024)
+		for {
+			nr, err := remote.Read(buf)
+			if nr > 0 {
+				lastActivity.Store(time.Now().UnixNano())
+				if ew := writeFull(c, buf[:nr]); ew != nil {
+					break
+				}
+				atomic.AddInt64(&downBytes, int64(nr))
+				atomic.AddInt64(&trafficDownBytes, int64(nr))
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+	wg.Wait()
+}
+
+func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia bool) {
 	startedAt := time.Now()
-	// Include the initial MTProto obfuscation header in the lifetime traffic counter.
 	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
 	var upBytes int64   // client -> WSS payload bytes observed after the init header
 	var downBytes int64 // WSS -> client payload bytes
@@ -1791,10 +1958,7 @@ func handleClient(c net.Conn) {
 			}
 		}
 	}()
-	// Do not send unsolicited client WebSocket Ping frames. In observed logs,
-	// remote EOF age tracked the configured Ping interval (25s, then 10s),
-	// suggesting these WSS frontends close or mishandle client-originated Ping.
-	// We still answer Ping frames received from the server with Pong below.
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -1834,8 +1998,6 @@ func handleClient(c net.Conn) {
 				closeBoth()
 				return
 			case 10:
-				// A Pong is harmless; unsolicited client Ping is disabled because
-				// these WSS frontends appeared to close immediately after it.
 			default:
 				logf("DC%d неизвестный opcode WebSocket: %d", dc, op)
 			}
@@ -1877,7 +2039,7 @@ func parseMTProtoDC(init []byte) (dc int, isMedia bool, ok bool) {
 		idx = -idx
 	}
 	if idx == 203 {
-		idx = 2
+		return 203, isMedia, true
 	}
 	if idx < 1 || idx > 5 {
 		return 0, false, false
@@ -2361,290 +2523,267 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 	}
 }
 
-func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) {
-	if dc == 1 {
-		logf("DC1 media=%t: начало выбора маршрута; direct ingress=%s", isMedia, preferredIngressForDC(1))
+type dialCandidate struct {
+	name string
+	dial func(ctx context.Context) (*wsConn, error)
+}
+
+func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger time.Duration, maxParallel int) (*wsConn, string, error) {
+	if len(candidates) == 0 {
+		return nil, "", errors.New("нет доступных кандидатов для подключения")
 	}
+	if len(candidates) == 1 {
+		ws, err := candidates[0].dial(ctx)
+		return ws, candidates[0].name, err
+	}
+
+	raceCtx, cancelAll := context.WithCancel(ctx)
+	defer cancelAll()
+
+	type raceRes struct {
+		cand dialCandidate
+		ws   *wsConn
+		err  error
+	}
+
+	resCh := make(chan raceRes, len(candidates))
+	nextIdx := 0
+	active := 0
+	var errorsSeen []string
+
+	startNext := func() bool {
+		if nextIdx >= len(candidates) || active >= maxParallel {
+			return false
+		}
+		c := candidates[nextIdx]
+		nextIdx++
+		active++
+		go func(cand dialCandidate) {
+			ws, err := cand.dial(raceCtx)
+			resCh <- raceRes{cand: cand, ws: ws, err: err}
+		}(c)
+		return true
+	}
+
+	startNext()
+
+	timer := time.NewTimer(stagger)
+	defer timer.Stop()
+
+	for active > 0 || nextIdx < len(candidates) {
+		select {
+		case <-raceCtx.Done():
+			return nil, "", raceCtx.Err()
+
+		case <-timer.C:
+			if active < maxParallel && nextIdx < len(candidates) {
+				startNext()
+				timer.Reset(stagger)
+			}
+
+		case res := <-resCh:
+			active--
+			if res.err == nil && res.ws != nil {
+				cancelAll()
+				go func(rem int) {
+					for i := 0; i < rem; i++ {
+						r := <-resCh
+						if r.ws != nil {
+							_ = r.ws.Close()
+						}
+					}
+				}(active)
+				return res.ws, res.cand.name, nil
+			}
+			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: %v", res.cand.name, res.err))
+			if active == 0 && nextIdx < len(candidates) {
+				startNext()
+				timer.Reset(stagger)
+			}
+		}
+	}
+
+	return nil, "", fmt.Errorf("все %d кандидатов завершились с ошибкой: %s", len(candidates), strings.Join(errorsSeen, " | "))
+}
+
+func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) {
 	hosts := wsHostsForDC(dc, isMedia)
 	if len(hosts) == 0 {
 		return nil, fmt.Errorf("неизвестный DC: %d", dc)
 	}
 	key := routeKey(dc, isMedia)
 	resolver := androidDNSResolver()
-	var errorsSeen []string
 
 	cfPriority := readCFPriority()
 	cfBalance := readCFBalance()
+	worker := readCustomCFWorker()
 
-	// Honor the measured route before attempting the direct ingress.
-	if !cfBalance {
-		if v, ok := routeChoice.Load(key); ok {
-			if choice, ok := v.(routeDecision); ok {
-				if time.Now().Before(choice.expires) && choice.preferCF && choice.host != "" && !routeCoolingDown(choice.host) {
-					if ws, err := dialCFHost(ctx, resolver, choice.host); err == nil {
-						return ws, nil
-					} else {
-						logf("DC%d media=%t сохранённый маршрут %s отказал: %v; повторный подбор", dc, isMedia, choice.host, err)
-						cfHostCache.Delete(key)
-						routeChoice.Delete(key)
-					}
-				} else if !time.Now().Before(choice.expires) {
-					routeChoice.Delete(key)
-				}
-			}
+	var candidates []dialCandidate
+	var deferCandidates []dialCandidate
+
+	// 1. Cloudflare Worker candidate (high priority if cfPriority, else deferred)
+	if worker != "" {
+		workerHost := worker
+		candWorker := dialCandidate{
+			name: fmt.Sprintf("cf-worker (%s)", workerHost),
+			dial: func(c context.Context) (*wsConn, error) {
+				return dialCFWorker(c, dc, workerDstForDC(dc), workerHost)
+			},
+		}
+		if cfPriority {
+			candidates = append(candidates, candWorker)
+		} else {
+			deferCandidates = append(deferCandidates, candWorker)
 		}
 	}
 
-	// DC1 previously succeeded on this device via kws1.pclead.co.uk. Try that
-	// observed-good WSS route first, then the documented DC1 ingress 149.154.175.50.
+	// 2. DC1 special preferred host: kws1.pclead.co.uk
 	if dc == 1 && !cfBalance {
 		const preferredDC1Host = "kws1.pclead.co.uk"
-		// Do not blindly retry the hard-coded DC1 host after the health tracker
-		// has cooled it down.
 		if !routeCoolingDown(preferredDC1Host) {
-			if ws, err := dialCFHost(ctx, resolver, preferredDC1Host); err == nil {
-				cfHostCache.Store(key, preferredDC1Host)
-				saveRouteCache(key, preferredDC1Host, nil)
-				directFailUntil.Delete(key)
-				logf("DC1 media=%t WSS через ранее успешный Cloudflare-домен %s", isMedia, preferredDC1Host)
-				return ws, nil
-			} else {
-				logf("DC1 media=%t ранее успешный WSS-маршрут %s недоступен: %v; пробуем запасные маршруты", isMedia, preferredDC1Host, err)
-				errorsSeen = append(errorsSeen, preferredDC1Host+": "+err.Error())
+			candDC1 := dialCandidate{
+				name: fmt.Sprintf("cf-preferred (%s)", preferredDC1Host),
+				dial: func(c context.Context) (*wsConn, error) {
+					return dialCFHost(c, resolver, preferredDC1Host)
+				},
 			}
-		} else {
-			logf("DC1 media=%t: пропускаю %s — маршрут в cooldown после ранних EOF", isMedia, preferredDC1Host)
+			candidates = append(candidates, candDC1)
 		}
 	}
 
-	// Fast path: use the last known-good cached Cloudflare route before any
-	// direct-ingress timeout or multi-host discovery.
-	if !cfBalance {
-		if cached, ok := cfHostCache.Load(key); ok {
-			if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
-				if ws, err := dialCFHost(ctx, resolver, host); err == nil && ws != nil {
-					routeChoice.Store(key, routeDecision{preferCF: true, host: host, expires: time.Now().Add(6 * time.Hour)})
-					saveRouteCache(key, host, nil)
-					return ws, nil
-				} else if err != nil {
-					errorsSeen = append(errorsSeen, host+": cached route: "+err.Error())
-					cfHostCache.Delete(key)
-				}
+	// 3. Fast path: cached Cloudflare route
+	if cached, ok := cfHostCache.Load(key); ok {
+		if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
+			h := host
+			candCached := dialCandidate{
+				name: fmt.Sprintf("cf-cached (%s)", h),
+				dial: func(c context.Context) (*wsConn, error) {
+					return dialCFHost(c, resolver, h)
+				},
 			}
+			candidates = append(candidates, candCached)
 		}
 	}
 
-	// Prefer hosts preflighted by the background route-pool worker before
-	// starting a fresh multi-host discovery batch.
+	// 4. Pre-warmed route pool candidates
 	if pooled, ok := routePool.Load(key); ok {
-		if candidates, ok := pooled.([]routeCandidate); ok && len(candidates) > 0 {
-			orderedCandidates := candidates
-			if cfBalance && len(candidates) > 1 {
-				offset := int(atomic.AddUint64(&cfBalanceSeq, 1) % uint64(len(candidates)))
-				orderedCandidates = make([]routeCandidate, len(candidates))
-				for i := range candidates {
-					orderedCandidates[i] = candidates[(offset+i)%len(candidates)]
-				}
-			}
-			for _, candidate := range orderedCandidates {
-				if candidate.host == "" || routeCoolingDown(candidate.host) {
-					continue
-				}
-				attemptCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
-				ws, err := dialCFHost(attemptCtx, resolver, candidate.host)
-				cancel()
-				if err == nil && ws != nil {
-					if !cfBalance {
-						cfHostCache.Store(key, candidate.host)
-						routeChoice.Store(key, routeDecision{preferCF: true, host: candidate.host, expires: time.Now().Add(6 * time.Hour)})
-						saveRouteCache(key, candidate.host, nil)
+		if poolList, ok := pooled.([]routeCandidate); ok && len(poolList) > 0 {
+			for _, pc := range poolList {
+				if pc.host != "" && !routeCoolingDown(pc.host) {
+					h := pc.host
+					candPool := dialCandidate{
+						name: fmt.Sprintf("cf-pool (%s)", h),
+						dial: func(c context.Context) (*wsConn, error) {
+							return dialCFHost(c, resolver, h)
+						},
 					}
-					return ws, nil
+					candidates = append(candidates, candPool)
 				}
 			}
 		}
 	}
 
-	tryDirect := !cfPriority
-	if tryDirect {
-		if v, ok := directFailUntil.Load(key); ok {
-			if until, ok := v.(time.Time); ok && time.Now().Before(until) {
-				tryDirect = false
-			} else {
-				directFailUntil.Delete(key)
-			}
+	// 5. Direct Ingress IP candidates
+	targetHost := hosts[0]
+	preferredIP := preferredIngressForDC(dc)
+	candIPs := candidateIngressesForDC(dc)
+	var directIPs []netip.Addr
+	if preferredIP != "" {
+		directIPs = appendUniqueIP(directIPs, netip.MustParseAddr(preferredIP))
+	}
+	for _, cip := range candIPs {
+		if parsed, err := netip.ParseAddr(cip); err == nil {
+			directIPs = appendUniqueIP(directIPs, parsed)
 		}
 	}
-	if tryDirect {
-		directStarted := time.Now()
-		preferred := preferredIngressForDC(dc)
-		candidates := candidateIngressesForDC(dc)
-		for _, host := range hosts {
-			if routeCoolingDown(host) {
-				errorsSeen = append(errorsSeen, host+": временно исключён после повторных ранних EOF")
-				continue
-			}
-			ips, lookupErr := resolver.LookupNetIP(ctx, "ip4", host)
-			ordered := make([]netip.Addr, 0, len(ips)+len(candidates)+1)
-			if preferred != "" {
-				ordered = appendUniqueIP(ordered, netip.MustParseAddr(preferred))
-			}
-			for _, cip := range candidates {
-				if parsed, err := netip.ParseAddr(cip); err == nil {
-					ordered = appendUniqueIP(ordered, parsed)
-				}
-			}
-			if preferred == "" && len(candidates) == 0 {
+	if preferredIP == "" && len(candIPs) == 0 {
+		for _, h := range hosts {
+			if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
 				for _, ip := range ips {
 					if ip.Is4() {
-						ordered = appendUniqueIP(ordered, ip)
+						directIPs = appendUniqueIP(directIPs, ip)
 					}
 				}
 			}
-			if len(ordered) == 0 && lookupErr != nil {
-				errorsSeen = append(errorsSeen, "direct DNS "+host+": "+lookupErr.Error())
-				continue
-			}
-			timeoutCount := 0
-			for _, ip := range ordered {
-				attemptCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
-				d := net.Dialer{Timeout: 950 * time.Millisecond, KeepAlive: 30 * time.Second}
-				raw, err := d.DialContext(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"))
-				if err == nil {
-					setConnSockOpts(raw)
-					var ws *wsConn
-					ws, err = finishTelegramWS(attemptCtx, raw, host)
-					if err == nil {
-						cancel()
-						directFailUntil.Delete(key)
-						directMS := time.Since(directStarted)
-						logf("DC%d media=%t direct WSS %s via %s (%dms)", dc, isMedia, host, ip, directMS.Milliseconds())
-						go maybeProbeCloudflare(key, dc, isMedia, directMS)
-						return ws, nil
-					}
-					_ = raw.Close()
-				}
-				cancel()
-				errorsSeen = append(errorsSeen, fmt.Sprintf("direct %s@%s: %v", host, ip, err))
-				if dc == 1 {
-					logf("DC1 media=%t direct WSS %s via %s не сработал: %v", isMedia, host, ip, err)
-				}
-				if isTimeout(err) {
-					timeoutCount++
-					if timeoutCount >= 2 {
-						break
-					}
-				}
-			}
-			if len(errorsSeen) > 0 && isTimeoutText(errorsSeen[len(errorsSeen)-1]) {
-				break
-			}
-		}
-		if len(errorsSeen) > 0 {
-			directFailUntil.Store(key, time.Now().Add(10*time.Minute))
 		}
 	}
 
-	domains := cfDomains()
-	if len(domains) == 0 {
-		return nil, fmt.Errorf("direct WSS failed and no Cloudflare domains configured: %s", strings.Join(errorsSeen, " | "))
+	for _, ip := range directIPs {
+		ipAddr := ip
+		candDirect := dialCandidate{
+			name: fmt.Sprintf("direct (%s@%s)", targetHost, ipAddr),
+			dial: func(c context.Context) (*wsConn, error) {
+				attemptCtx, cancel := context.WithTimeout(c, 2500*time.Millisecond)
+				defer cancel()
+				d := net.Dialer{Timeout: 1200 * time.Millisecond, KeepAlive: 30 * time.Second}
+				raw, err := d.DialContext(attemptCtx, "tcp4", net.JoinHostPort(ipAddr.String(), "443"))
+				if err != nil {
+					return nil, err
+				}
+				setConnSockOpts(raw)
+				return finishTelegramWS(attemptCtx, raw, targetHost)
+			},
+		}
+		if !cfPriority {
+			candidates = append(candidates, candDirect)
+		} else {
+			deferCandidates = append(deferCandidates, candDirect)
+		}
 	}
-	if cfBalance && len(domains) > 1 {
-		offset := int(atomic.AddUint64(&cfBalanceSeq, 1) % uint64(len(domains)))
-		rotated := make([]string, len(domains))
-		for i := range domains {
-			rotated[i] = domains[(offset+i)%len(domains)]
+
+	// 6. Cloudflare Fronting Domains
+	for _, dom := range cfDomains() {
+		d := dom
+		host := fmt.Sprintf("kws%d.%s", dc, d)
+		if !routeCoolingDown(host) {
+			candDomain := dialCandidate{
+				name: fmt.Sprintf("cf-domain (%s)", host),
+				dial: func(c context.Context) (*wsConn, error) {
+					return dialCFHost(c, resolver, host)
+				},
+			}
+			candidates = append(candidates, candDomain)
 		}
-		domains = rotated
 	}
-	// Try four domains concurrently per batch. For media, try the -1 hostname
-	// first; Telegram documents it as an alternate hostname with a higher
-	// per-host concurrency limit, not as a separate media-only protocol.
-	for i := 0; i < len(domains); i += 4 {
-		end := i + 4
-		if end > len(domains) {
-			end = len(domains)
+
+	candidates = append(candidates, deferCandidates...)
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("нет доступных маршрутов для DC%d media=%t", dc, isMedia)
+	}
+
+	if cfBalance && len(candidates) > 1 {
+		offset := int(atomic.AddUint64(&cfBalanceSeq, 1) % uint64(len(candidates)))
+		rotated := make([]dialCandidate, len(candidates))
+		for i := range candidates {
+			rotated[i] = candidates[(offset+i)%len(candidates)]
 		}
-		batchCtx, cancelBatch := context.WithTimeout(ctx, 2200*time.Millisecond)
-		type result struct {
-			host string
-			ws   *wsConn
-			err  error
-		}
-		ch := make(chan result, end-i)
-		for _, domain := range domains[i:end] {
-			host := fmt.Sprintf("kws%d.%s", dc, domain)
-			orderedHosts := []string{host}
-			go func(hosts []string) {
-				var ws *wsConn
-				var err error
-				chosen := ""
-				for _, h := range hosts {
-					if routeCoolingDown(h) {
-						err = fmt.Errorf("маршрут временно исключён после ранних EOF")
-						continue
-					}
-					ws, err = dialCFHost(batchCtx, resolver, h)
-					if err == nil && ws != nil {
-						chosen = h
-						break
-					}
+		candidates = rotated
+	}
+
+	// Parallel Happy Eyeballs v2 connection racing with 250ms stagger
+	ws, winningRoute, err := raceCandidates(ctx, candidates, 250*time.Millisecond, 3)
+	if err != nil {
+		return nil, err
+	}
+
+	logf("DC%d media=%t Happy Eyeballs победил: %s", dc, isMedia, winningRoute)
+	if strings.HasPrefix(winningRoute, "cf-") {
+		if start := strings.IndexByte(winningRoute, '('); start != -1 {
+			if end := strings.IndexByte(winningRoute[start:], ')'); end != -1 {
+				h := winningRoute[start+1 : start+end]
+				if !cfBalance && h != "" && !strings.HasPrefix(winningRoute, "cf-worker") {
+					cfHostCache.Store(key, h)
+					routeChoice.Store(key, routeDecision{preferCF: true, host: h, expires: time.Now().Add(6 * time.Hour)})
+					saveRouteCache(key, h, nil)
 				}
-				select {
-				case ch <- result{host: chosen, ws: ws, err: err}:
-				case <-batchCtx.Done():
-					if ws != nil {
-						_ = ws.Close()
-					}
-				}
-			}(orderedHosts)
-		}
-		var winner *wsConn
-		remaining := end - i
-		for remaining > 0 {
-			select {
-			case r := <-ch:
-				remaining--
-				if r.err == nil && r.ws != nil {
-					if winner == nil {
-						winner = r.ws
-						cancelBatch()
-						cfHostCache.Store(key, r.host)
-						routeChoice.Store(key, routeDecision{preferCF: true, host: r.host, expires: time.Now().Add(6 * time.Hour)})
-						saveRouteCache(key, r.host, nil)
-						logf("DC%d media=%t WSS через Cloudflare-домен %s", dc, isMedia, r.host)
-					} else {
-						_ = r.ws.Close()
-					}
-				} else if r.err != nil {
-					errorsSeen = append(errorsSeen, r.host+": "+r.err.Error())
-				}
-			case <-batchCtx.Done():
-				remaining = 0
 			}
 		}
-		cancelBatch()
-		if winner != nil {
-			go func(c chan result, count int) {
-				for count > 0 {
-					select {
-					case r := <-c:
-						count--
-						if r.ws != nil {
-							_ = r.ws.Close()
-						}
-					case <-time.After(3 * time.Second):
-						return
-					}
-				}
-			}(ch, remaining)
-			return winner, nil
-		}
-		if ctx.Err() != nil {
-			break
-		}
+	} else if strings.HasPrefix(winningRoute, "direct") {
+		directFailUntil.Delete(key)
 	}
-	return nil, fmt.Errorf("все WSS-маршруты DC%d media=%t отказали: %s", dc, isMedia, strings.Join(errorsSeen, " | "))
+
+	return ws, nil
 }
 
 // maybeProbeCloudflare mirrors the original module's path measurement: probe
@@ -2925,12 +3064,19 @@ func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, 
 }
 
 func websocketUpgrade(conn net.Conn, host string) (*wsConn, error) {
+	return websocketUpgradePath(conn, host, "/apiws")
+}
+
+func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, error) {
+	if path == "" {
+		path = "/apiws"
+	}
 	keyBytes := make([]byte, 16)
 	if _, err := rand.Read(keyBytes); err != nil {
 		return nil, err
 	}
 	key := base64.StdEncoding.EncodeToString(keyBytes)
-	req := fmt.Sprintf("GET /apiws HTTP/1.1\r\nHost: %s\r\nOrigin: https://web.telegram.org\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\nUser-Agent: Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36\r\n\r\n", host, key)
+	req := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nOrigin: https://web.telegram.org\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\nUser-Agent: Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36\r\n\r\n", path, host, key)
 	if _, err := io.WriteString(conn, req); err != nil {
 		return nil, err
 	}
@@ -2955,6 +3101,115 @@ func websocketUpgrade(conn net.Conn, host string) (*wsConn, error) {
 		return nil, fmt.Errorf("сервер выбрал неизвестный subprotocol %q", p)
 	}
 	return &wsConn{conn: conn, r: r, host: host}, nil
+}
+
+func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string) (*wsConn, error) {
+	setConnSockOpts(raw)
+	uConfig := &utls.Config{
+		ServerName:                  host,
+		MinVersion:                  utls.VersionTLS12,
+		RootCAs:                     getSystemRootCAs(),
+		InsecureSkipVerify:          true,
+		NextProtos:                  []string{"http/1.1"},
+		DynamicRecordSizingDisabled: true,
+	}
+	uConn := utls.UClient(raw, uConfig, utls.HelloChrome_Auto)
+	if err := prepareUTLSForHTTP1(uConn); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = uConn.SetDeadline(deadline)
+	} else {
+		_ = uConn.SetDeadline(time.Now().Add(8 * time.Second))
+	}
+	if err := uConn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	ws, err := websocketUpgradePath(uConn, host, path)
+	if err != nil {
+		_ = uConn.Close()
+		return nil, err
+	}
+	_ = uConn.SetDeadline(time.Time{})
+	return ws, nil
+}
+
+func workerDstForDC(dc int) string {
+	switch dc {
+	case 1:
+		return "149.154.175.50"
+	case 2:
+		return "149.154.167.51"
+	case 3:
+		return "149.154.175.100"
+	case 4:
+		return "149.154.167.91"
+	case 5:
+		return "149.154.171.5"
+	case 203:
+		return "91.105.192.100"
+	default:
+		return "149.154.167.51"
+	}
+}
+
+func dialCFWorker(ctx context.Context, dc int, dstIP, worker string) (*wsConn, error) {
+	worker = strings.TrimSpace(worker)
+	if worker == "" {
+		return nil, errors.New("worker не настроен")
+	}
+	worker = strings.TrimPrefix(worker, "https://")
+	worker = strings.TrimPrefix(worker, "wss://")
+	worker = strings.TrimPrefix(worker, "http://")
+	worker = strings.TrimPrefix(worker, "ws://")
+	worker = strings.TrimRight(worker, "/")
+
+	host := worker
+	query := ""
+	if idx := strings.IndexByte(worker, '?'); idx != -1 {
+		host = worker[:idx]
+		query = worker[idx+1:]
+	}
+	if slash := strings.IndexByte(host, '/'); slash != -1 {
+		host = host[:slash]
+	}
+
+	path := fmt.Sprintf("/apiws?dst=%s&dc=%d", dstIP, dc)
+	if query != "" {
+		path += "&" + query
+	}
+
+	resolver := androidDNSResolver()
+	ips, err := resolver.LookupNetIP(ctx, "ip4", host)
+	if err != nil {
+		return nil, fmt.Errorf("worker DNS %s: %w", host, err)
+	}
+
+	var lastErr error
+	for _, ip := range ips {
+		if !ip.Is4() {
+			continue
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, 3000*time.Millisecond)
+		d := net.Dialer{Timeout: 1500 * time.Millisecond, KeepAlive: 30 * time.Second}
+		raw, e := d.DialContext(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"))
+		if e != nil {
+			cancel()
+			lastErr = e
+			continue
+		}
+		setConnSockOpts(raw)
+
+		ws, e := finishWorkerWS(attemptCtx, raw, host, path)
+		cancel()
+		if e == nil {
+			return ws, nil
+		}
+		lastErr = e
+	}
+	return nil, fmt.Errorf("worker %s: %v", host, lastErr)
 }
 func headerToken(value, token string) bool {
 	for _, part := range strings.Split(value, ",") {

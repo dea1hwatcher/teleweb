@@ -1614,9 +1614,18 @@ svg.icon.s36 { width: 36px; height: 36px; }
         <div class="field">
           <div class="tf">
             <input type="text" id="inputCustomDomain" placeholder="например, my-worker.example.com" autocomplete="off" autocapitalize="off" spellcheck="false">
-            <label for="inputCustomDomain">Свой Cloudflare-домен (Worker / Прокси)</label>
+            <label for="inputCustomDomain">Свой Cloudflare-домен (Фронтинг)</label>
           </div>
-          <span class="helper">Домен будет опрашиваться первым с наивысшим приоритетом</span>
+          <span class="helper">Домен фронтинга будет опрашиваться первым с наивысшим приоритетом</span>
+        </div>
+
+        <!-- Custom CF Worker -->
+        <div class="field">
+          <div class="tf">
+            <input type="text" id="inputCustomWorker" placeholder="например, my-worker.username.workers.dev" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <label for="inputCustomWorker">Шлюз Cloudflare Worker (cloudflare:sockets)</label>
+          </div>
+          <span class="helper">Шлюз на Cloudflare Worker с поддержкой прямого TCP-коннекта к Telegram</span>
         </div>
 
         <!-- DC IP Overrides -->
@@ -1841,6 +1850,7 @@ svg.icon.s36 { width: 36px; height: 36px; }
 <div class="snackbar" id="toast" role="status" aria-live="polite"></div>
 
 <script>
+const $ = (id) => document.getElementById(id);
 
 /* ==========================================================================
    Material 3 Dynamic Theme Engine (Monet & AMOLED)
@@ -2134,7 +2144,7 @@ function drawThemeUI() {
     const modes = [['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']];
     modeEl.innerHTML = modes.map(([m, label]) => {
       const on = currentMode === m;
-      return '<button class="seg state' + (on ? ' on' : '') + '" aria-pressed="' + on + '" onclick="setThemeMode('' + m + '')">' +
+      return '<button class="seg state' + (on ? ' on' : '') + '" aria-pressed="' + on + '" onclick="setThemeMode(\'' + m + '\')">' +
         '<span class="check"><svg class="icon s18"><use href="#i-check"/></svg></span>' +
         '<span>' + label + '</span>' +
         '</button>';
@@ -2148,7 +2158,7 @@ function drawThemeUI() {
       const isThisMono = p[1].toLowerCase() === '#757575';
       const r = roles(p[1], true, false, isThisMono);
       const on = isThisMono ? mono : (!mono && p[1].toLowerCase() === currentSeed.toLowerCase());
-      return '<button class="swatch-dot state' + (on ? ' on' : '') + '" aria-pressed="' + on + '" title="' + p[0] + '" aria-label="' + p[0] + '" onclick="applyMonet('' + p[1] + '')"' +
+      return '<button class="swatch-dot state' + (on ? ' on' : '') + '" aria-pressed="' + on + '" title="' + p[0] + '" aria-label="' + p[0] + '" onclick="applyMonet(\'' + p[1] + '\')"' +
         ' style="--sw-a:' + r.primary + ';--sw-b:' + r.secondary + ';--sw-c:' + r.tertiary + '">' +
         '<span class="sw-check"><svg class="icon s20"><use href="#i-check"/></svg></span></button>';
     }).join('');
@@ -2420,7 +2430,6 @@ const DCS = [
   ["5", "Сингапур"]
 ];
 
-const $ = (id) => document.getElementById(id);
 const dcGrid = $("dcGrid");
 
 // Build DC Matrix
@@ -2484,9 +2493,13 @@ function kexec(cmd) {
     try {
       ksu.exec(cmd, "{}", cb);
     } catch (e) {
-      delete window[cb];
-      reject(e);
-      return;
+      try {
+        ksu.exec(cmd, cb);
+      } catch (e2) {
+        delete window[cb];
+        reject(e2);
+        return;
+      }
     }
     setTimeout(() => {
       if (!done) {
@@ -2627,6 +2640,9 @@ function render() {
 
   if ($("inputCustomDomain") && document.activeElement !== $("inputCustomDomain")) {
     $("inputCustomDomain").value = (state && state.customCFDomain) || "";
+  }
+  if ($("inputCustomWorker") && document.activeElement !== $("inputCustomWorker")) {
+    $("inputCustomWorker").value = (state && state.customCFWorker) || "";
   }
   if ($("inputDCOverrides") && document.activeElement !== $("inputDCOverrides")) {
     $("inputDCOverrides").value = (state && state.dcOverrides) || "";
@@ -2772,12 +2788,13 @@ $("saveConfigBtn").addEventListener("click", async () => {
   if (busy) return;
   haptic(18);
   const customCFDomain = ($("inputCustomDomain").value || "").trim();
+  const customCFWorker = ($("inputCustomWorker").value || "").trim();
   const dcOverrides = ($("inputDCOverrides").value || "").trim();
   const cfPriority = $("swCFPriority").checked;
   const cfBalance = $("swCFBalance").checked;
 
   try {
-    state = await api("setConfig", { customCFDomain, dcOverrides, cfPriority, cfBalance });
+    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance });
     toast("Настройки успешно сохранены");
   } catch (e) {
     toast(e.message);
@@ -2883,7 +2900,11 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pageshow", () => resumeTransport());
 
 // Initial theme & bridge run
-initTheme();
+try {
+  initTheme();
+} catch (e) {
+  console.warn("TG Open initTheme:", e);
+}
 refresh();
 setInterval(refresh, 3000);
 </script>
