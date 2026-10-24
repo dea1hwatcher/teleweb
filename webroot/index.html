@@ -2,911 +2,1327 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#121316">
 <title>TG Open</title>
 <style>
-  /* ==========================================================================
-     M3E (Material 3 Expressive) Design System Tokens
-     Compliant with https://matraic.github.io/m3e/ & Material Design 3 Spec
-     Self-contained, Zero-CDN, 100% Offline-Safe for Android Magisk/KernelSU
-     ========================================================================== */
+/* ==========================================================================
+   TG Open WebUI — Material 3 Expressive Design System
+   Based on nfqws2-android architecture & M3 Expressive guidelines
+   Self-contained, Zero-CDN, 100% Offline-Safe for Android Magisk/KernelSU/APatch
+   ========================================================================== */
 
+:root {
+  color-scheme: dark light;
+
+  /* Typography scale */
+  --md-font: Roboto, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --md-font-code: "Roboto Mono", "Cascadia Mono", ui-monospace, monospace;
+  --ts-display-large: 57px;   --lh-display-large: 64px;
+  --ts-display-medium: 45px;  --lh-display-medium: 52px;
+  --ts-headline-large: 32px;  --lh-headline-large: 40px;
+  --ts-headline-medium: 28px; --lh-headline-medium: 36px;
+  --ts-headline-small: 24px;  --lh-headline-small: 32px;
+  --ts-title-large: 22px;     --lh-title-large: 28px;
+  --ts-title-medium: 16px;    --lh-title-medium: 24px;
+  --ts-title-small: 14px;     --lh-title-small: 20px;
+  --ts-body-large: 16px;      --lh-body-large: 24px;
+  --ts-body-medium: 14px;     --lh-body-medium: 20px;
+  --ts-body-small: 12px;      --lh-body-small: 16px;
+  --ts-label-large: 14px;     --lh-label-large: 20px;
+  --ts-label-medium: 12px;    --lh-label-medium: 16px;
+  --ts-label-small: 11px;     --lh-label-small: 16px;
+
+  /* Weights */
+  --w-regular: 400; --w-medium: 500; --w-emph: 600; --w-bold: 700;
+
+  /* Shapes */
+  --shape-extra-small: 4px;
+  --shape-small: 8px;
+  --shape-medium: 12px;
+  --shape-large: 16px;
+  --shape-extra-large: 28px;
+  --shape-card: 16px;
+  --shape-full: 9999px;
+
+  /* Motion: Expressive easing */
+  --spring: cubic-bezier(.34, 1.41, .64, 1);
+  --spring-strong: cubic-bezier(.28, 1.62, .55, .92);
+  --standard: cubic-bezier(.2, 0, 0, 1);
+  --emphasized-decelerate: cubic-bezier(.05, .7, .1, 1);
+  --emphasized-accelerate: cubic-bezier(.3, 0, .8, -.15);
+
+  /* Durations */
+  --dur-extra-short: 50ms;
+  --dur-short: 100ms;
+  --dur-medium: 250ms;
+  --dur-medium-long: 350ms;
+  --dur-long: 450ms;
+
+  /* State layers */
+  --state-hover: .08;
+  --state-focus: .12;
+  --state-pressed: .12;
+  --state-disabled-content: .38;
+  --state-disabled-container: .12;
+
+  /* Layout Insets */
+  --top-inset: var(--window-inset-top, env(safe-area-inset-top, 0px));
+  --bottom-inset: var(--window-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --appbar-height: 64px;
+  --navbar-height: 80px;
+  --content-max: 760px;
+  --screen-margin: 16px;
+  --gap: 12px;
+
+  /* M3 Dark Palette (Telegram Cyan & Ocean Accent) */
+  --md-sys-color-primary: #7ed0ff;
+  --md-sys-color-on-primary: #00344f;
+  --md-sys-color-primary-container: #004c70;
+  --md-sys-color-on-primary-container: #c6e7ff;
+  --md-sys-color-secondary: #b6c9d8;
+  --md-sys-color-on-secondary: #21323e;
+  --md-sys-color-secondary-container: #374955;
+  --md-sys-color-on-secondary-container: #d2e5f5;
+  --md-sys-color-tertiary: #cddffb;
+  --md-sys-color-on-tertiary: #19324b;
+  --md-sys-color-tertiary-container: #304963;
+  --md-sys-color-on-tertiary-container: #d2e5f5;
+  --md-sys-color-surface: #101418;
+  --md-sys-color-surface-dim: #101418;
+  --md-sys-color-surface-bright: #363a3e;
+  --md-sys-color-surface-container-lowest: #0b0f12;
+  --md-sys-color-surface-container-low: #181c20;
+  --md-sys-color-surface-container: #1c2024;
+  --md-sys-color-surface-container-high: #262a2f;
+  --md-sys-color-surface-container-highest: #31353a;
+  --md-sys-color-on-surface: #e0e2e8;
+  --md-sys-color-on-surface-variant: #c1c7ce;
+  --md-sys-color-outline: #8b9198;
+  --md-sys-color-outline-variant: #41474d;
+  --md-sys-color-inverse-surface: #e0e2e8;
+  --md-sys-color-inverse-on-surface: #2d3135;
+  --md-sys-color-error: #ffb4ab;
+  --md-sys-color-on-error: #690005;
+  --md-sys-color-error-container: #93000a;
+  --md-sys-color-on-error-container: #ffdad6;
+  --md-sys-color-success: #85d996;
+  --md-sys-color-on-success: #003915;
+  --md-sys-color-success-container: #005322;
+  --md-sys-color-on-success-container: #a0f6b0;
+}
+
+/* Light Theme Adaptive Fallback */
+@media (prefers-color-scheme: light) {
   :root {
-    /* M3 Color System — Dark Palette (Default) */
-    --md-sys-color-primary: #7ed0ff;
-    --md-sys-color-on-primary: #00344f;
-    --md-sys-color-primary-container: #004c70;
-    --md-sys-color-on-primary-container: #c6e7ff;
-    --md-sys-color-secondary: #b6c9d8;
-    --md-sys-color-on-secondary: #21323e;
-    --md-sys-color-secondary-container: #374955;
-    --md-sys-color-on-secondary-container: #d2e5f5;
-    --md-sys-color-tertiary: #cddffb;
-    --md-sys-color-on-tertiary: #19324b;
-    --md-sys-color-surface: #101418;
-    --md-sys-color-surface-dim: #101418;
-    --md-sys-color-surface-bright: #363a3e;
-    --md-sys-color-surface-container-lowest: #0b0f12;
-    --md-sys-color-surface-container-low: #181c20;
-    --md-sys-color-surface-container: #1c2024;
-    --md-sys-color-surface-container-high: #262a2f;
-    --md-sys-color-surface-container-highest: #31353a;
-    --md-sys-color-on-surface: #e0e2e8;
-    --md-sys-color-on-surface-variant: #c1c7ce;
-    --md-sys-color-outline: #8b9198;
-    --md-sys-color-outline-variant: #41474d;
-    --md-sys-color-inverse-surface: #e0e2e8;
-    --md-sys-color-inverse-on-surface: #2d3135;
-    --md-sys-color-error: #ffb4ab;
-    --md-sys-color-on-error: #690005;
-    --md-sys-color-error-container: #93000a;
-    --md-sys-color-on-error-container: #ffdad6;
-    --md-sys-color-success: #85d996;
-    --md-sys-color-on-success: #003915;
-    --md-sys-color-success-container: #005322;
-    --md-sys-color-on-success-container: #a0f6b0;
-
-    /* M3 Typography Scale */
-    --md-sys-typescale-font-family: Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --md-sys-typescale-mono-family: "Roboto Mono", "IBM Plex Mono", ui-monospace, monospace;
-
-    /* M3 Shape System */
-    --md-sys-shape-corner-none: 0px;
-    --md-sys-shape-corner-extra-small: 4px;
-    --md-sys-shape-corner-small: 8px;
-    --md-sys-shape-corner-medium: 12px;
-    --md-sys-shape-corner-large: 16px;
-    --md-sys-shape-corner-extra-large: 28px;
-    --md-sys-shape-corner-full: 9999px;
-
-    /* M3 Motion System */
-    --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
-    --md-sys-motion-easing-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
-    --md-sys-motion-duration-short: 150ms;
-    --md-sys-motion-duration-medium: 300ms;
-    --md-sys-motion-duration-long: 500ms;
+    --md-sys-color-primary: #006492;
+    --md-sys-color-on-primary: #ffffff;
+    --md-sys-color-primary-container: #c6e7ff;
+    --md-sys-color-on-primary-container: #001e2f;
+    --md-sys-color-secondary: #4f606e;
+    --md-sys-color-on-secondary: #ffffff;
+    --md-sys-color-secondary-container: #d2e5f5;
+    --md-sys-color-on-secondary-container: #0b1d29;
+    --md-sys-color-tertiary: #515f79;
+    --md-sys-color-on-tertiary: #ffffff;
+    --md-sys-color-tertiary-container: #d9e3f9;
+    --md-sys-color-on-tertiary-container: #0d1c32;
+    --md-sys-color-surface: #f7f9ff;
+    --md-sys-color-surface-dim: #d7dadf;
+    --md-sys-color-surface-bright: #f7f9ff;
+    --md-sys-color-surface-container-lowest: #ffffff;
+    --md-sys-color-surface-container-low: #f1f4f9;
+    --md-sys-color-surface-container: #ebeef3;
+    --md-sys-color-surface-container-high: #e5e8ee;
+    --md-sys-color-surface-container-highest: #dfe3e8;
+    --md-sys-color-on-surface: #181c20;
+    --md-sys-color-on-surface-variant: #41474d;
+    --md-sys-color-outline: #71787e;
+    --md-sys-color-outline-variant: #c1c7ce;
+    --md-sys-color-inverse-surface: #2d3135;
+    --md-sys-color-inverse-on-surface: #f0f0f5;
+    --md-sys-color-error: #ba1a1a;
+    --md-sys-color-on-error: #ffffff;
+    --md-sys-color-error-container: #ffdad6;
+    --md-sys-color-on-error-container: #410002;
+    --md-sys-color-success: #1b6d34;
+    --md-sys-color-on-success: #ffffff;
+    --md-sys-color-success-container: #a0f6b0;
+    --md-sys-color-on-success-container: #00210a;
   }
+}
 
-  /* M3 Light Palette (Adaptive) */
-  @media (prefers-color-scheme: light) {
-    :root {
-      --md-sys-color-primary: #006492;
-      --md-sys-color-on-primary: #ffffff;
-      --md-sys-color-primary-container: #c6e7ff;
-      --md-sys-color-on-primary-container: #001e2f;
-      --md-sys-color-secondary: #4f606e;
-      --md-sys-color-on-secondary: #ffffff;
-      --md-sys-color-secondary-container: #d2e5f5;
-      --md-sys-color-on-secondary-container: #0b1d29;
-      --md-sys-color-tertiary: #63597c;
-      --md-sys-color-on-tertiary: #ffffff;
-      --md-sys-color-surface: #f7f9ff;
-      --md-sys-color-surface-dim: #d7dadf;
-      --md-sys-color-surface-bright: #f7f9ff;
-      --md-sys-color-surface-container-lowest: #ffffff;
-      --md-sys-color-surface-container-low: #f1f4f9;
-      --md-sys-color-surface-container: #ebeef3;
-      --md-sys-color-surface-container-high: #e5e8ee;
-      --md-sys-color-surface-container-highest: #dfe3e8;
-      --md-sys-color-on-surface: #181c20;
-      --md-sys-color-on-surface-variant: #41474d;
-      --md-sys-color-outline: #71787e;
-      --md-sys-color-outline-variant: #c1c7ce;
-      --md-sys-color-inverse-surface: #2d3135;
-      --md-sys-color-inverse-on-surface: #f0f0f5;
-      --md-sys-color-error: #ba1a1a;
-      --md-sys-color-on-error: #ffffff;
-      --md-sys-color-error-container: #ffdad6;
-      --md-sys-color-on-error-container: #410002;
-      --md-sys-color-success: #1b6d34;
-      --md-sys-color-on-success: #ffffff;
-      --md-sys-color-success-container: #a0f6b0;
-      --md-sys-color-on-success-container: #00210a;
-    }
+/* Reset & Base Elements */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--md-font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+button, input, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+svg.icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  fill: currentColor;
+  display: block;
+}
+svg.icon.s18 { width: 18px; height: 18px; }
+svg.icon.s20 { width: 20px; height: 20px; }
+svg.icon.s24 { width: 24px; height: 24px; }
+svg.icon.s28 { width: 28px; height: 28px; }
+svg.icon.s36 { width: 36px; height: 36px; }
+
+:where(button, a, input, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+/* State Layer & Micro-interactions */
+.state {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  touch-action: manipulation;
+  transition: transform var(--dur-short) var(--spring), background-color var(--dur-short) var(--standard);
+}
+.state::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 0;
+  transition: opacity var(--dur-short) var(--standard);
+}
+@media (hover: hover) {
+  .state:hover::after { opacity: var(--state-hover); }
+}
+.state:focus-visible::after { opacity: var(--state-focus); }
+.state:active { transform: scale(.98); }
+.state > *:not(.ripple) { position: relative; z-index: 1; }
+
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  transform: scale(0);
+  pointer-events: none;
+  z-index: 0;
+  background: currentColor;
+  opacity: var(--state-pressed);
+  animation: ripple-out var(--dur-long) var(--standard) forwards;
+}
+@keyframes ripple-out {
+  0%   { transform: scale(0); opacity: calc(var(--state-pressed) * 1.5); }
+  70%  { transform: scale(1); opacity: var(--state-pressed); }
+  100% { transform: scale(1.05); opacity: 0; }
+}
+
+/* ==========================================================================
+   M3 Component: Top App Bar
+   ========================================================================== */
+.app-bar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 25;
+  min-height: calc(var(--top-inset) + var(--appbar-height));
+  padding: var(--top-inset) 8px 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--md-sys-color-surface);
+  transition: background-color var(--dur-medium) var(--standard), box-shadow var(--dur-medium) var(--standard);
+}
+.app-bar.scrolled {
+  background: var(--md-sys-color-surface-container);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.app-bar-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.app-bar-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--shape-medium);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.app-bar-titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.app-bar-title {
+  font-size: var(--ts-title-large);
+  line-height: var(--lh-title-large);
+  font-weight: var(--w-bold);
+  color: var(--md-sys-color-on-surface);
+  letter-spacing: -0.01em;
+}
+.app-bar-sub {
+  font-size: var(--ts-label-small);
+  line-height: var(--lh-label-small);
+  color: var(--md-sys-color-on-surface-variant);
+  letter-spacing: 0.02em;
+}
+.app-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.icon-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  width: 48px;
+  height: 48px;
+  flex: none;
+  border-radius: var(--shape-full);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.icon-btn.tone-primary { color: var(--md-sys-color-primary); }
+
+.chip-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--shape-full);
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  font-size: var(--ts-label-medium);
+  font-weight: var(--w-medium);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--md-sys-color-outline);
+  transition: background-color var(--dur-short) ease, box-shadow var(--dur-short) ease;
+}
+.chip-dot.active {
+  background: var(--md-sys-color-success);
+  box-shadow: 0 0 8px var(--md-sys-color-success);
+}
+
+/* ==========================================================================
+   M3 Component: Navigation Bar (Bottom)
+   ========================================================================== */
+.nav-bar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 30;
+  height: calc(var(--navbar-height) + var(--bottom-inset));
+  padding-bottom: var(--bottom-inset);
+  display: flex;
+  justify-content: center;
+  background: var(--md-sys-color-surface-container);
+  border-top: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 40%, transparent);
+  transition: transform var(--dur-medium-long) var(--emphasized-decelerate);
+}
+.nav-bar-inner {
+  display: flex;
+  width: 100%;
+  max-width: var(--content-max);
+}
+.nav-dest {
+  appearance: none;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 12px 0 16px;
+  color: var(--md-sys-color-on-surface-variant);
+  user-select: none;
+}
+.nav-dest:focus-visible .nav-ind {
+  outline: 3px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+.nav-ind {
+  width: 64px;
+  height: 32px;
+  flex: none;
+  border-radius: var(--shape-full);
+  display: grid;
+  place-items: center;
+  position: relative;
+  transition: color var(--dur-short) var(--standard);
+}
+.nav-ind::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  z-index: 0;
+  background: var(--md-sys-color-secondary-container);
+  transform: scaleX(.4);
+  opacity: 0;
+  transition: transform var(--dur-medium-long) var(--spring), opacity var(--dur-short) var(--standard);
+}
+.nav-dest[aria-current="page"] .nav-ind {
+  color: var(--md-sys-color-on-secondary-container);
+}
+.nav-dest[aria-current="page"] .nav-ind::before {
+  transform: scaleX(1);
+  opacity: 1;
+}
+.nav-dest[aria-current="page"] .nav-label {
+  color: var(--md-sys-color-on-surface);
+  font-weight: var(--w-bold);
+}
+.nav-label {
+  font-size: var(--ts-label-medium);
+  line-height: var(--lh-label-medium);
+  font-weight: var(--w-medium);
+  letter-spacing: .5px;
+  white-space: nowrap;
+  transition: color var(--dur-short) var(--standard), font-weight var(--dur-short) var(--standard);
+}
+
+/* ==========================================================================
+   Content & Pages
+   ========================================================================== */
+.content {
+  position: relative;
+  padding: calc(var(--top-inset) + var(--appbar-height) + 12px) var(--screen-margin)
+           calc(var(--bottom-inset) + var(--navbar-height) + 24px);
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+.page {
+  display: none;
+  flex-direction: column;
+  gap: var(--gap);
+}
+.page.active {
+  display: flex;
+}
+.page.enter-fade {
+  animation: page-fade 250ms var(--emphasized-decelerate) both;
+}
+@keyframes page-fade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Subheadings & Groups */
+.subhead {
+  font-size: var(--ts-title-small);
+  line-height: var(--lh-title-small);
+  font-weight: var(--w-bold);
+  color: var(--md-sys-color-primary);
+  letter-spacing: .1px;
+  padding: 12px 4px 4px;
+}
+.subhead:first-child { padding-top: 0; }
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   Hero Status Card (nfqws2-android signature pattern)
+   ========================================================================== */
+.hero {
+  --hero-bg: var(--md-sys-color-surface-container-high);
+  border-radius: var(--shape-extra-large);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: var(--hero-bg);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  transition: background-color var(--dur-medium-long) var(--standard),
+              color var(--dur-medium-long) var(--standard),
+              border-color var(--dur-medium-long) var(--standard);
+}
+.hero.running {
+  --hero-bg: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  border-color: var(--md-sys-color-primary);
+}
+.hero.bad {
+  --hero-bg: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+  border-color: var(--md-sys-color-error);
+}
+.hero-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.hero-icon {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--shape-large);
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface-variant);
+  transition: border-radius var(--dur-long) var(--spring-strong),
+              background-color var(--dur-medium) var(--standard),
+              color var(--dur-medium) var(--standard);
+}
+.hero.running .hero-icon {
+  border-radius: 28px;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--md-sys-color-primary) 50%, transparent);
+}
+.hero-titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.hero-state {
+  font-size: var(--ts-headline-small);
+  line-height: var(--lh-headline-small);
+  font-weight: var(--w-bold);
+  letter-spacing: -0.01em;
+}
+.hero-sub {
+  font-size: var(--ts-body-medium);
+  line-height: var(--lh-body-medium);
+  opacity: .85;
+  word-break: break-word;
+}
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+.hstat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 2px;
+  min-width: 0;
+  background: color-mix(in srgb, var(--hero-bg) 60%, black 40%);
+  padding: 8px 6px;
+  border-radius: var(--shape-medium);
+}
+.hero.running .hstat {
+  background: color-mix(in srgb, var(--md-sys-color-on-primary-container) 10%, transparent);
+}
+.hstat-label {
+  width: 100%;
+  text-align: center;
+  font-size: var(--ts-label-small);
+  line-height: var(--lh-label-small);
+  font-weight: var(--w-medium);
+  opacity: .75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hstat-value {
+  width: 100%;
+  text-align: center;
+  font-family: var(--md-font-code);
+  font-size: var(--ts-title-medium);
+  line-height: var(--lh-title-medium);
+  font-weight: var(--w-bold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hero-actions #hero-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 24px;
+  height: 48px;
+  font-size: var(--ts-title-medium);
+  line-height: var(--lh-title-medium);
+  font-weight: var(--w-bold);
+  letter-spacing: .2px;
+  border-radius: var(--shape-full);
+}
+.hero-restart {
+  width: 48px;
+  height: 48px;
+  color: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+}
+
+/* ==========================================================================
+   M3 Component: Card
+   ========================================================================== */
+.card {
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: var(--shape-card);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  gap: 12px;
+}
+
+/* ==========================================================================
+   DC Matrix Grid (Visual DC1-DC5)
+   ========================================================================== */
+.dc-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+.dc-card {
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid transparent;
+  border-radius: var(--shape-medium);
+  min-height: 80px;
+  padding: 10px 4px 8px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: background-color var(--dur-short) ease,
+              border-color var(--dur-short) ease,
+              transform var(--dur-short) ease;
+}
+.dc-card b {
+  display: block;
+  font-family: var(--md-font-code);
+  font-size: 15px;
+  font-weight: var(--w-bold);
+  color: var(--md-sys-color-on-surface);
+}
+.dc-card span {
+  display: block;
+  font-size: 10px;
+  font-weight: var(--w-medium);
+  color: var(--md-sys-color-on-surface-variant);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dc-card em {
+  display: block;
+  font-style: normal;
+  font-family: var(--md-font-code);
+  font-size: 13px;
+  font-weight: var(--w-bold);
+  color: var(--md-sys-color-outline);
+  margin-top: 4px;
+}
+.dc-card.live {
+  background: var(--md-sys-color-primary-container);
+  border-color: var(--md-sys-color-primary);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
+}
+.dc-card.live b,
+.dc-card.live em {
+  color: var(--md-sys-color-on-primary-container);
+}
+.dc-card.live span {
+  color: var(--md-sys-color-on-primary-container);
+  opacity: .85;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  font-size: var(--ts-body-small);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.meta-row strong {
+  font-family: var(--md-font-code);
+  color: var(--md-sys-color-on-surface);
+  font-weight: var(--w-bold);
+}
+
+/* ==========================================================================
+   M3 Component: List & List Items (Two-Line)
+   ========================================================================== */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.list-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding: 10px 16px;
+  border-radius: var(--shape-medium);
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 40%, transparent);
+}
+.list-item.two-line {
+  min-height: 64px;
+}
+.list-item.clickable {
+  cursor: pointer;
+}
+.li-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--shape-small);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-primary);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.li-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.li-primary {
+  font-size: var(--ts-body-large);
+  line-height: var(--lh-body-large);
+  font-weight: var(--w-medium);
+  color: var(--md-sys-color-on-surface);
+}
+.li-secondary {
+  font-size: var(--ts-body-small);
+  line-height: var(--lh-body-small);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.li-trail {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ==========================================================================
+   M3 Component: Native Switch
+   ========================================================================== */
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  cursor: pointer;
+  width: 52px;
+  height: 32px;
+  flex: 0 0 52px;
+  border: 2px solid var(--md-sys-color-outline);
+  border-radius: var(--shape-full);
+  background: var(--md-sys-color-surface-container-highest);
+  transition: background-color var(--dur-medium) var(--spring),
+              border-color var(--dur-medium) var(--spring);
+}
+.switch::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--md-sys-color-outline);
+  transform: translateY(-50%);
+  transition: left var(--dur-medium) var(--spring-strong),
+              width var(--dur-medium) var(--spring-strong),
+              height var(--dur-medium) var(--spring-strong),
+              background-color var(--dur-medium) var(--spring);
+}
+.switch:checked {
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+}
+.switch:checked::before {
+  left: 26px;
+  width: 24px;
+  height: 24px;
+  background: var(--md-sys-color-on-primary);
+}
+.switch:active::before { width: 28px; height: 28px; left: 2px; }
+.switch:checked:active::before { left: 20px; }
+
+/* ==========================================================================
+   M3 Component: Text Fields (Floating Label / Filled)
+   ========================================================================== */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tf {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 56px;
+  background: var(--md-sys-color-surface-container-highest);
+  border-radius: var(--shape-extra-small) var(--shape-extra-small) 0 0;
+  box-shadow: inset 0 -1px 0 var(--md-sys-color-outline);
+  transition: box-shadow var(--dur-short) var(--standard);
+}
+.tf:focus-within {
+  box-shadow: inset 0 -2px 0 var(--md-sys-color-primary);
+}
+.tf input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 24px 16px 6px;
+  border: 0;
+  outline: none;
+  background: none;
+  appearance: none;
+  -webkit-appearance: none;
+  color: var(--md-sys-color-on-surface);
+  caret-color: var(--md-sys-color-primary);
+  font-family: var(--md-font-code);
+  font-size: var(--ts-body-medium);
+}
+.tf input::placeholder {
+  color: var(--md-sys-color-on-surface-variant);
+  opacity: 0;
+  transition: opacity var(--dur-short) var(--standard);
+}
+.tf input:focus::placeholder {
+  opacity: .6;
+}
+.tf label {
+  position: absolute;
+  left: 16px;
+  top: 18px;
+  pointer-events: none;
+  transform-origin: left top;
+  font-size: var(--ts-body-large);
+  line-height: var(--lh-body-large);
+  color: var(--md-sys-color-on-surface-variant);
+  transition: transform var(--dur-short) var(--standard), color var(--dur-short) var(--standard);
+}
+.tf input:focus + label,
+.tf input:not(:placeholder-shown) + label {
+  transform: translateY(-11px) scale(.75);
+}
+.tf input:focus + label {
+  color: var(--md-sys-color-primary);
+}
+.helper {
+  font-size: var(--ts-body-small);
+  line-height: var(--lh-body-small);
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 2px 8px 0;
+}
+
+/* ==========================================================================
+   M3 Component: Buttons
+   ========================================================================== */
+.btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  height: 40px;
+  padding: 0 24px;
+  border-radius: var(--shape-full);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: var(--ts-label-large);
+  line-height: var(--lh-label-large);
+  font-weight: var(--w-bold);
+  letter-spacing: .1px;
+  white-space: nowrap;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  transition: background-color var(--dur-short) var(--standard), box-shadow var(--dur-short) var(--standard);
+}
+.btn.with-icon { padding: 0 16px 0 12px; }
+.btn.tonal {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+.btn.text {
+  background: transparent;
+  color: var(--md-sys-color-primary);
+  padding: 0 12px;
+}
+.btn.danger {
+  color: var(--md-sys-color-error);
+}
+
+/* ==========================================================================
+   Metrics & Stats Grids
+   ========================================================================== */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.stats-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 480px) {
+  .stats-grid.cols-3 {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
   }
+}
+.stat-box {
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--shape-medium);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 30%, transparent);
+}
+.stat-title {
+  font-size: var(--ts-label-medium);
+  font-weight: var(--w-medium);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.stat-num {
+  font-family: var(--md-font-code);
+  font-size: 20px;
+  font-weight: var(--w-bold);
+  line-height: 26px;
+  color: var(--md-sys-color-primary);
+  margin-top: 4px;
+  letter-spacing: -0.02em;
+}
+.stat-sub {
+  font-size: 11px;
+  color: var(--md-sys-color-outline);
+  margin-top: 2px;
+}
 
-  /* Reset & Base Elements */
+/* ==========================================================================
+   Terminal Log Viewer
+   ========================================================================== */
+.log-view {
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--shape-card);
+  padding: 14px 16px;
+  font-family: var(--md-font-code);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--md-sys-color-on-surface-variant);
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 44vh;
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ==========================================================================
+   M3 Floating Snackbar
+   ========================================================================== */
+.snackbar {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(var(--bottom-inset) + var(--navbar-height) + 16px);
+  max-width: 448px;
+  margin: 0 auto;
+  background: var(--md-sys-color-inverse-surface);
+  color: var(--md-sys-color-inverse-on-surface);
+  border-radius: var(--shape-small);
+  padding: 14px 16px;
+  font-size: var(--ts-body-medium);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  display: none;
+  z-index: 9999;
+  align-items: center;
+  justify-content: space-between;
+  animation: page-fade var(--dur-medium) var(--emphasized-decelerate);
+}
+
+/* Landscape Two-Column Support */
+@media (orientation: landscape) and (min-width: 720px) {
+  :root { --content-max: 980px; }
+  .split-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+}
+
+/* Motion Accessibility */
+@media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
   }
-
-  html, body {
-    background: var(--md-sys-color-surface);
-    color: var(--md-sys-color-on-surface);
-    font-family: var(--md-sys-typescale-font-family);
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-  }
-
-  body {
-    min-height: 100dvh;
-    padding: calc(16px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));
-  }
-
-  main {
-    max-width: 448px;
-    margin: 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  /* ==========================================================================
-     M3E Component: Top App Bar
-     ========================================================================== */
-  .m3-app-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 4px 16px;
-    gap: 12px;
-  }
-
-  .m3-app-bar-leading {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-  }
-
-  .m3-app-bar-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: var(--md-sys-shape-corner-medium);
-    background: var(--md-sys-color-primary-container);
-    color: var(--md-sys-color-on-primary-container);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: none;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
-  }
-
-  .m3-app-bar-icon svg {
-    width: 24px;
-    height: 24px;
-    fill: currentColor;
-  }
-
-  .m3-app-bar-titles {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  .m3-app-bar-title {
-    font-size: 22px;
-    font-weight: 600;
-    line-height: 28px;
-    letter-spacing: -0.01em;
-    color: var(--md-sys-color-on-surface);
-  }
-
-  .m3-app-bar-subtitle {
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 16px;
-    letter-spacing: 0.02em;
-    color: var(--md-sys-color-on-surface-variant);
-  }
-
-  /* M3E Chip */
-  .m3-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 32px;
-    padding: 0 12px;
-    border-radius: var(--md-sys-shape-corner-small);
-    background: var(--md-sys-color-surface-container-high);
-    border: 1px solid var(--md-sys-color-outline-variant);
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--md-sys-color-on-surface-variant);
-    letter-spacing: 0.02em;
-    flex: none;
-  }
-
-  .m3-chip-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--md-sys-color-outline);
-    transition: background var(--md-sys-motion-duration-short) ease;
-  }
-
-  .m3-chip-dot.active {
-    background: var(--md-sys-color-success);
-    box-shadow: 0 0 6px var(--md-sys-color-success);
-  }
-
-  /* ==========================================================================
-     M3E Component: Card (Filled / Elevated)
-     ========================================================================== */
-  .m3-card {
-    background: var(--md-sys-color-surface-container-low);
-    border-radius: var(--md-sys-shape-corner-large);
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    position: relative;
-    border: 1px solid var(--md-sys-color-outline-variant);
-    transition: background-color var(--md-sys-motion-duration-medium) ease,
-                border-color var(--md-sys-motion-duration-medium) ease;
-  }
-
-  .m3-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-  }
-
-  .m3-card-title-group {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .m3-card-title {
-    font-size: 18px;
-    font-weight: 600;
-    line-height: 24px;
-    letter-spacing: -0.01em;
-    color: var(--md-sys-color-on-surface);
-  }
-
-  .m3-card-hint {
-    font-size: 13px;
-    font-weight: 400;
-    line-height: 18px;
-    color: var(--md-sys-color-on-surface-variant);
-    margin-top: 2px;
-  }
-
-  /* ==========================================================================
-     M3E Component: Switch (52x32dp spec-compliant)
-     ========================================================================== */
-  .m3-switch-wrapper {
-    position: relative;
-    width: 48px;
-    height: 48px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: none;
-  }
-
-  button.m3-switch {
-    width: 52px;
-    height: 32px;
-    border-radius: var(--md-sys-shape-corner-full);
-    border: 2px solid var(--md-sys-color-outline);
-    background: var(--md-sys-color-surface-container-highest);
-    position: relative;
-    padding: 0;
-    cursor: pointer;
-    outline: none;
-    transition: background var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-                border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  /* Switch Thumb */
-  button.m3-switch .m3-switch-thumb {
-    position: absolute;
-    top: 6px;
-    left: 6px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--md-sys-color-outline);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: transform var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized),
-                width var(--md-sys-motion-duration-short) ease,
-                height var(--md-sys-motion-duration-short) ease,
-                background var(--md-sys-motion-duration-short) ease;
-  }
-
-  button.m3-switch .m3-switch-icon {
-    width: 14px;
-    height: 14px;
-    fill: var(--md-sys-color-on-primary-container);
-    opacity: 0;
-    transform: scale(0.5);
-    transition: opacity var(--md-sys-motion-duration-short) ease,
-                transform var(--md-sys-motion-duration-short) ease;
-  }
-
-  /* Checked State */
-  button.m3-switch[aria-checked="true"] {
-    background: var(--md-sys-color-primary);
-    border-color: var(--md-sys-color-primary);
-  }
-
-  button.m3-switch[aria-checked="true"] .m3-switch-thumb {
-    top: 2px;
-    left: 2px;
-    width: 24px;
-    height: 24px;
-    transform: translateX(20px);
-    background: var(--md-sys-color-on-primary);
-  }
-
-  button.m3-switch[aria-checked="true"] .m3-switch-icon {
-    opacity: 1;
-    transform: scale(1);
-    fill: var(--md-sys-color-primary);
-  }
-
-  /* Press / Active Feedback */
-  button.m3-switch:active .m3-switch-thumb {
-    width: 28px;
-  }
-
-  /* Strong Focus */
-  button.m3-switch:focus-visible,
-  .m3-button:focus-visible,
-  .dc:focus-visible {
-    outline: 3px solid var(--md-sys-color-primary);
-    outline-offset: 3px;
-  }
-
-  /* ==========================================================================
-     Status Banner
-     ========================================================================== */
-  .m3-status-banner {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 500;
-    line-height: 18px;
-    margin-top: 14px;
-    color: var(--md-sys-color-on-surface-variant);
-    padding: 8px 12px;
-    border-radius: var(--md-sys-shape-corner-small);
-    background: var(--md-sys-color-surface-container);
-    transition: background-color var(--md-sys-motion-duration-short) ease,
-                color var(--md-sys-motion-duration-short) ease;
-  }
-
-  .m3-status-banner.on {
-    background: var(--md-sys-color-success-container);
-    color: var(--md-sys-color-on-success-container);
-  }
-
-  .m3-status-banner.bad {
-    background: var(--md-sys-color-error-container);
-    color: var(--md-sys-color-on-error-container);
-  }
-
-  .m3-status-indicator {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: currentColor;
-    flex: none;
-  }
-
-  /* ==========================================================================
-     M3E Component: DC Matrix Grid
-     ========================================================================== */
-  .m3-dc-grid {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 8px;
-    margin-top: 14px;
-  }
-
-  .dc {
-    background: var(--md-sys-color-surface-container-high);
-    border: 1px solid transparent;
-    border-radius: var(--md-sys-shape-corner-medium);
-    min-height: 76px;
-    padding: 10px 4px 8px;
-    text-align: center;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    transition: background-color var(--md-sys-motion-duration-short) ease,
-                border-color var(--md-sys-motion-duration-short) ease,
-                transform var(--md-sys-motion-duration-short) ease;
-  }
-
-  .dc b {
-    display: block;
-    font-family: var(--md-sys-typescale-mono-family);
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--md-sys-color-on-surface);
-  }
-
-  .dc span {
-    display: block;
-    font-size: 10px;
-    font-weight: 500;
-    color: var(--md-sys-color-on-surface-variant);
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .dc em {
-    display: block;
-    font-style: normal;
-    font-family: var(--md-sys-typescale-mono-family);
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--md-sys-color-outline);
-    margin-top: 4px;
-  }
-
-  .dc.live {
-    background: var(--md-sys-color-primary-container);
-    border-color: var(--md-sys-color-primary);
-  }
-
-  .dc.live b {
-    color: var(--md-sys-color-on-primary-container);
-  }
-
-  .dc.live span {
-    color: var(--md-sys-color-on-primary-container);
-    opacity: 0.85;
-  }
-
-  .dc.live em {
-    color: var(--md-sys-color-on-primary-container);
-    font-weight: 700;
-  }
-
-  /* Meta Footer */
-  .m3-meta-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-top: 14px;
-    padding-top: 10px;
-    border-top: 1px solid var(--md-sys-color-outline-variant);
-    font-size: 13px;
-    color: var(--md-sys-color-on-surface-variant);
-  }
-
-  .m3-meta-row strong {
-    font-family: var(--md-sys-typescale-mono-family);
-    color: var(--md-sys-color-on-surface);
-    font-weight: 600;
-  }
-
-  /* ==========================================================================
-     M3E Component: Metrics & Stats
-     ========================================================================== */
-  .m3-stats-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-    margin-top: 12px;
-  }
-
-  .m3-stats-grid.cols-3 {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  @media (max-width: 380px) {
-    .m3-stats-grid.cols-3 {
-      grid-template-columns: repeat(1, minmax(0, 1fr));
-    }
-  }
-
-  .m3-stat-item {
-    background: var(--md-sys-color-surface-container);
-    border-radius: var(--md-sys-shape-corner-medium);
-    padding: 12px 14px;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  .m3-stat-label {
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 16px;
-    color: var(--md-sys-color-on-surface-variant);
-  }
-
-  .m3-stat-value {
-    font-family: var(--md-sys-typescale-mono-family);
-    font-size: 20px;
-    font-weight: 700;
-    line-height: 26px;
-    color: var(--md-sys-color-primary);
-    margin-top: 4px;
-    overflow-wrap: anywhere;
-    letter-spacing: -0.02em;
-  }
-
-  .m3-stat-sub {
-    font-size: 11px;
-    line-height: 15px;
-    color: var(--md-sys-color-outline);
-    margin-top: 3px;
-  }
-
-  /* ==========================================================================
-     M3E Component: Buttons & Diagnostics
-     ========================================================================== */
-  .m3-button-row {
-    display: flex;
-    gap: 8px;
-  }
-
-  button.m3-button {
-    height: 40px;
-    min-width: 84px;
-    padding: 0 20px;
-    border-radius: var(--md-sys-shape-corner-full);
-    border: 1px solid var(--md-sys-color-outline-variant);
-    background: var(--md-sys-color-surface-container-high);
-    color: var(--md-sys-color-primary);
-    font-family: var(--md-sys-typescale-font-family);
-    font-size: 14px;
-    font-weight: 500;
-    letter-spacing: 0.01em;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    cursor: pointer;
-    position: relative;
-    overflow: hidden;
-    transition: background-color var(--md-sys-motion-duration-short) ease,
-                border-color var(--md-sys-motion-duration-short) ease,
-                box-shadow var(--md-sys-motion-duration-short) ease;
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  /* M3 Official State Layer */
-  button.m3-button::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: currentColor;
-    opacity: 0;
-    transition: opacity var(--md-sys-motion-duration-short) ease;
-    pointer-events: none;
-  }
-
-  button.m3-button:hover::before {
-    opacity: 0.08;
-  }
-
-  button.m3-button:active::before {
-    opacity: 0.12;
-  }
-
-  button.m3-button svg {
-    width: 18px;
-    height: 18px;
-    fill: currentColor;
-  }
-
-  button.m3-button.primary {
-    background: var(--md-sys-color-primary);
-    color: var(--md-sys-color-on-primary);
-    border-color: transparent;
-    font-weight: 600;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
-  }
-
-  button.m3-button.primary:active {
-    box-shadow: none;
-  }
-
-  /* Settings Rows & Fields */
-  .m3-setting-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--md-sys-color-outline-variant);
-  }
-
-  .m3-setting-row:last-of-type {
-    border-bottom: none;
-  }
-
-  .m3-setting-text {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  .m3-setting-title {
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--md-sys-color-on-surface);
-    line-height: 20px;
-  }
-
-  .m3-setting-desc {
-    font-size: 12px;
-    color: var(--md-sys-color-on-surface-variant);
-    line-height: 16px;
-    margin-top: 2px;
-  }
-
-  .m3-field-group {
-    display: flex;
-    flex-direction: column;
-    margin-top: 14px;
-  }
-
-  .m3-field-label {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--md-sys-color-primary);
-    margin-bottom: 6px;
-  }
-
-  .m3-text-field {
-    height: 48px;
-    padding: 0 16px;
-    background: var(--md-sys-color-surface-container);
-    border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: var(--md-sys-shape-corner-small);
-    color: var(--md-sys-color-on-surface);
-    font-family: var(--md-sys-typescale-mono-family);
-    font-size: 13px;
-    outline: none;
-    transition: border-color var(--md-sys-motion-duration-short) ease,
-                box-shadow var(--md-sys-motion-duration-short) ease,
-                background-color var(--md-sys-motion-duration-short) ease;
-  }
-
-  .m3-text-field:focus {
-    border-color: var(--md-sys-color-primary);
-    box-shadow: 0 0 0 2px var(--md-sys-color-primary-container);
-    background: var(--md-sys-color-surface-container-high);
-  }
-
-  .m3-text-field::placeholder {
-    color: var(--md-sys-color-outline);
-    opacity: 0.6;
-  }
-
-  .m3-field-hint {
-    font-size: 11px;
-    color: var(--md-sys-color-on-surface-variant);
-    margin-top: 4px;
-  }
-
-  /* Pre Log Viewer */
-  pre.m3-log-viewer {
-    display: none;
-    margin-top: 12px;
-    padding: 12px 14px;
-    background: var(--md-sys-color-surface-container-lowest);
-    border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: var(--md-sys-shape-corner-medium);
-    font-family: var(--md-sys-typescale-mono-family);
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--md-sys-color-on-surface-variant);
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 240px;
-    overflow-y: auto;
-  }
-
-  pre.m3-log-viewer.show {
-    display: block;
-  }
-
-  /* ==========================================================================
-     M3E Component: Snackbar
-     ========================================================================== */
-  #toast {
-    position: fixed;
-    left: 16px;
-    right: 16px;
-    bottom: calc(16px + env(safe-area-inset-bottom));
-    max-width: 448px;
-    margin: 0 auto;
-    background: var(--md-sys-color-inverse-surface);
-    color: var(--md-sys-color-inverse-on-surface);
-    border-radius: var(--md-sys-shape-corner-small);
-    padding: 14px 16px;
-    font-size: 14px;
-    font-weight: 400;
-    line-height: 20px;
-    box-shadow: 0 3px 5px -1px rgba(0,0,0,.2), 0 6px 10px 0 rgba(0,0,0,.14), 0 1px 18px 0 rgba(0,0,0,.12);
-    display: none;
-    z-index: 9999;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  /* Motion Accessibility */
-  @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after {
-      transition-duration: 0.01ms !important;
-      animation-duration: 0.01ms !important;
-    }
-  }
+}
 </style>
 </head>
 <body>
-<main>
-  <!-- M3 Top App Bar -->
-  <header class="m3-app-bar">
-    <div class="m3-app-bar-leading">
-      <div class="m3-app-bar-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M12 2L4 5V11.09C4 16.14 7.41 20.85 12 22C16.59 20.85 20 16.14 20 11.09V5L12 2ZM18 11.09C18 15.09 15.45 18.79 12 19.92C8.55 18.79 6 15.09 6 11.09V6.39L12 4.14L18 6.39V11.09Z"/></svg>
-      </div>
-      <div class="m3-app-bar-titles">
-        <h1 class="m3-app-bar-title">TG Open</h1>
-        <span class="m3-app-bar-subtitle">MTProto · WebSocket Bypass</span>
-      </div>
+
+<!-- Material Symbols Sprite -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-close" viewBox="0 -960 960 960"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/></symbol>
+<symbol id="i-check" viewBox="0 -960 960 960"><path d="M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z"/></symbol>
+<symbol id="i-play" viewBox="0 -960 960 960"><path d="M320-200v-560l440 280-440 280Zm80-280Zm0 134 210-134-210-134v268Z"/></symbol>
+<symbol id="i-stop" viewBox="0 -960 960 960"><path d="M320-640v320-320Zm-80 400v-480h480v480H240Zm80-80h320v-320H320v320Z"/></symbol>
+<symbol id="i-restart" viewBox="0 -960 960 960"><path d="M440-122q-121-15-200.5-105.5T160-440q0-66 26-126.5T260-672l57 57q-38 34-57.5 79T240-440q0 88 56 155.5T440-202v80Zm80 0v-80q87-16 143.5-83T720-440q0-100-70-170t-170-70h-3l44 44-56 56-140-140 140-140 56 56-44 44h3q134 0 227 93t93 227q0 121-79.5 211.5T520-122Z"/></symbol>
+<symbol id="i-shield" viewBox="0 -960 960 960"><path d="M480-80q-139-35-229.5-159.5T160-516v-244l320-120 320 120v244q0 152-90.5 276.5T480-80Zm0-84q104-33 172-132t68-220v-189l-240-90-240 90v189q0 121 68 220t172 132Zm0-316Z"/></symbol>
+<symbol id="i-refresh" viewBox="0 -960 960 960"><path d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z"/></symbol>
+<symbol id="i-status" viewBox="0 -960 960 960"><path d="M80-600v-120q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v120h-80v-120H160v120H80Zm80 440q-33 0-56.5-23.5T80-240v-120h80v120h640v-120h80v120q0 33-23.5 56.5T800-160H160Zm240-120q11 0 21-5.5t15-16.5l124-248 44 88q5 11 15 16.5t21 5.5h240v-80H665l-69-138q-5-11-15-15.5t-21-4.5q-11 0-21 4.5T524-658L400-410l-44-88q-5-11-15-16.5t-21-5.5H80v80h215l69 138q5 11 15 16.5t21 5.5Zm80-200Z"/></symbol>
+<symbol id="i-tune" viewBox="0 -960 960 960"><path d="M440-120v-240h80v80h320v80H520v80h-80Zm-320-80v-80h240v80H120Zm160-160v-80H120v-80h160v-80h80v240h-80Zm160-80v-80h400v80H440Zm160-160v-240h80v80h160v80H680v80h-80Zm-480-80v-80h400v80H120Z"/></symbol>
+<symbol id="i-logs" viewBox="0 -960 960 960"><path d="M280-280h280v-80H280v80Zm0-160h400v-80H280v80Zm0-160h400v-80H280v80Zm-80 480q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm0-560v560-560Z"/></symbol>
+<symbol id="i-info" viewBox="0 -960 960 960"><path d="M440-280h80v-240h-80v240Zm40-320q17 0 28.5-11.5T520-640q0-17-11.5-28.5T480-680q-17 0-28.5 11.5T440-640q0 17 11.5 28.5T480-600Zm0 520q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z"/></symbol>
+<symbol id="i-copy" viewBox="0 -960 960 960"><path d="M360-240q-33 0-56.5-23.5T280-320v-480q0-33 23.5-56.5T360-880h360q33 0 56.5 23.5T800-800v480q0 33-23.5 56.5T720-240H360Zm0-80h360v-480H360v480ZM200-80q-33 0-56.5-23.5T120-160v-560h80v560h440v80H200Zm160-240v-480 480Z"/></symbol>
+<symbol id="i-download" viewBox="0 -960 960 960"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></symbol>
+<symbol id="i-trash" viewBox="0 -960 960 960"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></symbol>
+<symbol id="i-globe" viewBox="0 -960 960 960"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-40-82v-78q-33 0-56.5-23.5T360-320v-40L168-552q-3 18-5.5 36t-2.5 36q0 121 79.5 212T440-162Zm276-102q20-22 36-47.5t26.5-53q10.5-27.5 16-56.5t5.5-59q0-98-54.5-179T600-776v16q0 33-23.5 56.5T520-680h-80v80q0 17-11.5 28.5T400-560h-80v80h240q17 0 28.5 11.5T600-440v120h40q26 0 47 15.5t29 40.5Z"/></symbol>
+<symbol id="i-apps" viewBox="0 -960 960 960"><path d="M240-160q-33 0-56.5-23.5T160-240q0-33 23.5-56.5T240-320q33 0 56.5 23.5T320-240q0 33-23.5 56.5T240-160Zm240 0q-33 0-56.5-23.5T400-240q0-33 23.5-56.5T480-320q33 0 56.5 23.5T560-240q0 33-23.5 56.5T480-160Zm240 0q-33 0-56.5-23.5T640-240q0-33 23.5-56.5T720-320q33 0 56.5 23.5T800-240q0 33-23.5 56.5T720-160ZM240-400q-33 0-56.5-23.5T160-480q0-33 23.5-56.5T240-560q33 0 56.5 23.5T320-480q0 33-23.5 56.5T240-400Zm240 0q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm240 0q-33 0-56.5-23.5T640-480q0-33 23.5-56.5T720-560q33 0 56.5 23.5T800-480q0 33-23.5 56.5T720-400ZM240-640q-33 0-56.5-23.5T160-720q0-33 23.5-56.5T240-800q33 0 56.5 23.5T320-720q0 33-23.5 56.5T240-640Zm240 0q-33 0-56.5-23.5T400-720q0-33 23.5-56.5T480-800q33 0 56.5 23.5T560-720q0 33-23.5 56.5T480-640Zm240 0q-33 0-56.5-23.5T640-720q0-33 23.5-56.5T720-800q33 0 56.5 23.5T800-720q0 33-23.5 56.5T720-640Z"/></symbol>
+<symbol id="i-memory" viewBox="0 -960 960 960"><path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm80-80h400v-80H280v80Zm0-160h400v-80H280v80Zm0-160h400v-80H280v80ZM40-280v-80h80v80H40Zm0-160v-80h80v80H40Zm0-160v-80h80v80H40Zm800 320v-80h80v80h-80Zm0-160v-80h80v80h-80Zm0-160v-80h80v80h-80ZM280-840v-80h80v80h-80Zm160 0v-80h80v80h-80Zm160 0v-80h80v80h-80ZM280-40v-80h80v80h-80Zm160 0v-80h80v80h-80Zm160 0v-80h80v80h-80Z"/></symbol>
+<symbol id="i-tg" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></symbol>
+</defs></svg>
+
+<!-- Top App Bar -->
+<header class="app-bar" id="app-bar">
+  <div class="app-bar-brand">
+    <div class="app-bar-logo" aria-hidden="true">
+      <svg class="icon s24"><use href="#i-tg"/></svg>
     </div>
-    <div class="m3-chip" aria-label="Версия модуля">
-      <span class="m3-chip-dot" id="chipDot"></span>
+    <div class="app-bar-titles">
+      <h1 class="app-bar-title">TG Open</h1>
+      <span class="app-bar-sub">MTProto · WebSocket Bypass</span>
+    </div>
+  </div>
+  <div class="app-bar-actions">
+    <div class="chip-status" aria-label="Версия">
+      <span class="chip-dot" id="chipDot"></span>
       <span>v2.1.48</span>
     </div>
-  </header>
+    <button class="icon-btn state" id="btn-refresh" aria-label="Обновить статус" title="Обновить">
+      <svg class="icon s20"><use href="#i-refresh"/></svg>
+    </button>
+  </div>
+</header>
 
-  <!-- Card 1: Main Control & DC Matrix -->
-  <section class="m3-card">
-    <div class="m3-card-header">
-      <div class="m3-card-title-group">
-        <h2 class="m3-card-title">Обход блокировки</h2>
-        <div class="m3-card-hint">DC1–DC5 через WebSocket. Прокси в Telegram не нужен.</div>
+<main class="content">
+  <!-- ========================================================================
+       PAGE 1: СОСТОЯНИЕ (Control)
+       ======================================================================== -->
+  <section class="page active enter-fade" id="page-control" data-page="control">
+    <!-- Hero Status Card -->
+    <div class="hero" id="hero-card">
+      <div class="hero-head">
+        <span class="hero-icon" aria-hidden="true">
+          <svg class="icon s36"><use href="#i-tg"/></svg>
+        </span>
+        <div class="hero-titles">
+          <div class="hero-state" id="hero-state">Опрос службы…</div>
+          <div class="hero-sub" id="hero-sub">DC1–DC5 через WebSocket · Прокси не нужен</div>
+        </div>
       </div>
-      <div class="m3-switch-wrapper">
-        <button id="sw" class="m3-switch" type="button" role="switch" aria-checked="false" aria-label="Обход блокировки Telegram">
-          <span class="m3-switch-thumb">
-            <svg class="m3-switch-icon" viewBox="0 0 24 24"><path d="M9.55 18L3.85 12.3L5.275 10.875L9.55 15.15L18.725 5.975L20.15 7.4L9.55 18Z"/></svg>
-          </span>
+      <div class="hero-stats">
+        <div class="hstat">
+          <span class="hstat-label">Сессии</span>
+          <span class="hstat-value" id="stat-active">0</span>
+        </div>
+        <div class="hstat">
+          <span class="hstat-label">Память RSS</span>
+          <span class="hstat-value" id="stat-mem">0 Б</span>
+        </div>
+        <div class="hstat">
+          <span class="hstat-label">Трафик</span>
+          <span class="hstat-value" id="stat-traffic">0 Б</span>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn state" id="hero-toggle" type="button">
+          <svg class="icon s20"><use href="#i-play"/></svg>
+          <span id="hero-toggle-label">Запустить</span>
+        </button>
+        <button class="icon-btn hero-restart state" id="hero-restart" type="button" aria-label="Перезапустить перехват" title="Перезапустить">
+          <svg class="icon s20"><use href="#i-restart"/></svg>
         </button>
       </div>
     </div>
 
-    <div id="status" class="m3-status-banner">
-      <span class="m3-status-indicator"></span>
-      <span id="statusText">Выключен</span>
+    <!-- DC Matrix Grid -->
+    <div class="card">
+      <h2 class="subhead">Датацентры Telegram (DC Matrix)</h2>
+      <div class="dc-grid" id="dcGrid"></div>
+      <div class="meta-row">
+        <span>Активно сейчас: <strong id="meta-active">0</strong></span>
+        <span>Всего WS сессий: <strong id="meta-ws">0</strong></span>
+      </div>
     </div>
 
-    <div class="m3-dc-grid" id="grid"></div>
+    <!-- Detected Telegram Clients -->
+    <div class="card">
+      <h2 class="subhead">Обнаруженные клиенты Telegram</h2>
+      <div class="list" id="appsList">
+        <div class="list-item">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-apps"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">Ожидание трафика Telegram</span>
+            <span class="li-secondary">Запустите Telegram, чтобы перехватчик зафиксировал соединение</span>
+          </span>
+        </div>
+      </div>
+    </div>
 
-    <div class="m3-meta-row">
-      <span>Активно сейчас: <strong id="active">0</strong></span>
-      <span>Всего сессий: <strong id="ws">0</strong></span>
+    <!-- Process RAM Metrics -->
+    <div class="card">
+      <h2 class="subhead">Физическая память процесса</h2>
+      <div class="stats-grid">
+        <div class="stat-box">
+          <span class="stat-title">Сейчас (RSS)</span>
+          <span class="stat-num" id="memNow">—</span>
+          <span class="stat-sub">Текущий размер в ОЗУ</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-title">Пик с запуска</span>
+          <span class="stat-num" id="memPeak">—</span>
+          <span class="stat-sub">Максимальный RSS</span>
+        </div>
+      </div>
     </div>
   </section>
 
-  <!-- Card 2: Routing & Cloudflare Settings -->
-  <section class="m3-card">
-    <div class="m3-card-header">
-      <div class="m3-card-title-group">
-        <h2 class="m3-card-title">Маршрутизация и Cloudflare</h2>
-        <div class="m3-card-hint">Управление режимом WSS и распределением соединений.</div>
-      </div>
-    </div>
-
-    <!-- Toggle: CF Priority -->
-    <div class="m3-setting-row">
-      <div class="m3-setting-text">
-        <label for="swCFPriority" class="m3-setting-title">Форсировать Cloudflare (CF Priority)</label>
-        <span class="m3-setting-desc">Сразу подключаться через Cloudflare без задержек на прямой опрос IP</span>
-      </div>
-      <div class="m3-switch-wrapper">
-        <button id="swCFPriority" class="m3-switch" type="button" role="switch" aria-checked="false" aria-label="Форсировать Cloudflare">
-          <span class="m3-switch-thumb">
-            <svg class="m3-switch-icon" viewBox="0 0 24 24"><path d="M9.55 18L3.85 12.3L5.275 10.875L9.55 15.15L18.725 5.975L20.15 7.4L9.55 18Z"/></svg>
+  <!-- ========================================================================
+       PAGE 2: МАРШРУТИЗАЦИЯ (Routing)
+       ======================================================================== -->
+  <section class="page" id="page-routing" data-page="routing">
+    <div class="card">
+      <h2 class="subhead">Режим WebSocket & Cloudflare</h2>
+      <div class="list">
+        <!-- CF Priority -->
+        <label class="list-item two-line clickable state">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-tune"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">Форсировать Cloudflare (CF Priority)</span>
+            <span class="li-secondary">Сразу подключаться через Cloudflare без задержек на прямой опрос IP</span>
           </span>
+          <span class="li-trail">
+            <input type="checkbox" class="switch" role="switch" id="swCFPriority" aria-label="Форсировать Cloudflare">
+          </span>
+        </label>
+
+        <!-- CF Balance -->
+        <label class="list-item two-line clickable state">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-globe"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">Балансировка доменов (CF Balance)</span>
+            <span class="li-secondary">Распределять новые сессии (Round-Robin) между проверенными узлами</span>
+          </span>
+          <span class="li-trail">
+            <input type="checkbox" class="switch" role="switch" id="swCFBalance" aria-label="Балансировка доменов">
+          </span>
+        </label>
+      </div>
+
+      <h2 class="subhead" style="margin-top: 8px;">Тонкая настройка адресов</h2>
+      <div class="group">
+        <!-- Custom CF Domain -->
+        <div class="field">
+          <div class="tf">
+            <input type="text" id="inputCustomDomain" placeholder="например, my-worker.example.com" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <label for="inputCustomDomain">Свой Cloudflare-домен (Worker / Прокси)</label>
+          </div>
+          <span class="helper">Домен будет опрашиваться первым с наивысшим приоритетом</span>
+        </div>
+
+        <!-- DC IP Overrides -->
+        <div class="field">
+          <div class="tf">
+            <input type="text" id="inputDCOverrides" placeholder="1:149.154.175.50, 2:149.154.167.220" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <label for="inputDCOverrides">Ручные IP для DC (опционально)</label>
+          </div>
+          <span class="helper">Переопределение точек входа в формате: DC:IP, DC:IP</span>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top: 8px;">
+        <button class="btn primary with-icon state" id="saveConfigBtn" type="button">
+          <svg class="icon s18"><use href="#i-check"/></svg>
+          <span>Сохранить настройки</span>
         </button>
       </div>
     </div>
 
-    <!-- Toggle: CF Balance -->
-    <div class="m3-setting-row">
-      <div class="m3-setting-text">
-        <label for="swCFBalance" class="m3-setting-title">Балансировка доменов (CF Balance)</label>
-        <span class="m3-setting-desc">Распределять новые сессии (Round-Robin) между проверенными узлами</span>
+    <!-- Traffic Detailed Stats -->
+    <div class="card">
+      <h2 class="subhead">Обработанный трафик Telegram</h2>
+      <div class="stats-grid cols-3">
+        <div class="stat-box">
+          <span class="stat-title">Всего</span>
+          <span class="stat-num" id="trafficTotal">0 Б</span>
+          <span class="stat-sub">С момента запуска</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-title">Отправлено</span>
+          <span class="stat-num" id="trafficUp">0 Б</span>
+          <span class="stat-sub">Клиент → WSS</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-title">Получено</span>
+          <span class="stat-num" id="trafficDown">0 Б</span>
+          <span class="stat-sub">WSS → Клиент</span>
+        </div>
       </div>
-      <div class="m3-switch-wrapper">
-        <button id="swCFBalance" class="m3-switch" type="button" role="switch" aria-checked="false" aria-label="Балансировка доменов">
-          <span class="m3-switch-thumb">
-            <svg class="m3-switch-icon" viewBox="0 0 24 24"><path d="M9.55 18L3.85 12.3L5.275 10.875L9.55 15.15L18.725 5.975L20.15 7.4L9.55 18Z"/></svg>
-          </span>
+    </div>
+  </section>
+
+  <!-- ========================================================================
+       PAGE 3: ЖУРНАЛЫ (Logs)
+       ======================================================================== -->
+  <section class="page" id="page-logs" data-page="logs">
+    <div class="card">
+      <div class="row" style="justify-content: space-between;">
+        <div class="row">
+          <button class="btn tonal with-icon state" id="btn-copy-logs" type="button">
+            <svg class="icon s18"><use href="#i-copy"/></svg>
+            <span>Копировать</span>
+          </button>
+          <button class="btn tonal with-icon state" id="btn-export-logs" type="button">
+            <svg class="icon s18"><use href="#i-download"/></svg>
+            <span>Экспорт</span>
+          </button>
+        </div>
+        <button class="btn text danger state" id="btn-clear-logs" type="button">
+          <svg class="icon s18"><use href="#i-trash"/></svg>
+          <span>Очистить</span>
         </button>
       </div>
-    </div>
-
-    <!-- Input 1: Custom CF Domain -->
-    <div class="m3-field-group">
-      <label for="inputCustomDomain" class="m3-field-label">Свой Cloudflare-домен (Worker / Прокси)</label>
-      <input type="text" id="inputCustomDomain" class="m3-text-field" placeholder="например, my-worker.example.com" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <span class="m3-field-hint">Домен будет опрашиваться первым с наивысшим приоритетом</span>
-    </div>
-
-    <!-- Input 2: DC IP Overrides -->
-    <div class="m3-field-group">
-      <label for="inputDCOverrides" class="m3-field-label">Ручные IP для DC (опционально)</label>
-      <input type="text" id="inputDCOverrides" class="m3-text-field" placeholder="1:149.154.175.50, 2:149.154.167.220" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <span class="m3-field-hint">Переопределение точек входа в формате: DC:IP, DC:IP</span>
-    </div>
-
-    <div class="m3-button-row" style="margin-top: 14px;">
-      <button id="saveConfigBtn" class="m3-button primary" type="button">
-        <svg viewBox="0 0 24 24"><path d="M17 3H5C3.89 3 3 3.9 3 5V19C3 20.1 3.89 21 5 21H19C20.1 21 21 20.1 21 19V7L17 3ZM19 19H5V5H16.17L19 7.83V19ZM12 12C10.34 12 9 13.34 9 15C9 16.66 10.34 18 12 18C13.66 18 15 16.66 15 15C15 13.34 13.66 12 12 12ZM6 6H15V10H6V6Z"/></svg>
-        <span>Сохранить настройки</span>
-      </button>
+      <pre class="log-view" id="logView" tabindex="0" aria-label="Содержимое журнала">Загрузка журнала…</pre>
     </div>
   </section>
 
-  <!-- Card 3: Memory Diagnostics -->
-  <section class="m3-card">
-    <h2 class="m3-card-title">Потребление памяти</h2>
-    <div class="m3-stats-grid">
-      <div class="m3-stat-item">
-        <span class="m3-stat-label">Сейчас (RSS)</span>
-        <span class="m3-stat-value" id="memNow">—</span>
-        <span class="m3-stat-sub">Физическая память процесса</span>
-      </div>
-      <div class="m3-stat-item">
-        <span class="m3-stat-label">Пик с запуска</span>
-        <span class="m3-stat-value" id="memPeak">—</span>
-        <span class="m3-stat-sub">Максимальный RSS</span>
-      </div>
-    </div>
-  </section>
+  <!-- ========================================================================
+       PAGE 4: О МОДУЛЕ (About)
+       ======================================================================== -->
+  <section class="page" id="page-about" data-page="about">
+    <div class="card">
+      <h2 class="subhead">Архитектура & Системные сведения</h2>
+      <div class="list">
+        <div class="list-item two-line">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-shield"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">TG Open v2.1.48</span>
+            <span class="li-secondary">MTProto прозрачный WebSocket обходчик</span>
+          </span>
+        </div>
 
-  <!-- Card 3: Telegram Traffic Stats -->
-  <section class="m3-card">
-    <h2 class="m3-card-title">Обработанный трафик Telegram</h2>
-    <div class="m3-stats-grid cols-3">
-      <div class="m3-stat-item">
-        <span class="m3-stat-label">Всего</span>
-        <span class="m3-stat-value" id="trafficTotal">0 Б</span>
-        <span class="m3-stat-sub">С момента старта</span>
-      </div>
-      <div class="m3-stat-item">
-        <span class="m3-stat-label">Отправлено</span>
-        <span class="m3-stat-value" id="trafficUp">0 Б</span>
-        <span class="m3-stat-sub">Клиент → WSS</span>
-      </div>
-      <div class="m3-stat-item">
-        <span class="m3-stat-label">Получено</span>
-        <span class="m3-stat-value" id="trafficDown">0 Б</span>
-        <span class="m3-stat-sub">WSS → клиент</span>
-      </div>
-    </div>
-  </section>
+        <div class="list-item two-line">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-memory"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">Бинарный движок</span>
+            <span class="li-secondary">/data/adb/modules/tgopen/bin/tgws (Go Zero-Copy)</span>
+          </span>
+        </div>
 
-  <!-- Card 4: Diagnostics & Journal -->
-  <section class="m3-card">
-    <div class="m3-button-row">
-      <button id="logbtn" class="m3-button" type="button" aria-expanded="false">
-        <svg viewBox="0 0 24 24"><path d="M19 3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19V5C21 3.9 20.1 3 19 3ZM19 19H5V5H19V19ZM7 10H17V12H7V10ZM7 14H14V16H7V14ZM7 6H17V8H7V6Z"/></svg>
-        <span>Журнал</span>
-      </button>
+        <div class="list-item two-line">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-globe"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">Multiarch сборка</span>
+            <span class="li-secondary">ARM64, ARMv7, x86, x86_64</span>
+          </span>
+        </div>
+
+        <div class="list-item two-line">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-status"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary" id="root-bridge-label">Root Bridge</span>
+            <span class="li-secondary" id="root-bridge-desc">KernelSU / Magisk / APatch webui standalone</span>
+          </span>
+        </div>
+      </div>
     </div>
-    <pre id="log" class="m3-log-viewer" aria-live="polite"></pre>
   </section>
 </main>
 
-<!-- M3 Snackbar -->
-<div id="toast" role="status" aria-live="polite"></div>
+<!-- Navigation Bar -->
+<nav class="nav-bar" id="nav-bar" aria-label="Разделы приложения">
+  <div class="nav-bar-inner">
+    <button class="nav-dest" data-page="control" aria-current="page">
+      <span class="nav-ind state"><svg class="icon"><use href="#i-status"/></svg></span>
+      <span class="nav-label">Состояние</span>
+    </button>
+    <button class="nav-dest" data-page="routing">
+      <span class="nav-ind state"><svg class="icon"><use href="#i-tune"/></svg></span>
+      <span class="nav-label">Маршруты</span>
+    </button>
+    <button class="nav-dest" data-page="logs">
+      <span class="nav-ind state"><svg class="icon"><use href="#i-logs"/></svg></span>
+      <span class="nav-label">Журналы</span>
+    </button>
+    <button class="nav-dest" data-page="about">
+      <span class="nav-ind state"><svg class="icon"><use href="#i-info"/></svg></span>
+      <span class="nav-label">О модуле</span>
+    </button>
+  </div>
+</nav>
+
+<!-- Floating Snackbar -->
+<div class="snackbar" id="toast" role="status" aria-live="polite"></div>
 
 <script>
+/* ==========================================================================
+   TG Open Application Logic & Bridge Controller
+   ========================================================================== */
+
 const BIN = "/data/adb/modules/tgopen/bin/tgws";
 const DCS = [
   ["1", "Майами"],
@@ -915,20 +1331,23 @@ const DCS = [
   ["4", "Амстердам"],
   ["5", "Сингапур"]
 ];
-const $ = (id) => document.getElementById(id);
-const grid = $("grid");
 
+const $ = (id) => document.getElementById(id);
+const dcGrid = $("dcGrid");
+
+// Build DC Matrix
 DCS.forEach(([id, city]) => {
   const el = document.createElement("div");
-  el.className = "dc";
+  el.className = "dc-card";
   el.id = "dc" + id;
   el.setAttribute("tabindex", "0");
-  el.innerHTML = "<b>" + id + "</b><span>" + city + "</span><em>0</em>";
-  grid.appendChild(el);
+  el.innerHTML = "<b>DC" + id + "</b><span>" + city + "</span><em>0</em>";
+  dcGrid.appendChild(el);
 });
 
-function formatBytes(value) {
-  const n = Math.max(0, Number(value) || 0);
+// Formatting Utilities
+function formatBytes(val) {
+  const n = Math.max(0, Number(val) || 0);
   if (n >= 1e9) return (n / 1e9).toFixed(n >= 10e9 ? 1 : 2).replace(/\.?0+$/, "") + " ГБ";
   if (n >= 1e6) return (n / 1e6).toFixed(n >= 100e6 ? 0 : n >= 10e6 ? 1 : 2).replace(/\.?0+$/, "") + " МБ";
   if (n >= 1e3) return (n / 1e3).toFixed(n >= 100e3 ? 0 : 1).replace(/\.?0+$/, "") + " КБ";
@@ -954,17 +1373,27 @@ function hasBridge() {
   return typeof window.ksu !== "undefined" && typeof ksu.exec === "function";
 }
 
+// Native Bridge Command Executor
 function kexec(cmd) {
   return new Promise((resolve, reject) => {
-    if (!hasBridge()) { reject(new Error("Откройте панель из Magisk, KernelSU или APatch")); return; }
+    if (!hasBridge()) {
+      reject(new Error("Откройте панель из Magisk, KernelSU или APatch"));
+      return;
+    }
     const cb = "tg_" + Math.random().toString(36).slice(2);
     let done = false;
     window[cb] = (errno, stdout, stderr) => {
-      done = true; delete window[cb];
+      done = true;
+      delete window[cb];
       resolve({ errno, stdout: stdout || "", stderr: stderr || "" });
     };
-    try { ksu.exec(cmd, "{}", cb); }
-    catch (e) { delete window[cb]; reject(e); return; }
+    try {
+      ksu.exec(cmd, "{}", cb);
+    } catch (e) {
+      delete window[cb];
+      reject(e);
+      return;
+    }
     setTimeout(() => {
       if (!done) {
         delete window[cb];
@@ -974,77 +1403,134 @@ function kexec(cmd) {
   });
 }
 
+// API Communication with Go Binary
 async function api(cmd, extra) {
   const payload = b64(JSON.stringify(Object.assign({ cmd }, extra || {})));
   const r = await kexec(BIN + " api '" + payload + "'");
   const line = (r.stdout || "").trim().split("\n").pop();
   let j;
-  try { j = JSON.parse(line); }
-  catch (e) { throw new Error((r.stderr || r.stdout || "нет ответа").slice(0, 240)); }
+  try {
+    j = JSON.parse(line);
+  } catch (e) {
+    throw new Error((r.stderr || r.stdout || "нет ответа").slice(0, 240));
+  }
   if (!j.ok) throw new Error(j.error || "ошибка");
   return j.data;
 }
 
+// App State
 let state = null;
 let busy = false;
 let refreshing = false;
 
+// UI Rendering
 function render() {
-  const on = !!(state && state.enabled);
-  $("sw").setAttribute("aria-checked", on ? "true" : "false");
-  
-  const st = $("status");
-  const stText = $("statusText") || st;
+  const heroCard = $("hero-card");
+  const heroState = $("hero-state");
+  const heroSub = $("hero-sub");
+  const heroToggle = $("hero-toggle");
+  const heroToggleLabel = $("hero-toggle-label");
   const chipDot = $("chipDot");
-  st.className = "m3-status-banner";
-  
-  if (!state) { 
-    stText.textContent = "Нет данных";
-    if (chipDot) chipDot.className = "m3-chip-dot";
-    return; 
+
+  const on = !!(state && state.enabled);
+  const running = !!(state && state.running);
+
+  heroCard.className = "hero";
+  if (chipDot) chipDot.className = "chip-dot";
+
+  if (!state) {
+    heroState.textContent = "Опрос службы…";
+    heroSub.textContent = "Соединение с демоном tgws…";
+    heroToggleLabel.textContent = "Запустить";
+    return;
   }
-  
-  const apps = (state.apps || []).map((a) => a.name).filter((v, i, arr) => arr.indexOf(v) === i);
+
+  // Detected telegram clients
+  const apps = (state.apps || []).map(a => a.name).filter((v, i, arr) => arr.indexOf(v) === i);
   const appLabel = apps.length ? " · " + apps.join(", ") : "";
-  
+
   if (!on) {
-    stText.textContent = "Выключен";
-    if (chipDot) chipDot.className = "m3-chip-dot";
-  } else if (!state.running) {
-    stText.textContent = "Перехватчик не запущен";
-    st.classList.add("bad");
-    if (chipDot) chipDot.className = "m3-chip-dot";
+    heroState.textContent = "Обход выключен";
+    heroSub.textContent = "Нажмите «Запустить» для активации WSS обхода";
+    heroToggleLabel.textContent = "Запустить";
+    heroToggle.querySelector("use").setAttribute("href", "#i-play");
+  } else if (!running) {
+    heroState.textContent = "Служба не запущена";
+    heroSub.textContent = "Перехватчик tgws остановлен в системе";
+    heroCard.classList.add("bad");
+    heroToggleLabel.textContent = "Запустить";
+    heroToggle.querySelector("use").setAttribute("href", "#i-play");
   } else if ((state.ws || 0) > 0) {
-    stText.textContent = "WebSocket активен" + appLabel;
-    st.classList.add("on");
-    if (chipDot) chipDot.className = "m3-chip-dot active";
+    heroState.textContent = "WebSocket активен";
+    heroSub.textContent = "DC1–DC5 в эфире" + appLabel;
+    heroCard.classList.add("running");
+    if (chipDot) chipDot.classList.add("active");
+    heroToggleLabel.textContent = "Остановить";
+    heroToggle.querySelector("use").setAttribute("href", "#i-stop");
   } else if ((state.fail || 0) > 0) {
-    stText.textContent = "Перехват запущен · ошибки соединения";
-    st.classList.add("bad");
-    if (chipDot) chipDot.className = "m3-chip-dot";
+    heroState.textContent = "Ошибки соединения";
+    heroSub.textContent = "Перехват активен, сбои подключения к Cloudflare";
+    heroCard.classList.add("bad");
+    heroToggleLabel.textContent = "Остановить";
+    heroToggle.querySelector("use").setAttribute("href", "#i-stop");
   } else {
-    stText.textContent = "Перехват запущен · ожидание соединений" + appLabel;
-    if (chipDot) chipDot.className = "m3-chip-dot active";
+    heroState.textContent = "Ожидание трафика";
+    heroSub.textContent = "Перехват активен · откройте Telegram" + appLabel;
+    heroCard.classList.add("running");
+    if (chipDot) chipDot.classList.add("active");
+    heroToggleLabel.textContent = "Остановить";
+    heroToggle.querySelector("use").setAttribute("href", "#i-stop");
   }
-  
+
+  // Quick stats
+  $("stat-active").textContent = String((state && state.active) || 0);
+  $("stat-mem").textContent = formatBytes((state && state.memNowBytes) || 0);
+  $("stat-traffic").textContent = formatBytes((state && state.trafficTotalBytes) || 0);
+
+  // DC Matrix
   const dc = (state && state.dc) || {};
   DCS.forEach(([id]) => {
     const el = $("dc" + id);
+    if (!el) return;
     const n = dc[id] || 0;
     el.querySelector("em").textContent = String(n);
     el.classList.toggle("live", n > 0);
   });
-  
-  $("active").textContent = String((state && state.active) || 0);
-  $("ws").textContent = String((state && state.ws) || 0);
+
+  $("meta-active").textContent = String((state && state.active) || 0);
+  $("meta-ws").textContent = String((state && state.ws) || 0);
+
+  // Telegram Apps List
+  const appsList = $("appsList");
+  if (state.apps && state.apps.length > 0) {
+    appsList.innerHTML = "";
+    state.apps.forEach(app => {
+      const item = document.createElement("div");
+      item.className = "list-item";
+      item.innerHTML = `
+        <span class="li-icon"><svg class="icon s20"><use href="#i-tg"/></svg></span>
+        <span class="li-text">
+          <span class="li-primary">${app.name || "Telegram Client"}</span>
+          <span class="li-secondary">UID: ${app.uid || "—"} · Трафик перенаправляется в WSS</span>
+        </span>
+      `;
+      appsList.appendChild(item);
+    });
+  }
+
+  // RAM Metrics
   $("memNow").textContent = formatBytes(state.memNowBytes);
   $("memPeak").textContent = formatBytes(state.memPeakBytes);
+
+  // Traffic Detailed Metrics
   $("trafficTotal").textContent = formatBytes(state.trafficTotalBytes);
   $("trafficUp").textContent = formatBytes(state.trafficUpBytes);
   $("trafficDown").textContent = formatBytes(state.trafficDownBytes);
-  
-  if ($("swCFPriority")) $("swCFPriority").setAttribute("aria-checked", (state && state.cfPriority) ? "true" : "false");
-  if ($("swCFBalance")) $("swCFBalance").setAttribute("aria-checked", (state && state.cfBalance) ? "true" : "false");
+
+  // Routing Switches & Inputs
+  if ($("swCFPriority")) $("swCFPriority").checked = !!(state && state.cfPriority);
+  if ($("swCFBalance")) $("swCFBalance").checked = !!(state && state.cfBalance);
+
   if ($("inputCustomDomain") && document.activeElement !== $("inputCustomDomain")) {
     $("inputCustomDomain").value = (state && state.customCFDomain) || "";
   }
@@ -1052,90 +1538,133 @@ function render() {
     $("inputDCOverrides").value = (state && state.dcOverrides) || "";
   }
 
-  if ($("log").classList.contains("show") && state.log) {
-    $("log").textContent = state.log || "Пусто";
+  // Log View
+  const logView = $("logView");
+  if (logView && state && state.log) {
+    logView.textContent = state.log || "Журнал пуст";
+  }
+
+  // Bridge detection
+  if ($("root-bridge-desc")) {
+    if (typeof window.ksu !== "undefined") {
+      $("root-bridge-desc").textContent = "KernelSU / APatch JavaScript Native Bridge (Active)";
+    } else {
+      $("root-bridge-desc").textContent = "Автономный режим (Bridge не обнаружен)";
+    }
   }
 }
 
+// Data Refresh
 async function refresh() {
   if (refreshing || busy) return;
   refreshing = true;
-  try { 
-    state = await api("status"); 
-  } catch (e) { 
-    const st = $("status");
-    const stText = $("statusText") || st;
-    stText.textContent = e.message;
-    st.className = "m3-status-banner bad";
-    return; 
-  } finally { 
-    refreshing = false; 
+  try {
+    state = await api("status");
+  } catch (e) {
+    $("hero-state").textContent = "Сбой соединения";
+    $("hero-sub").textContent = e.message;
+    $("hero-card").className = "hero bad";
+    return;
+  } finally {
+    refreshing = false;
   }
   render();
 }
 
-$("sw").addEventListener("click", async () => {
+// Navigation / Tabs Switching
+const navDests = document.querySelectorAll(".nav-dest");
+navDests.forEach(btn => {
+  btn.addEventListener("click", () => {
+    const pageId = btn.getAttribute("data-page");
+    if (!pageId) return;
+
+    navDests.forEach(d => d.removeAttribute("aria-current"));
+    btn.setAttribute("aria-current", "page");
+
+    document.querySelectorAll(".page").forEach(p => {
+      p.classList.remove("active", "enter-fade");
+      if (p.getAttribute("data-page") === pageId) {
+        p.classList.add("active", "enter-fade");
+      }
+    });
+
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+});
+
+// Hero Toggle (Start / Stop)
+$("hero-toggle").addEventListener("click", async () => {
   if (busy) return;
-  const next = $("sw").getAttribute("aria-checked") !== "true";
+  const next = !(state && state.enabled);
   busy = true;
-  $("sw").setAttribute("aria-checked", next ? "true" : "false");
   try {
     state = await api("set", { enabled: next });
-    toast(next ? "Обход включён" : "Обход выключен");
+    toast(next ? "Обход активирован" : "Обход деактивирован");
   } catch (e) {
     toast(e.message);
+  } finally {
+    busy = false;
   }
-  busy = false;
   render();
 });
 
-$("logbtn").addEventListener("click", async () => {
-  const pre = $("log");
-  const show = !pre.classList.contains("show");
-  pre.classList.toggle("show", show);
-  $("logbtn").setAttribute("aria-expanded", show ? "true" : "false");
-  if (!show) return;
-  pre.textContent = "…";
-  try {
-    if (!state) state = await api("status");
-    pre.textContent = (state && state.log) || "Пока пусто. Включите обход и откройте Telegram.";
-  } catch (e) { 
-    pre.textContent = e.message; 
-  }
-});
-
-$("swCFPriority").addEventListener("click", async () => {
+// Hero Restart
+$("hero-restart").addEventListener("click", async () => {
   if (busy) return;
-  const next = $("swCFPriority").getAttribute("aria-checked") !== "true";
-  $("swCFPriority").setAttribute("aria-checked", next ? "true" : "false");
+  busy = true;
+  toast("Перезапуск перехватчика…");
   try {
-    state = await api("setConfig", { cfPriority: next });
-    toast(next ? "Приоритет Cloudflare включён" : "Приоритет Cloudflare выключен");
+    await api("set", { enabled: false });
+    await new Promise(r => setTimeout(r, 600));
+    state = await api("set", { enabled: true });
+    toast("Перехватчик успешно перезапущен");
   } catch (e) {
     toast(e.message);
+  } finally {
+    busy = false;
   }
   render();
 });
 
-$("swCFBalance").addEventListener("click", async () => {
+// Refresh Button in App Bar
+$("btn-refresh").addEventListener("click", async () => {
+  toast("Обновление данных…");
+  await refresh();
+});
+
+// Routing Toggles
+$("swCFPriority").addEventListener("change", async (e) => {
   if (busy) return;
-  const next = $("swCFBalance").getAttribute("aria-checked") !== "true";
-  $("swCFBalance").setAttribute("aria-checked", next ? "true" : "false");
+  const val = e.target.checked;
   try {
-    state = await api("setConfig", { cfBalance: next });
-    toast(next ? "Балансировка доменов включена" : "Балансировка доменов выключена");
-  } catch (e) {
-    toast(e.message);
+    state = await api("setConfig", { cfPriority: val });
+    toast(val ? "Приоритет Cloudflare включён" : "Приоритет Cloudflare выключен");
+  } catch (err) {
+    toast(err.message);
   }
   render();
 });
 
+$("swCFBalance").addEventListener("change", async (e) => {
+  if (busy) return;
+  const val = e.target.checked;
+  try {
+    state = await api("setConfig", { cfBalance: val });
+    toast(val ? "Балансировка доменов включена" : "Балансировка доменов выключена");
+  } catch (err) {
+    toast(err.message);
+  }
+  render();
+});
+
+// Save Routing Settings
 $("saveConfigBtn").addEventListener("click", async () => {
   if (busy) return;
   const customCFDomain = ($("inputCustomDomain").value || "").trim();
   const dcOverrides = ($("inputDCOverrides").value || "").trim();
-  const cfPriority = $("swCFPriority").getAttribute("aria-checked") === "true";
-  const cfBalance = $("swCFBalance").getAttribute("aria-checked") === "true";
+  const cfPriority = $("swCFPriority").checked;
+  const cfBalance = $("swCFBalance").checked;
+
   try {
     state = await api("setConfig", { customCFDomain, dcOverrides, cfPriority, cfBalance });
     toast("Настройки успешно сохранены");
@@ -1145,16 +1674,92 @@ $("saveConfigBtn").addEventListener("click", async () => {
   render();
 });
 
+// Log Action: Copy
+$("btn-copy-logs").addEventListener("click", async () => {
+  const text = $("logView").textContent || "";
+  if (!text || text === "Загрузка журнала…") {
+    toast("Журнал пуст");
+    return;
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    toast("Журнал скопирован в буфер");
+  } catch (e) {
+    toast("Не удалось скопировать");
+  }
+});
+
+// Log Action: Export
+$("btn-export-logs").addEventListener("click", () => {
+  const text = $("logView").textContent || "";
+  if (!text) {
+    toast("Журнал пуст");
+    return;
+  }
+  try {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "tgopen-logs-" + new Date().toISOString().slice(0, 10) + ".txt";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("Журнал экспортирован");
+  } catch (e) {
+    toast("Ошибка экспорта");
+  }
+});
+
+// Log Action: Clear
+$("btn-clear-logs").addEventListener("click", () => {
+  $("logView").textContent = "Журнал очищен.";
+  toast("Журнал очищен");
+});
+
+// App Bar Elevation on Scroll
+window.addEventListener("scroll", () => {
+  const appbar = $("app-bar");
+  if (window.scrollY > 12) {
+    appbar.classList.add("scrolled");
+  } else {
+    appbar.classList.remove("scrolled");
+  }
+});
+
+// Dynamic Ripple Effect
+document.addEventListener("pointerdown", (e) => {
+  const target = e.target.closest(".state");
+  if (!target) return;
+  const rect = target.getBoundingClientRect();
+  const radius = Math.max(rect.width, rect.height);
+  const ripple = document.createElement("span");
+  ripple.className = "ripple";
+  ripple.style.width = ripple.style.height = `${radius * 2}px`;
+  ripple.style.left = `${e.clientX - rect.left - radius}px`;
+  ripple.style.top = `${e.clientY - rect.top - radius}px`;
+  target.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 450);
+});
+
+// Lifecycle: Background and Foreground Resume
 let lastResumeAt = 0;
 async function resumeTransport() {
   const now = Date.now();
   if (busy || now - lastResumeAt < 5000) return;
   lastResumeAt = now;
-  try { 
-    state = await api("resume"); 
-    render(); 
-  } catch (e) { 
-    console.warn("TG Open resume:", e); 
+  try {
+    state = await api("resume");
+    render();
+  } catch (e) {
+    console.warn("TG Open resume:", e);
   }
 }
 
@@ -1163,6 +1768,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pageshow", () => resumeTransport());
 
+// Initial run
 refresh();
 setInterval(refresh, 3000);
 </script>
