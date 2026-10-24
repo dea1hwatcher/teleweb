@@ -523,12 +523,13 @@
 
   .m3-stat-value {
     font-family: var(--md-sys-typescale-mono-family);
-    font-size: 17px;
-    font-weight: 600;
-    line-height: 24px;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 26px;
     color: var(--md-sys-color-primary);
     margin-top: 4px;
     overflow-wrap: anywhere;
+    letter-spacing: -0.02em;
   }
 
   .m3-stat-sub {
@@ -549,7 +550,7 @@
   button.m3-button {
     height: 40px;
     min-width: 84px;
-    padding: 0 16px;
+    padding: 0 20px;
     border-radius: var(--md-sys-shape-corner-full);
     border: 1px solid var(--md-sys-color-outline-variant);
     background: var(--md-sys-color-surface-container-high);
@@ -563,14 +564,31 @@
     justify-content: center;
     gap: 8px;
     cursor: pointer;
+    position: relative;
+    overflow: hidden;
     transition: background-color var(--md-sys-motion-duration-short) ease,
                 border-color var(--md-sys-motion-duration-short) ease,
                 box-shadow var(--md-sys-motion-duration-short) ease;
     -webkit-tap-highlight-color: transparent;
   }
 
-  button.m3-button:active {
-    background: var(--md-sys-color-surface-container-highest);
+  /* M3 Official State Layer */
+  button.m3-button::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: currentColor;
+    opacity: 0;
+    transition: opacity var(--md-sys-motion-duration-short) ease;
+    pointer-events: none;
+  }
+
+  button.m3-button:hover::before {
+    opacity: 0.08;
+  }
+
+  button.m3-button:active::before {
+    opacity: 0.12;
   }
 
   button.m3-button svg {
@@ -584,11 +602,11 @@
     color: var(--md-sys-color-on-primary);
     border-color: transparent;
     font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
   }
 
   button.m3-button.primary:active {
-    background: var(--md-sys-color-primary-container);
-    color: var(--md-sys-color-on-primary-container);
+    box-shadow: none;
   }
 
   /* Settings Rows & Fields */
@@ -639,8 +657,8 @@
   }
 
   .m3-text-field {
-    height: 44px;
-    padding: 0 14px;
+    height: 48px;
+    padding: 0 16px;
     background: var(--md-sys-color-surface-container);
     border: 1px solid var(--md-sys-color-outline-variant);
     border-radius: var(--md-sys-shape-corner-small);
@@ -649,12 +667,14 @@
     font-size: 13px;
     outline: none;
     transition: border-color var(--md-sys-motion-duration-short) ease,
-                box-shadow var(--md-sys-motion-duration-short) ease;
+                box-shadow var(--md-sys-motion-duration-short) ease,
+                background-color var(--md-sys-motion-duration-short) ease;
   }
 
   .m3-text-field:focus {
     border-color: var(--md-sys-color-primary);
     box-shadow: 0 0 0 2px var(--md-sys-color-primary-container);
+    background: var(--md-sys-color-surface-container-high);
   }
 
   .m3-text-field::placeholder {
