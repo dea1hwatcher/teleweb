@@ -426,6 +426,8 @@ func TestAppProcessMatches(t *testing.T) {
 		{"com.exteragram.messenger:push\x00", "com.exteragram.messenger", true},
 		{"com.exteragram.messenger2", "com.exteragram.messenger", false},
 		{"org.telegram.messenger", "com.exteragram.messenger", false},
+		{"org.nemogram.messenger\x00", "org.nemogram.messenger", true},
+		{"org.nemogram\x00", "org.nemogram", true},
 	}
 	for _, tc := range cases {
 		if got := appProcessMatches(tc.cmd, tc.pkg); got != tc.want {

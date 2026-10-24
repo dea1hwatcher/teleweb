@@ -367,6 +367,8 @@ var packageNames = []struct{ Pkg, Name string }{
 	{"com.octogram", "Octogram"},
 	{"org.forkgram.messenger", "Forkgram"},
 	{"com.telegram.messenger", "Telegram"},
+	{"org.nemogram.messenger", "Nemogram"},
+	{"org.nemogram", "Nemogram"},
 }
 
 func packageUID(pkg string) int {
