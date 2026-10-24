@@ -1859,8 +1859,10 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 	setConnSockOpts(remote)
 	var upBytes, downBytes int64
 	var once sync.Once
+	stopIdle := make(chan struct{})
 	closeBoth := func() {
 		once.Do(func() {
+			close(stopIdle)
 			_ = c.Close()
 			_ = remote.Close()
 		})
@@ -1869,8 +1871,6 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
-	stopIdle := make(chan struct{})
-	defer close(stopIdle)
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -1893,7 +1893,9 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 	go func() {
 		defer wg.Done()
 		defer closeBoth()
-		buf := make([]byte, 64*1024)
+		bufPtr := ioBufPool.Get().(*[]byte)
+		defer ioBufPool.Put(bufPtr)
+		buf := *bufPtr
 		for {
 			nr, err := c.Read(buf)
 			if nr > 0 {
@@ -1913,7 +1915,9 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 	go func() {
 		defer wg.Done()
 		defer closeBoth()
-		buf := make([]byte, 64*1024)
+		bufPtr := ioBufPool.Get().(*[]byte)
+		defer ioBufPool.Put(bufPtr)
+		buf := *bufPtr
 		for {
 			nr, err := remote.Read(buf)
 			if nr > 0 {
@@ -1938,12 +1942,17 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 	var upBytes int64   // client -> WSS payload bytes observed after the init header
 	var downBytes int64 // WSS -> client payload bytes
 	var once sync.Once
-	done := make(chan struct{})
-	closeBoth := func() { once.Do(func() { close(done); _ = c.Close(); _ = ws.Close() }) }
+	stopIdle := make(chan struct{})
+	closeBoth := func() {
+		once.Do(func() {
+			close(stopIdle)
+			_ = c.Close()
+			_ = ws.Close()
+		})
+	}
+	defer closeBoth()
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
-	stopIdle := make(chan struct{})
-	defer close(stopIdle)
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -2575,6 +2584,14 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 	for active > 0 || nextIdx < len(candidates) {
 		select {
 		case <-raceCtx.Done():
+			go func(rem int) {
+				for i := 0; i < rem; i++ {
+					r := <-resCh
+					if r.ws != nil {
+						_ = r.ws.Close()
+					}
+				}
+			}(active)
 			return nil, "", raceCtx.Err()
 
 		case <-timer.C:

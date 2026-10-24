@@ -2418,7 +2418,7 @@ function initTheme() {
    TeleWEB Application Logic & Bridge Controller
    ========================================================================== */
 
-const BIN = "/data/adb/modules/teleweb/bin/tgws";
+const BIN = "([ -x /data/adb/modules/teleweb/bin/tgws ] && /data/adb/modules/teleweb/bin/tgws || /data/adb/modules/tgopen/bin/tgws)";
 const DCS = [
   ["1", "Майами"],
   ["2", "Амстердам"],
@@ -2480,7 +2480,7 @@ function kexec(cmd) {
       reject(new Error("Откройте панель из Magisk, KernelSU или APatch"));
       return;
     }
-    const cb = "tg_" + Math.random().toString(36).slice(2);
+    const cb = "tw_" + Math.random().toString(36).slice(2);
     let done = false;
     window[cb] = (errno, stdout, stderr) => {
       done = true;
@@ -2762,7 +2762,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") handleBack(false);
 });
 
-let histDepth = (history.state && history.state.tg) || 0;
+let histDepth = (history.state && (history.state.tw || history.state.tg)) || 0;
 let histPending = false;
 let syncTimer = 0;
 
@@ -2783,7 +2783,7 @@ function syncHistory() {
   try {
     if (target > histDepth) {
       if (!canPush()) return;
-      while (histDepth < target) history.pushState({ tg: ++histDepth }, "");
+      while (histDepth < target) history.pushState({ tw: ++histDepth }, "");
     } else if (target < histDepth) {
       histPending = true;
       history.go(target - histDepth);
@@ -2798,7 +2798,7 @@ function scheduleSync() {
 }
 
 window.addEventListener("popstate", (e) => {
-  const d = (e.state && e.state.tg) || 0;
+  const d = (e.state && (e.state.tw || e.state.tg)) || 0;
   if (histPending) {
     histPending = false;
     histDepth = d;

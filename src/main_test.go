@@ -1082,3 +1082,78 @@ func TestRaceCandidatesFastWinner(t *testing.T) {
 		t.Errorf("expected winner cand-fast-winner, got %q", winner)
 	}
 }
+
+func TestPipeTCPToTCPBidirectional(t *testing.T) {
+	clientSide, c := net.Pipe()
+	remote, serverSide := net.Pipe()
+
+	done := make(chan struct{})
+	go func() {
+		pipeTCPToTCP(c, remote, 999, 203)
+		close(done)
+	}()
+
+	msg1 := []byte("hello from client to server")
+	go func() {
+		_, _ = clientSide.Write(msg1)
+	}()
+
+	buf1 := make([]byte, len(msg1))
+	if _, err := io.ReadFull(serverSide, buf1); err != nil {
+		t.Fatalf("failed to read on serverSide: %v", err)
+	}
+	if string(buf1) != string(msg1) {
+		t.Fatalf("expected %q, got %q", string(msg1), string(buf1))
+	}
+
+	msg2 := []byte("reply from server to client")
+	go func() {
+		_, _ = serverSide.Write(msg2)
+	}()
+
+	buf2 := make([]byte, len(msg2))
+	if _, err := io.ReadFull(clientSide, buf2); err != nil {
+		t.Fatalf("failed to read on clientSide: %v", err)
+	}
+	if string(buf2) != string(msg2) {
+		t.Fatalf("expected %q, got %q", string(msg2), string(buf2))
+	}
+
+	_ = clientSide.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipeTCPToTCP did not shut down within 2s after socket close")
+	}
+	_ = serverSide.Close()
+}
+
+func TestRaceCandidatesContextCancel(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	candidates := []dialCandidate{
+		{
+			name: "cand-slow-1",
+			dial: func(c context.Context) (*wsConn, error) {
+				<-c.Done()
+				return nil, c.Err()
+			},
+		},
+		{
+			name: "cand-slow-2",
+			dial: func(c context.Context) (*wsConn, error) {
+				<-c.Done()
+				return nil, c.Err()
+			},
+		},
+	}
+
+	ws, _, err := raceCandidates(ctx, candidates, 20*time.Millisecond, 2)
+	if err == nil {
+		if ws != nil {
+			_ = ws.Close()
+		}
+		t.Fatal("expected error on context timeout")
+	}
+}
