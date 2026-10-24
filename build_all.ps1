@@ -57,10 +57,7 @@ foreach ($target in $Targets) {
     }
 }
 
-# Copy arm64 as default bin/tgws
-Copy-Item -Path "$BinDir\arm64\tgws" -Destination "$BinDir\tgws" -Force
-Write-Host "`nDefault bin\tgws updated from arm64." -ForegroundColor Green
-Write-Host "All 4 architectures built successfully!" -ForegroundColor Cyan
+Write-Host "`nAll 4 architectures built successfully!" -ForegroundColor Cyan
 
 # Package Magisk module archive
 $PackScript = Join-Path $RootDir "package_zip.py"

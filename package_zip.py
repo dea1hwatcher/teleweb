@@ -36,7 +36,6 @@ FILES_TO_PACK = [
     "webroot/module_icon.png",
     
     # Multi-arch binaries
-    "bin/tgws",
     "bin/arm64/tgws",
     "bin/arm/tgws",
     "bin/x86/tgws",
@@ -131,11 +130,6 @@ def build_binaries():
         size_mb = os.path.getsize(out_bin) / (1024 * 1024)
         print(f" [OK] -> {size_mb:.2f} MB")
 
-    # Copy arm64 as default bin/tgws
-    default_src = os.path.join(BIN_DIR, "arm64", "tgws")
-    default_dst = os.path.join(BIN_DIR, "tgws")
-    shutil.copy2(default_src, default_dst)
-    print(f"  * Default fallback binary updated: bin/tgws <- bin/arm64/tgws")
     print("All 4 target architectures built successfully!\n")
 
 

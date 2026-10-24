@@ -35,11 +35,9 @@ esac
 ui_print "- Архитектура устройства: $ABI"
 
 if [ -f "$MODPATH/bin/$ABI/tgws" ]; then
-  cp -f "$MODPATH/bin/$ABI/tgws" "$MODPATH/bin/tgws"
-elif [ -f "$MODPATH/bin/tgws" ]; then
-  ui_print "! Предупреждение: бинарник для $ABI не найден, используется дефолтный $MODPATH/bin/tgws"
+  mv -f "$MODPATH/bin/$ABI/tgws" "$MODPATH/bin/tgws"
 else
-  abort "! Ошибка: бинарник tgws для $ABI не найден в модуле"
+  abort "! Ошибка: бинарник tgws для архитектуры $ABI не найден в модуле"
 fi
 
 # Удаляем остальные архитектуры для экономии места на устройстве
