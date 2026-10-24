@@ -61,3 +61,11 @@ foreach ($target in $Targets) {
 Copy-Item -Path "$BinDir\arm64\tgws" -Destination "$BinDir\tgws" -Force
 Write-Host "`nDefault bin\tgws updated from arm64." -ForegroundColor Green
 Write-Host "All 4 architectures built successfully!" -ForegroundColor Cyan
+
+# Package Magisk module archive
+$PackScript = Join-Path $RootDir "package_zip.py"
+if (Test-Path $PackScript) {
+    Write-Host "`n>>> Packaging Magisk/KernelSU/APatch module..." -ForegroundColor Yellow
+    python $PackScript --skip-build
+}
+
