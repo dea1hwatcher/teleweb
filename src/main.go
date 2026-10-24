@@ -9,7 +9,6 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha1"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
@@ -31,6 +30,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 const (
@@ -1589,15 +1590,50 @@ func dcFor(ip netip.Addr) int {
 	return 0
 }
 
+func setConnSockOpts(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	type tcpConnSetter interface {
+		SetNoDelay(bool) error
+		SetReadBuffer(int) error
+		SetWriteBuffer(int) error
+	}
+	if tc, ok := conn.(tcpConnSetter); ok {
+		_ = tc.SetNoDelay(true)
+		_ = tc.SetReadBuffer(256 * 1024)
+		_ = tc.SetWriteBuffer(256 * 1024)
+	}
+}
+
+func isNeutralError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "forcibly closed by the remote host") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "client_eof")
+}
+
 func handleClient(c net.Conn) {
+	setConnSockOpts(c)
 	id := atomic.AddInt64(&connSeq, 1)
 	atomic.AddInt64(&active, 1)
 	defer atomic.AddInt64(&active, -1)
 	defer c.Close()
 	orig, err := originalDestination(c)
 	if err != nil {
-		atomic.AddInt64(&failCnt, 1)
-		logf("не удалось определить исходный адрес: %v", err)
+		if !isNeutralError(err) {
+			atomic.AddInt64(&failCnt, 1)
+			logf("не удалось определить исходный адрес: %v", err)
+		}
 		return
 	}
 
@@ -1609,8 +1645,10 @@ func handleClient(c net.Conn) {
 	_, err = io.ReadFull(c, init)
 	_ = c.SetReadDeadline(time.Time{})
 	if err != nil {
-		atomic.AddInt64(&failCnt, 1)
-		logf("соединение #%d %s: не удалось прочитать MTProto init: %v", id, orig, err)
+		if !isNeutralError(err) {
+			atomic.AddInt64(&failCnt, 1)
+			logf("соединение #%d %s: не удалось прочитать MTProto init: %v", id, orig, err)
+		}
 		return
 	}
 	dc, isMedia, parsed := parseMTProtoDC(init)
@@ -1631,8 +1669,10 @@ func handleClient(c net.Conn) {
 	defer cancel()
 	ws, err := dialTelegramWS(ctx, dc, isMedia)
 	if err != nil {
-		atomic.AddInt64(&failCnt, 1)
-		logf("DC%d media=%t WSS failed: %v; WSS-only, соединение закрыто", dc, isMedia, err)
+		if !isNeutralError(err) {
+			atomic.AddInt64(&failCnt, 1)
+			logf("DC%d media=%t WSS failed: %v; WSS-only, соединение закрыто", dc, isMedia, err)
+		}
 		return
 	}
 	atomic.AddInt64(&wsCount, 1)
@@ -1675,7 +1715,7 @@ func handleClient(c net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := pipeTCPToWSCount(c, ws, init, &upBytes, &lastActivity); err != nil && !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "use of closed network connection") {
+		if err := pipeTCPToWSCount(c, ws, init, &upBytes, &lastActivity); err != nil && !isNeutralError(err) {
 			logf("соединение #%d DC%d клиент→WSS ошибка: %T: %v (up=%d down=%d)", id, dc, err, err, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 		}
 		closeBoth()
@@ -1965,6 +2005,28 @@ func preferredIngressForDC(dc int) string {
 		return "149.154.167.220"
 	default:
 		return ""
+	}
+}
+
+func candidateIngressesForDC(dc int) []string {
+	if overrides := readDCOverrides(); len(overrides) > 0 {
+		if ip, ok := overrides[dc]; ok && ip != "" {
+			return []string{ip}
+		}
+	}
+	switch dc {
+	case 1:
+		return []string{"149.154.175.50", "149.154.175.51", "149.154.175.53", "149.154.175.54", "149.154.175.55"}
+	case 2:
+		return []string{"149.154.167.220", "149.154.167.51", "149.154.167.50", "149.154.167.41", "149.154.167.35", "149.154.167.36"}
+	case 3:
+		return []string{"149.154.175.100", "149.154.175.101"}
+	case 4:
+		return []string{"149.154.167.220", "149.154.167.91", "149.154.167.92"}
+	case 5:
+		return []string{"91.108.56.100", "91.108.56.101", "91.108.56.116", "91.108.56.126", "91.108.56.198", "149.154.171.5"}
+	default:
+		return nil
 	}
 }
 
@@ -2332,19 +2394,23 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 	if tryDirect {
 		directStarted := time.Now()
 		preferred := preferredIngressForDC(dc)
+		candidates := candidateIngressesForDC(dc)
 		for _, host := range hosts {
 			if routeCoolingDown(host) {
 				errorsSeen = append(errorsSeen, host+": временно исключён после повторных ранних EOF")
 				continue
 			}
 			ips, lookupErr := resolver.LookupNetIP(ctx, "ip4", host)
-			ordered := make([]netip.Addr, 0, len(ips)+1)
+			ordered := make([]netip.Addr, 0, len(ips)+len(candidates)+1)
 			if preferred != "" {
 				ordered = appendUniqueIP(ordered, netip.MustParseAddr(preferred))
 			}
-			// On DC2/DC4 the original path's known ingress is preferred; DNS
-			// answers are tried only if no preferred ingress is defined.
-			if preferred == "" {
+			for _, cip := range candidates {
+				if parsed, err := netip.ParseAddr(cip); err == nil {
+					ordered = appendUniqueIP(ordered, parsed)
+				}
+			}
+			if preferred == "" && len(candidates) == 0 {
 				for _, ip := range ips {
 					if ip.Is4() {
 						ordered = appendUniqueIP(ordered, ip)
@@ -2355,11 +2421,13 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 				errorsSeen = append(errorsSeen, "direct DNS "+host+": "+lookupErr.Error())
 				continue
 			}
+			timeoutCount := 0
 			for _, ip := range ordered {
 				attemptCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
 				d := net.Dialer{Timeout: 950 * time.Millisecond, KeepAlive: 30 * time.Second}
 				raw, err := d.DialContext(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"))
 				if err == nil {
+					setConnSockOpts(raw)
 					var ws *wsConn
 					ws, err = finishTelegramWS(attemptCtx, raw, host)
 					if err == nil {
@@ -2377,10 +2445,11 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 				if dc == 1 {
 					logf("DC1 media=%t direct WSS %s via %s не сработал: %v", isMedia, host, ip, err)
 				}
-				// A TCP timeout cannot be fixed by trying the alternate hostname
-				// against the same IP. Break to the independent CF route quickly.
 				if isTimeout(err) {
-					break
+					timeoutCount++
+					if timeoutCount >= 2 {
+						break
+					}
 				}
 			}
 			if len(errorsSeen) > 0 && isTimeoutText(errorsSeen[len(errorsSeen)-1]) {
@@ -2610,19 +2679,53 @@ func noteRouteHTTPFailure(host string, err error) {
 		return
 	}
 	msg := strings.ToLower(err.Error())
-	if !strings.Contains(msg, "http 503") && !strings.Contains(msg, "http 502") && !strings.Contains(msg, "http 504") {
+	var cooldown time.Duration
+	var reason string
+
+	switch {
+	case strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests"):
+		cooldown = 3 * time.Minute
+		reason = "HTTP 429 (Rate Limit)"
+	case strings.Contains(msg, "403") || strings.Contains(msg, "forbidden"):
+		cooldown = 3 * time.Minute
+		reason = "HTTP 403 (Forbidden)"
+	case strings.Contains(msg, "http 500") || strings.Contains(msg, "http 502") || strings.Contains(msg, "http 503") ||
+		strings.Contains(msg, "http 504") || strings.Contains(msg, "http 521") || strings.Contains(msg, "http 522") ||
+		strings.Contains(msg, "http 523") || strings.Contains(msg, "http 525"):
+		cooldown = 3 * time.Minute
+		reason = "HTTP 5xx (Server Error)"
+	case isTimeout(err) || isTimeoutText(msg):
+		cooldown = 45 * time.Second
+		reason = "Timeout"
+	default:
 		return
 	}
+
 	now := time.Now()
 	routeHealthMu.Lock()
 	state := routeHealth[host]
 	wasCooling := now.Before(state.until)
-	state.until = now.Add(3 * time.Minute)
+	state.until = now.Add(cooldown)
 	state.last = now
 	routeHealth[host] = state
 	routeHealthMu.Unlock()
+
+	for dc := 1; dc <= 5; dc++ {
+		for _, media := range []bool{false, true} {
+			k := routeKey(dc, media)
+			if v, ok := cfHostCache.Load(k); ok && v == host {
+				cfHostCache.Delete(k)
+			}
+			if v, ok := routeChoice.Load(k); ok {
+				if choice, ok := v.(routeDecision); ok && choice.host == host {
+					routeChoice.Delete(k)
+				}
+			}
+		}
+	}
+
 	if !wasCooling {
-		logf("WSS-маршрут %s временно исключён на 3 минуты после ответа сервера %v", host, err)
+		logf("WSS-маршрут %s временно исключён на %s после %s: %v", host, cooldown.Round(time.Second), reason, err)
 	}
 }
 
@@ -2640,6 +2743,7 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 		d := net.Dialer{Timeout: 1200 * time.Millisecond, KeepAlive: 30 * time.Second}
 		raw, e := d.DialContext(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"))
 		if e == nil {
+			setConnSockOpts(raw)
 			var ws *wsConn
 			ws, e = finishTelegramWS(attemptCtx, raw, host)
 			if e == nil {
@@ -2648,9 +2752,17 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 			}
 			noteRouteHTTPFailure(host, e)
 			_ = raw.Close()
-			if strings.Contains(strings.ToLower(e.Error()), "http 502") || strings.Contains(strings.ToLower(e.Error()), "http 503") || strings.Contains(strings.ToLower(e.Error()), "http 504") {
+			msg := strings.ToLower(e.Error())
+			if strings.Contains(msg, "429") || strings.Contains(msg, "403") ||
+				strings.Contains(msg, "http 500") || strings.Contains(msg, "http 502") ||
+				strings.Contains(msg, "http 503") || strings.Contains(msg, "http 504") ||
+				strings.Contains(msg, "http 521") || strings.Contains(msg, "http 522") {
 				cancel()
 				return nil, e
+			}
+		} else {
+			if isTimeout(e) || isTimeoutText(e.Error()) {
+				noteRouteHTTPFailure(host, e)
 			}
 		}
 		cancel()
@@ -2673,33 +2785,58 @@ func configuredFrontingSNI() string {
 	return ""
 }
 
+func prepareUTLSForHTTP1(conn *utls.UConn) error {
+	if err := conn.BuildHandshakeState(); err != nil {
+		return err
+	}
+	found := false
+	for _, extension := range conn.Extensions {
+		if alpn, ok := extension.(*utls.ALPNExtension); ok {
+			alpn.AlpnProtocols = []string{"http/1.1"}
+			found = true
+			break
+		}
+	}
+	if !found {
+		conn.Extensions = append(conn.Extensions, &utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}})
+	}
+	return conn.BuildHandshakeState()
+}
+
 func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, error) {
+	setConnSockOpts(raw)
 	sni := host
 	if customSNI := configuredFrontingSNI(); customSNI != "" {
 		sni = customSNI
 	}
-	tlsConfig := &tls.Config{
-		ServerName:         sni,
-		MinVersion:         tls.VersionTLS12,
-		RootCAs:            getSystemRootCAs(),
-		InsecureSkipVerify: true,
+	uConfig := &utls.Config{
+		ServerName:                  sni,
+		MinVersion:                  utls.VersionTLS12,
+		RootCAs:                     getSystemRootCAs(),
+		InsecureSkipVerify:          true,
+		NextProtos:                  []string{"http/1.1"},
+		DynamicRecordSizingDisabled: true,
 	}
-	tc := tls.Client(raw, tlsConfig)
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = tc.SetDeadline(deadline)
-	} else {
-		_ = tc.SetDeadline(time.Now().Add(8 * time.Second))
-	}
-	if err := tc.HandshakeContext(ctx); err != nil {
+	uConn := utls.UClient(raw, uConfig, utls.HelloChrome_Auto)
+	if err := prepareUTLSForHTTP1(uConn); err != nil {
 		_ = raw.Close()
 		return nil, err
 	}
-	ws, err := websocketUpgrade(tc, host)
-	if err != nil {
-		_ = tc.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = uConn.SetDeadline(deadline)
+	} else {
+		_ = uConn.SetDeadline(time.Now().Add(8 * time.Second))
+	}
+	if err := uConn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
 		return nil, err
 	}
-	_ = tc.SetDeadline(time.Time{})
+	ws, err := websocketUpgrade(uConn, host)
+	if err != nil {
+		_ = uConn.Close()
+		return nil, err
+	}
+	_ = uConn.SetDeadline(time.Time{})
 	return ws, nil
 }
 
@@ -2709,7 +2846,8 @@ func websocketUpgrade(conn net.Conn, host string) (*wsConn, error) {
 		return nil, err
 	}
 	key := base64.StdEncoding.EncodeToString(keyBytes)
-	if _, err := fmt.Fprintf(conn, "GET /apiws HTTP/1.1\r\nHost: %s\r\nOrigin: https://web.telegram.org\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\nUser-Agent: TG-Open/2.1\r\n\r\n", host, key); err != nil {
+	req := fmt.Sprintf("GET /apiws HTTP/1.1\r\nHost: %s\r\nOrigin: https://web.telegram.org\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\nUser-Agent: Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36\r\n\r\n", host, key)
+	if _, err := io.WriteString(conn, req); err != nil {
 		return nil, err
 	}
 	r := bufio.NewReaderSize(conn, 32*1024)
@@ -2789,10 +2927,12 @@ func (w *wsConn) writeFrame(op byte, p []byte) error {
 		payload[i] = p[i] ^ mask[i&3]
 	}
 
+	_ = w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	err := writeFull(w.conn, header)
 	if err == nil {
 		err = writeFull(w.conn, payload)
 	}
+	_ = w.conn.SetWriteDeadline(time.Time{})
 
 	if bufPtr != nil {
 		frameBufPool.Put(bufPtr)

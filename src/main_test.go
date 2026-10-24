@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 func TestParseProcCgroups(t *testing.T) {
@@ -836,5 +839,125 @@ func TestApiMainSetConfig(t *testing.T) {
 	if !readCFPriority() || !readCFBalance() || readCustomCFDomain() != customDom || readDCOverridesRaw() != dcOver {
 		t.Errorf("persisted configuration mismatch: cfPriority=%t cfBalance=%t customDomain=%s dcOverrides=%s",
 			readCFPriority(), readCFBalance(), readCustomCFDomain(), readDCOverridesRaw())
+	}
+}
+
+func TestCandidateIngressesForDC(t *testing.T) {
+	dc2Candidates := candidateIngressesForDC(2)
+	if len(dc2Candidates) < 4 {
+		t.Fatalf("expected at least 4 candidates for DC2, got %d: %#v", len(dc2Candidates), dc2Candidates)
+	}
+	expectedDC2 := []string{"149.154.167.220", "149.154.167.51", "149.154.167.50", "149.154.167.41"}
+	for _, exp := range expectedDC2 {
+		found := false
+		for _, cand := range dc2Candidates {
+			if cand == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DC2 candidates missing expected IP %s: got %#v", exp, dc2Candidates)
+		}
+	}
+
+	dc1Candidates := candidateIngressesForDC(1)
+	if len(dc1Candidates) < 3 || dc1Candidates[0] != "149.154.175.50" {
+		t.Errorf("unexpected DC1 candidates: %#v", dc1Candidates)
+	}
+}
+
+func TestIsNeutralError(t *testing.T) {
+	neutralErrors := []error{
+		io.EOF,
+		io.ErrUnexpectedEOF,
+		net.ErrClosed,
+		context.Canceled,
+		errors.New("read: connection reset by peer"),
+		errors.New("wsarecv: An existing connection was forcibly closed by the remote host."),
+		errors.New("write: broken pipe"),
+		errors.New("use of closed network connection"),
+		errors.New("client_eof"),
+	}
+	for _, err := range neutralErrors {
+		if !isNeutralError(err) {
+			t.Errorf("expected error %v (%T) to be classified as neutral", err, err)
+		}
+	}
+
+	fatalErrors := []error{
+		nil,
+		errors.New("HTTP 502 Bad Gateway"),
+		errors.New("HTTP 429 Too Many Requests"),
+		errors.New("dial tcp: lookup fail.example.com: no such host"),
+		errors.New("TLS handshake failed: remote error: tls: handshake failure"),
+	}
+	for _, err := range fatalErrors {
+		if isNeutralError(err) {
+			t.Errorf("did not expect error %v to be classified as neutral", err)
+		}
+	}
+}
+
+func TestDynamicCloudflareCooldown(t *testing.T) {
+	// Test HTTP 429 triggers 3-minute cooldown
+	host429 := "cooldown-429.invalid"
+	noteRouteHTTPFailure(host429, errors.New("HTTP 429 Too Many Requests: error code: 1015"))
+	if !routeCoolingDown(host429) {
+		t.Fatalf("host %s must cool down after HTTP 429", host429)
+	}
+
+	// Test HTTP 403 triggers 3-minute cooldown
+	host403 := "cooldown-403.invalid"
+	noteRouteHTTPFailure(host403, errors.New("HTTP 403 Forbidden: Cloudflare 1020 access denied"))
+	if !routeCoolingDown(host403) {
+		t.Fatalf("host %s must cool down after HTTP 403", host403)
+	}
+
+	// Test Timeout triggers 45-second cooldown
+	hostTimeout := "cooldown-timeout.invalid"
+	noteRouteHTTPFailure(hostTimeout, errors.New("dial tcp4 104.21.1.1:443: i/o timeout"))
+	if !routeCoolingDown(hostTimeout) {
+		t.Fatalf("host %s must cool down after dial timeout", hostTimeout)
+	}
+}
+
+func TestSetConnSockOpts(t *testing.T) {
+	// Must not panic on nil
+	setConnSockOpts(nil)
+
+	// Must handle non-TCP (pipe) gracefully without panic
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	setConnSockOpts(c1)
+	setConnSockOpts(c2)
+}
+
+func TestPrepareUTLSForHTTP1(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	uConfig := &utls.Config{
+		ServerName:         "test.example.com",
+		InsecureSkipVerify: true,
+	}
+	uConn := utls.UClient(c1, uConfig, utls.HelloChrome_Auto)
+	if err := prepareUTLSForHTTP1(uConn); err != nil {
+		t.Fatalf("prepareUTLSForHTTP1 failed: %v", err)
+	}
+
+	found := false
+	for _, ext := range uConn.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			found = true
+			if len(alpn.AlpnProtocols) != 1 || alpn.AlpnProtocols[0] != "http/1.1" {
+				t.Fatalf("unexpected ALPN protocols: %#v", alpn.AlpnProtocols)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ALPNExtension not found on UConn after prepareUTLSForHTTP1")
 	}
 }
