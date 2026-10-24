@@ -3,6 +3,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"crypto/aes"
@@ -193,9 +194,11 @@ type routeHealthState struct {
 }
 
 type App struct {
-	Name string `json:"name"`
-	Pkg  string `json:"pkg"`
-	UID  int    `json:"uid"`
+	Name       string `json:"name"`
+	Pkg        string `json:"pkg"`
+	UID        int    `json:"uid"`
+	IconNormal string `json:"iconNormal,omitempty"`
+	IconMonet  string `json:"iconMonet,omitempty"`
 }
 type Status struct {
 	Enabled           bool           `json:"enabled"`
@@ -572,6 +575,229 @@ func packageUID(pkg string) int {
 	}
 	return 0
 }
+
+func findPackageAPK(pkg string) string {
+	for _, cmd := range [][]string{{"cmd", "package", "path", pkg}, {"pm", "path", pkg}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		cancel()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "package:") {
+					p := strings.TrimPrefix(line, "package:")
+					if strings.HasSuffix(p, "base.apk") || strings.HasSuffix(p, ".apk") {
+						return p
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func scoreDensity(name string) int {
+	score := 1
+	if strings.Contains(name, "xxxhdpi") {
+		score = 6
+	} else if strings.Contains(name, "xxhdpi") {
+		score = 5
+	} else if strings.Contains(name, "xhdpi") {
+		score = 4
+	} else if strings.Contains(name, "hdpi") {
+		score = 3
+	} else if strings.Contains(name, "mdpi") {
+		score = 2
+	}
+	if strings.Contains(name, "mipmap") {
+		score += 1
+	}
+	return score
+}
+
+func extractPathFromAXML(data []byte) string {
+	if len(data) < 32 {
+		return ""
+	}
+	xmlType := binary.LittleEndian.Uint16(data[0:2])
+	if xmlType != 0x0003 {
+		return ""
+	}
+	spType := binary.LittleEndian.Uint16(data[8:10])
+	if spType != 0x0001 {
+		return ""
+	}
+	spHeaderSize := binary.LittleEndian.Uint16(data[10:12])
+	strCount := binary.LittleEndian.Uint32(data[16:20])
+	flags := binary.LittleEndian.Uint32(data[24:28])
+	strStart := binary.LittleEndian.Uint32(data[28:32])
+
+	isUTF8 := (flags & 0x100) != 0
+	poolBase := 8
+	stringsBase := poolBase + int(strStart)
+	offsetsStart := poolBase + int(spHeaderSize)
+
+	if strCount > 2000 || int(offsetsStart)+int(strCount)*4 > len(data) {
+		return ""
+	}
+
+	for i := 0; i < int(strCount); i++ {
+		off := int(binary.LittleEndian.Uint32(data[offsetsStart+i*4 : offsetsStart+i*4+4]))
+		pos := stringsBase + off
+		if pos >= len(data) {
+			continue
+		}
+		var str string
+		if isUTF8 {
+			if pos >= len(data) {
+				continue
+			}
+			u16len := int(data[pos])
+			pos++
+			if (u16len & 0x80) != 0 {
+				pos++
+			}
+			if pos >= len(data) {
+				continue
+			}
+			u8len := int(data[pos])
+			pos++
+			if (u8len & 0x80) != 0 {
+				pos++
+			}
+			if pos+u8len <= len(data) {
+				str = string(data[pos : pos+u8len])
+			}
+		} else {
+			if pos+2 > len(data) {
+				continue
+			}
+			u16len := int(binary.LittleEndian.Uint16(data[pos : pos+2]))
+			pos += 2
+			if (u16len & 0x8000) != 0 {
+				pos += 2
+			}
+			byteLen := u16len * 2
+			if pos+byteLen <= len(data) {
+				runes := make([]rune, 0, u16len)
+				for j := 0; j < byteLen; j += 2 {
+					runes = append(runes, rune(binary.LittleEndian.Uint16(data[pos+j:pos+j+2])))
+				}
+				str = string(runes)
+			}
+		}
+
+		strTrim := strings.TrimSpace(str)
+		if (strings.HasPrefix(strTrim, "M") || strings.HasPrefix(strTrim, "m")) && len(strTrim) > 15 {
+			if strings.ContainsAny(strTrim, "zZlLcChHvV") {
+				return strTrim
+			}
+		}
+	}
+	return ""
+}
+
+func extractAPKIcons(apkPath string) (normalB64 string, monetB64 string) {
+	if apkPath == "" {
+		return "", ""
+	}
+	zr, err := zip.OpenReader(apkPath)
+	if err != nil {
+		return "", ""
+	}
+	defer zr.Close()
+
+	var bestNormalFile *zip.File
+	var bestNormalScore int
+	var bestMonetFile *zip.File
+	var bestMonetScore int
+	var monetXMLFile *zip.File
+
+	for _, f := range zr.File {
+		name := strings.ToLower(f.Name)
+		isPNG := strings.HasSuffix(name, ".png")
+		isWebP := strings.HasSuffix(name, ".webp")
+		isXML := strings.HasSuffix(name, ".xml")
+
+		if !isPNG && !isWebP && !isXML {
+			continue
+		}
+
+		if strings.Contains(name, "monochrome") || strings.Contains(name, "themed") {
+			if isXML && monetXMLFile == nil {
+				monetXMLFile = f
+			} else if isPNG || isWebP {
+				score := scoreDensity(name)
+				if score > bestMonetScore {
+					bestMonetScore = score
+					bestMonetFile = f
+				}
+			}
+			continue
+		}
+
+		if (isPNG || isWebP) && (strings.Contains(name, "launcher") || strings.Contains(name, "icon")) {
+			if strings.Contains(name, "foreground") || strings.Contains(name, "background") {
+				continue
+			}
+			score := scoreDensity(name)
+			if strings.Contains(name, "round") {
+				score += 2
+			}
+			if strings.Contains(name, "ic_launcher") {
+				score += 3
+			}
+			if score > bestNormalScore {
+				bestNormalScore = score
+				bestNormalFile = f
+			}
+		}
+	}
+
+	if bestNormalFile != nil && bestNormalFile.UncompressedSize64 < 1<<20 {
+		if rc, err := bestNormalFile.Open(); err == nil {
+			data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+			_ = rc.Close()
+			if err == nil && len(data) > 0 {
+				mime := "image/png"
+				if strings.HasSuffix(strings.ToLower(bestNormalFile.Name), ".webp") {
+					mime = "image/webp"
+				}
+				normalB64 = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+			}
+		}
+	}
+
+	if bestMonetFile != nil && bestMonetFile.UncompressedSize64 < 1<<20 {
+		if rc, err := bestMonetFile.Open(); err == nil {
+			data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+			_ = rc.Close()
+			if err == nil && len(data) > 0 {
+				mime := "image/png"
+				if strings.HasSuffix(strings.ToLower(bestMonetFile.Name), ".webp") {
+					mime = "image/webp"
+				}
+				monetB64 = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+			}
+		}
+	}
+
+	if monetB64 == "" && monetXMLFile != nil && monetXMLFile.UncompressedSize64 < 256*1024 {
+		if rc, err := monetXMLFile.Open(); err == nil {
+			data, err := io.ReadAll(io.LimitReader(rc, 256*1024))
+			_ = rc.Close()
+			if err == nil && len(data) > 8 {
+				svgPath := extractPathFromAXML(data)
+				if svgPath != "" {
+					svgMarkup := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108"><path fill="currentColor" d="` + svgPath + `"/></svg>`
+					monetB64 = "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svgMarkup))
+				}
+			}
+		}
+	}
+
+	return normalB64, monetB64
+}
 func discoverApps() ([]App, []int) {
 	var apps []App
 	var uids []int
@@ -607,7 +833,8 @@ func discoverApps() ([]App, []int) {
 			if uid <= 0 || seen[uid] {
 				continue
 			}
-			apps = append(apps, App{Name: name, Pkg: pkg, UID: uid})
+			normalIco, monetIco := extractAPKIcons(findPackageAPK(pkg))
+			apps = append(apps, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
 			uids = append(uids, uid)
 			seen[uid] = true
 		}
@@ -619,7 +846,8 @@ func discoverApps() ([]App, []int) {
 	for _, p := range packageNames {
 		uid := packageUID(p.Pkg)
 		if uid > 0 && !seen[uid] {
-			apps = append(apps, App{Name: p.Name, Pkg: p.Pkg, UID: uid})
+			normalIco, monetIco := extractAPKIcons(findPackageAPK(p.Pkg))
+			apps = append(apps, App{Name: p.Name, Pkg: p.Pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
 			uids = append(uids, uid)
 			seen[uid] = true
 		}

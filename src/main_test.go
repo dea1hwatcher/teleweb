@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -1305,5 +1307,49 @@ func TestRaceCandidatesFastFailureRecoversSlot(t *testing.T) {
 	}
 	if elapsed > 150*time.Millisecond {
 		t.Fatalf("race took too long (%v > 150ms), slot recovery stalled", elapsed)
+	}
+}
+
+
+func TestScoreDensity(t *testing.T) {
+	if scoreDensity("res/mipmap-xxxhdpi/ic_launcher.png") <= scoreDensity("res/mipmap-mdpi/ic_launcher.png") {
+		t.Error("xxxhdpi should score higher than mdpi")
+	}
+	if scoreDensity("res/mipmap-xxhdpi/ic_launcher.png") <= scoreDensity("res/drawable-xxhdpi/ic_launcher.png") {
+		t.Error("mipmap should score higher than drawable")
+	}
+}
+
+func TestExtractAPKIconsMock(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	// Add normal icon
+	f1, err := zw.Create("res/mipmap-xxhdpi/ic_launcher.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f1.Write([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+
+	// Add monet icon
+	f2, err := zw.Create("res/drawable/ic_launcher_monochrome.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f2.Write([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x01})
+
+	_ = zw.Close()
+
+	tmpFile := filepath.Join(t.TempDir(), "test_mock.apk")
+	if err := os.WriteFile(tmpFile, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	normal, monet := extractAPKIcons(tmpFile)
+	if !strings.HasPrefix(normal, "data:image/png;base64,") {
+		t.Errorf("expected normal icon, got %s", normal)
+	}
+	if !strings.HasPrefix(monet, "data:image/png;base64,") {
+		t.Errorf("expected monet icon, got %s", monet)
 	}
 }
