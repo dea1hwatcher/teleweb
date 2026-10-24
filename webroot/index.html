@@ -312,6 +312,18 @@ html.scroll-locked, html.scroll-locked body {
 body.kb-open .nav-bar {
   display: none !important;
 }
+body.nav-hidden .nav-bar {
+  transform: translateY(100%);
+  pointer-events: none;
+  transition: transform var(--dur-medium) var(--emphasized-accelerate);
+}
+html.no-anim *,
+html.no-anim *::before,
+html.no-anim *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
 .nav-bar-inner {
   display: flex;
   width: 100%;
@@ -1414,17 +1426,24 @@ body.kb-open .nav-bar {
 <symbol id="i-tg" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></symbol>
 <symbol id="i-palette" viewBox="0 -960 960 960"><path d="M480-80q-82 0-155-31.5t-127.5-86Q143-252 111.5-325T80-480q0-83 31.5-156t86-127Q252-817 325-848.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 82-32 153.5T761-205q-55 50-128 77.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm-180-280q25 0 42.5-17.5T360-500q0-25-17.5-42.5T300-560q-25 0-42.5 17.5T240-500q0 25 17.5 42.5T300-440Zm180-120q25 0 42.5-17.5T540-620q0-25-17.5-42.5T480-680q-25 0-42.5 17.5T420-620q0 25 17.5 42.5T480-560Zm180 120q25 0 42.5-17.5T720-500q0-25-17.5-42.5T660-560q-25 0-42.5 17.5T600-500q0 25 17.5 42.5T660-440Z"/></symbol>
 <symbol id="i-contrast" viewBox="0 -960 960 960"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm40-83q119-15 199.5-99.5T800-480q0-134-80.5-218.5T520-797v714Z"/></symbol>
+<symbol id="i-settings" viewBox="0 -960 960 960"><path d="m370-80-16-128q-13-5-24.5-12T307-235l-119 50L78-375l103-78q-1-7-1-13.5v-27q0-6.5 1-13.5L78-585l110-190 119 50q11-8 23-15t24-12l16-128h220l16 128q13 5 24.5 12t22.5 15l119-50 110 190-103 78q1 7 1 13.5v27q0 6.5-2 13.5l103 78-110 190-118-50q-11 8-23 15t-24 12L590-80H370Zm70-80h79l14-106q31-8 57.5-23.5T639-327l99 41 39-68-86-65q5-14 7-29.5t2-31.5q0-16-2-31.5t-7-29.5l86-65-39-68-99 42q-22-23-48.5-38.5T533-694l-13-106h-79l-14 106q-31 8-57.5 23.5T321-633l-99-41-39 68 86 64q-5 15-7 30t-2 32q0 16 2 31t7 30l-86 65 39 68 99-42q22 23 48.5 38.5T427-266l13 106Zm42-180q58 0 99-41t41-99q0-58-41-99t-99-41q-59 0-99.5 41T342-480q0 58 40.5 99t99.5 41Zm-2-140Z"/></symbol>
+<symbol id="i-back" viewBox="0 -960 960 960"><path d="m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z"/></symbol>
+<symbol id="i-chevron-right" viewBox="0 -960 960 960"><path d="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z"/></symbol>
+<symbol id="i-motion" viewBox="0 -960 960 960"><path d="M160-160v-480h480v480H160Zm80-80h320v-320H240v320Zm160-240v-80h320v320h-80v-240H400Zm160-160v-80h320v320h-80v-240H560Z"/></symbol>
 </defs></svg>
 
 <!-- Top App Bar -->
 <header class="app-bar" id="app-bar">
+  <button class="icon-btn state" id="back-btn" hidden onclick="navigateBack()" aria-label="Назад" title="Назад">
+    <svg class="icon s20"><use href="#i-back"/></svg>
+  </button>
   <h1 class="title truncate" id="app-title">Состояние</h1>
   <div class="bar-actions" id="bar-actions">
-    <button class="icon-btn state" id="btn-theme" aria-label="Тема оформления" title="Тема оформления" onclick="openThemeSheet()">
-      <svg class="icon s20"><use href="#i-palette"/></svg>
-    </button>
     <button class="icon-btn state" id="btn-refresh" aria-label="Обновить статус" title="Обновить">
       <svg class="icon s20"><use href="#i-refresh"/></svg>
+    </button>
+    <button class="icon-btn state" id="settings-btn" aria-label="Настройки" title="Настройки" onclick="navigateTo('settings')">
+      <svg class="icon s20"><use href="#i-settings"/></svg>
     </button>
   </div>
 </header>
@@ -1614,43 +1633,30 @@ body.kb-open .nav-bar {
   </section>
 
   <!-- ========================================================================
-       PAGE 4: О МОДУЛЕ (About)
+       PAGE: НАСТРОЙКИ (Settings)
        ======================================================================== -->
-  <section class="page" id="page-about" data-page="about">
+  <section class="page" id="page-settings" data-page="settings">
     <div class="card">
-      <h2 class="subhead">Архитектура & Системные сведения</h2>
+      <h2 class="subhead">Оформление</h2>
       <div class="list">
-        <div class="list-item two-line">
-          <span class="li-icon"><svg class="icon s20"><use href="#i-shield"/></svg></span>
+        <div class="list-item two-line clickable state" role="button" tabindex="0" onclick="openThemeSheet()">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-palette"/></svg></span>
           <span class="li-text">
-            <span class="li-primary">TeleWEB v2.1.48</span>
-            <span class="li-secondary">MTProto прозрачный WebSocket обходчик</span>
+            <span class="li-primary">Тема оформления</span>
+            <span class="li-secondary" id="theme-settings-sub">Светлая, тёмная, AMOLED и цвет акцента</span>
           </span>
+          <span class="li-trail"><svg class="icon s20"><use href="#i-chevron-right"/></svg></span>
         </div>
-
-        <div class="list-item two-line">
-          <span class="li-icon"><svg class="icon s20"><use href="#i-memory"/></svg></span>
+        <label class="list-item two-line clickable state">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-motion"/></svg></span>
           <span class="li-text">
-            <span class="li-primary">Бинарный движок</span>
-            <span class="li-secondary">/data/adb/modules/teleweb/bin/tgws (Go Zero-Copy)</span>
+            <span class="li-primary">Отключение анимаций</span>
+            <span class="li-secondary">Мгновенные переходы для плавности и экономии заряда</span>
           </span>
-        </div>
-
-        <div class="list-item two-line">
-          <span class="li-icon"><svg class="icon s20"><use href="#i-globe"/></svg></span>
-          <span class="li-text">
-            <span class="li-primary">Multiarch сборка</span>
-            <span class="li-secondary">ARM64, ARMv7, x86, x86_64</span>
+          <span class="li-trail">
+            <input type="checkbox" class="switch" role="switch" id="swDisableAnimations" aria-label="Отключение анимаций" onchange="toggleDisableAnimations(this.checked)">
           </span>
-        </div>
-
-        <div class="list-item two-line">
-          <span class="li-icon"><svg class="icon s20"><use href="#i-status"/></svg></span>
-          <span class="li-text">
-            <span class="li-primary" id="root-bridge-label">Root Bridge</span>
-            <span class="li-secondary" id="root-bridge-desc">KernelSU / Magisk / APatch webui standalone</span>
-          </span>
-        </div>
+        </label>
       </div>
     </div>
   </section>
@@ -1673,10 +1679,6 @@ body.kb-open .nav-bar {
         <span class="nav-badge" id="logsNavBadge"></span>
       </span>
       <span class="nav-label">Журналы</span>
-    </button>
-    <button class="nav-dest" data-page="about">
-      <span class="nav-ind state"><svg class="icon"><use href="#i-info"/></svg></span>
-      <span class="nav-label">О модуле</span>
     </button>
   </div>
 </nav>
@@ -2053,6 +2055,7 @@ function applyTheme(skipUI) {
   if (meta && R.background) meta.setAttribute('content', R.background);
 
   if (!skipUI) drawThemeUI();
+  updateThemeSummary();
 }
 
 let wheelH = 200, wheelS = 0.6, wheelDrag = false, wheelFrame = 0;
@@ -2381,10 +2384,45 @@ function initSheetDrag(sheet) {
   });
 }
 
+function updateThemeSummary() {
+  const el = $('theme-settings-sub');
+  if (!el) return;
+  const isAmoled = store.get('m3_amoled') === 'true' && isDark();
+  const modeName = isAmoled ? 'AMOLED' : currentMode === 'dark' ? 'Тёмная' : currentMode === 'light' ? 'Светлая' : 'Системная';
+  el.textContent = `Светлая, тёмная, AMOLED и цвет акцента · ${modeName}`;
+}
+
+function isAnimationsDisabled() {
+  try {
+    return localStorage.getItem('teleweb_no_anim') === '1';
+  } catch (_) {
+    return false;
+  }
+}
+
+function toggleDisableAnimations(disabled) {
+  haptic(10);
+  try {
+    if (disabled) {
+      localStorage.setItem('teleweb_no_anim', '1');
+      document.documentElement.classList.add('no-anim');
+    } else {
+      localStorage.removeItem('teleweb_no_anim');
+      document.documentElement.classList.remove('no-anim');
+    }
+  } catch (_) {}
+}
+
 function initTheme() {
+  if (isAnimationsDisabled()) {
+    document.documentElement.classList.add('no-anim');
+    const sw = $('swDisableAnimations');
+    if (sw) sw.checked = true;
+  }
   applyTheme();
   initWheel();
   initSheetDrag($('theme-sheet'));
+  updateThemeSummary();
   if (window.matchMedia) {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
       if (currentMode === 'auto') applyTheme();
@@ -2661,22 +2699,29 @@ async function refresh() {
 
 // Navigation / Tabs Switching & State
 let currentPage = "control";
-const TABS = ["control", "routing", "apps", "logs"];
+let lastMainPage = "control";
+const MAIN_TABS = ["control", "routing", "logs"];
 const PAGE_TITLES = {
   control: "Состояние",
   routing: "Маршрутизация",
-  apps: "Приложения",
-  logs: "Журнал"
+  logs: "Журналы",
+  settings: "Настройки"
 };
 
 function navigateTo(pageId) {
   if (!pageId || !PAGE_TITLES[pageId] || currentPage === pageId) return;
+  const isSettings = pageId === "settings";
+  if (!isSettings) {
+    lastMainPage = pageId;
+  }
   currentPage = pageId;
   haptic(8);
 
+  document.body.classList.toggle("nav-hidden", isSettings);
+
   const navDests = document.querySelectorAll(".nav-dest");
   navDests.forEach(d => {
-    if (d.getAttribute("data-page") === pageId) {
+    if (!isSettings && d.getAttribute("data-page") === pageId) {
       d.setAttribute("aria-current", "page");
     } else {
       d.removeAttribute("aria-current");
@@ -2690,6 +2735,11 @@ function navigateTo(pageId) {
     }
   });
 
+  const backBtn = $("back-btn");
+  const settingsBtn = $("settings-btn");
+  if (backBtn) backBtn.hidden = !isSettings;
+  if (settingsBtn) settingsBtn.hidden = isSettings;
+
   const tEl = $("app-title");
   if (tEl && PAGE_TITLES[pageId]) {
     tEl.textContent = PAGE_TITLES[pageId];
@@ -2700,6 +2750,10 @@ function navigateTo(pageId) {
 
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (typeof scheduleSync === "function") scheduleSync();
+}
+
+function navigateBack() {
+  navigateTo(lastMainPage || "control");
 }
 
 const navDests = document.querySelectorAll(".nav-dest");
@@ -2715,6 +2769,10 @@ function handleBack(allowExit) {
   const sheet = $("theme-sheet");
   if (sheet && sheet.classList.contains("open")) {
     closeThemeSheet();
+    return true;
+  }
+  if (currentPage === "settings") {
+    navigateBack();
     return true;
   }
   if (currentPage !== "control") {
@@ -2875,17 +2933,19 @@ function initTabSwipe() {
     locked = false;
 
     const threshold = 48; // minimum swipe distance
-    if (dx < -threshold) {
-      // Swiped Left -> Next tab
-      const idx = TABS.indexOf(currentPage);
-      if (idx !== -1 && idx < TABS.length - 1) {
-        navigateTo(TABS[idx + 1]);
-      }
-    } else if (dx > threshold) {
-      // Swiped Right -> Previous tab
-      const idx = TABS.indexOf(currentPage);
-      if (idx > 0) {
-        navigateTo(TABS[idx - 1]);
+    if (currentPage !== "settings") {
+      if (dx < -threshold) {
+        // Swiped Left -> Next tab
+        const idx = MAIN_TABS.indexOf(currentPage);
+        if (idx !== -1 && idx < MAIN_TABS.length - 1) {
+          navigateTo(MAIN_TABS[idx + 1]);
+        }
+      } else if (dx > threshold) {
+        // Swiped Right -> Previous tab
+        const idx = MAIN_TABS.indexOf(currentPage);
+        if (idx > 0) {
+          navigateTo(MAIN_TABS[idx - 1]);
+        }
       }
     }
   };
@@ -3008,33 +3068,93 @@ $("btn-copy-logs").addEventListener("click", async () => {
   }
 });
 
-// Log Action: Export
-$("btn-export-logs").addEventListener("click", () => {
+// Log Action: Export (nfqws2-android architecture with Android bridge + web fallback)
+async function exportLogs() {
   haptic(10);
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const filename = `teleweb-logs-${stamp}.txt`;
+
+  if (hasBridge()) {
+    toast("Экспорт журналов…");
+    try {
+      const shCmd = `TF="/sdcard/Download/${filename}"; mkdir -p /sdcard/Download 2>/dev/null; { echo "=========================================="; echo "TeleWEB System Logs Export"; echo "Date: $(date)"; echo "=========================================="; echo; echo "--- DAEMON STATUS ---"; /data/adb/modules/teleweb/bin/tgws status 2>&1; echo; for f in /data/adb/teleweb/*.log; do if [ -f "$f" ]; then echo "=========================================="; echo "LOG FILE: $f"; echo "=========================================="; tail -n 1000 "$f"; echo; fi; done; echo "--- LOGCAT HINTS (last 100) ---"; logcat -b all -d -t 500 2>/dev/null | grep -iE "tgws|teleweb|lmkd|lowmemorykiller|oom" | tail -n 100 || true; } > "$TF" 2>&1; chmod 666 "$TF" 2>/dev/null; am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d "file://$TF" >/dev/null 2>&1; echo "$TF"`;
+      await kexec(shCmd);
+      toast("Журналы сохранены в Download");
+      try {
+        await kexec(`am start -a android.intent.action.SEND --user 0 -t "text/plain" --eu android.intent.extra.STREAM "file:///sdcard/Download/${filename}" --es android.intent.extra.SUBJECT "${filename}" 2>/dev/null`);
+      } catch (_) {}
+      return;
+    } catch (e) {
+      console.warn("Bridge export failed, trying web fallback:", e);
+    }
+  }
+
+  // Web Browser Fallback
   const text = $("logView").textContent || "";
   if (!text || text === "Loading logs…" || text === "Log is empty") {
     toast("Журнал пуст");
     return;
   }
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+
+  if (typeof window !== "undefined" && window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{ description: "Текстовый лог", accept: { "text/plain": [".txt"] } }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      toast("Файл сохранён");
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+  }
+
+  if (typeof navigator !== "undefined" && navigator.canShare && typeof File !== "undefined") {
+    try {
+      const file = new File([blob], filename, { type: "text/plain" });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: filename });
+        toast("Экспорт завершён");
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+  }
+
   try {
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "teleweb-logs-" + new Date().toISOString().slice(0, 10) + ".txt";
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(a.href);
-    toast("Журнал экспортирован");
-  } catch (e) {
+    setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 2000);
+    toast("Файл скачан");
+  } catch (_) {
     toast("Ошибка экспорта");
   }
-});
+}
+$("btn-export-logs").addEventListener("click", exportLogs);
 
 // Log Action: Clear
-$("btn-clear-logs").addEventListener("click", () => {
-  haptic(10);
+async function clearLogs() {
+  haptic(15);
+  if (hasBridge()) {
+    try {
+      await kexec(`> /data/adb/teleweb/daemon.log 2>/dev/null; > /data/adb/teleweb/tgws.log 2>/dev/null; > /data/adb/teleweb/supervisor.log 2>/dev/null; > /data/adb/teleweb/watchdog.log 2>/dev/null`);
+    } catch (_) {}
+  }
   $("logView").textContent = "Log cleared.";
-  toast("Журнал очищен");
-});
+  toast("Журналы очищены");
+}
+$("btn-clear-logs").addEventListener("click", clearLogs);
 
 // App Bar Elevation on Scroll
 window.addEventListener("scroll", () => {
