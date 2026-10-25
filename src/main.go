@@ -2423,7 +2423,9 @@ func handleClient(c net.Conn) {
 		dc -= 10000
 	}
 	if parsed {
-		learnDC(orig.Addr().String(), dc, isMedia)
+		if !isTestDC {
+			learnDC(orig.Addr().String(), dc, isMedia)
+		}
 	} else {
 		if testDC, ok := knownTestDCMap[orig.Addr().String()]; ok {
 			dc = testDC
@@ -2731,10 +2733,10 @@ func parseMTProtoDC(init []byte) (dc int, isMedia bool, ok bool) {
 	if idx == 203 {
 		return 203, isMedia, true
 	}
-	if idx < 1 || idx > 5 {
-		return 0, false, false
+	if (idx >= 1 && idx <= 5) || (idx >= 10001 && idx <= 10005) {
+		return idx, isMedia, true
 	}
-	return idx, isMedia, true
+	return 0, false, false
 }
 
 func mediaForIP(ip netip.Addr) bool {

@@ -1716,3 +1716,79 @@ func TestApiMain_NewFeaturesConfig(t *testing.T) {
 		t.Fatalf("st.H2MediaEnabled is false")
 	}
 }
+
+func TestParseMTProtoDC_TestDCs(t *testing.T) {
+	makeInit := func(dcIndex int16) []byte {
+		init := make([]byte, 64)
+		for i := range init {
+			init[i] = byte(i*17 + 3)
+		}
+		key := init[8:40]
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream := cipher.NewCTR(block, init[40:56])
+		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
+		keystream := make([]byte, 8)
+		stream.XORKeyStream(keystream, make([]byte, 8))
+		plainTail := make([]byte, 8)
+		binary.LittleEndian.PutUint32(plainTail[:4], 0xEFEFEFEF)
+		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
+		for i := 0; i < 8; i++ {
+			init[56+i] = plainTail[i] ^ keystream[i]
+		}
+		return init
+	}
+
+	// 1. Positive Test DCs (10001-10003)
+	if dc, media, ok := parseMTProtoDC(makeInit(10001)); !ok || dc != 10001 || media {
+		t.Fatalf("Test DC1 parse=(%d,%t,%t), want (10001, false, true)", dc, media, ok)
+	}
+	if dc, media, ok := parseMTProtoDC(makeInit(10002)); !ok || dc != 10002 || media {
+		t.Fatalf("Test DC2 parse=(%d,%t,%t), want (10002, false, true)", dc, media, ok)
+	}
+	if dc, media, ok := parseMTProtoDC(makeInit(-10002)); !ok || dc != 10002 || !media {
+		t.Fatalf("Test DC2 media parse=(%d,%t,%t), want (10002, true, true)", dc, media, ok)
+	}
+	if dc, media, ok := parseMTProtoDC(makeInit(10003)); !ok || dc != 10003 || media {
+		t.Fatalf("Test DC3 parse=(%d,%t,%t), want (10003, false, true)", dc, media, ok)
+	}
+
+	// 2. Negative invalid DCs (>10005, 0, >5)
+	if _, _, ok := parseMTProtoDC(makeInit(10006)); ok {
+		t.Fatalf("expected ok=false for DC 10006")
+	}
+	if _, _, ok := parseMTProtoDC(makeInit(0)); ok {
+		t.Fatalf("expected ok=false for DC 0")
+	}
+	if _, _, ok := parseMTProtoDC(makeInit(6)); ok {
+		t.Fatalf("expected ok=false for DC 6")
+	}
+}
+
+func TestWsPool_BufferedDataCheck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWsPool(ctx, 2)
+	defer pool.Close()
+
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+
+	// Create a wsConn whose bufio.Reader contains unread unexpected bytes
+	r := bufio.NewReader(bytes.NewReader([]byte("unexpected-garbage")))
+	_, _ = r.Peek(1) // buffer the bytes so r.Buffered() > 0
+	mockWS := &wsConn{conn: c1, host: "mock.invalid", r: r}
+
+	slot := poolSlot{dc: 2, isMedia: false, isTest: false}
+	q, _ := pool.getQueue(slot)
+	q <- &poolEntry{ws: mockWS, createdAt: time.Now()}
+
+	// Get should detect r.Buffered() > 0, close and drop it
+	got := pool.Get(2, false, false)
+	if got != nil {
+		t.Fatalf("expected pool to drop socket with buffered unread data, got %v", got)
+	}
+}

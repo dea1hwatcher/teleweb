@@ -102,7 +102,7 @@ func (p *WsPool) Get(dc int, isMedia bool, isTest bool) *wsConn {
 				_ = entry.ws.Close()
 				continue
 			}
-			if !isPoolConnAlive(entry.ws.conn) {
+			if (entry.ws.r != nil && entry.ws.r.Buffered() > 0) || !isPoolConnAlive(entry.ws.conn) {
 				_ = entry.ws.Close()
 				continue
 			}

@@ -130,14 +130,19 @@ func createClientEncryptor(initial []byte) (cipher.Stream, error) {
 }
 
 func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bool {
-	if !readH2MediaEnabled() {
+	// Cloudflare does not front Telegram Test DCs; only production DCs 1-5
+	if isTest || !readH2MediaEnabled() {
 		return false
 	}
 
-	// 1. Pick candidate host for DC
-	hosts := candidateIngressesForDC(dc)
-	if len(hosts) == 0 {
+	// 1. Pick candidate host for DC from active Cloudflare domains
+	domains := cfDomains()
+	if len(domains) == 0 {
 		return false
+	}
+	var hosts []string
+	for _, d := range domains {
+		hosts = append(hosts, fmt.Sprintf("kws%d.%s", dc, d))
 	}
 
 	now := time.Now()
@@ -156,22 +161,18 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 	}
 
 	client := getH2Client(selectedHost)
-	apiPath := "/api"
-	if isTest {
-		apiPath = "/api_test"
-	}
-	apiURL := fmt.Sprintf("https://%s%s", selectedHost, apiPath)
+	apiURL := fmt.Sprintf("https://%s/api", selectedHost)
 
-	// 2. Preflight check: HEAD request with 3s timeout
+	// 2. Preflight check: HEAD request with 3s timeout to verify HTTP/2 support
 	preflightCtx, preCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer preCancel()
-
 	headReq, err := http.NewRequestWithContext(preflightCtx, http.MethodHead, apiURL, nil)
 	if err != nil {
+		preCancel()
 		return false
 	}
 	headReq.Header.Set("User-Agent", "Mozilla/5.0")
 	headResp, err := client.Do(headReq)
+	preCancel() // release context timer immediately after request completes
 	if err != nil {
 		h2FailsMu.Lock()
 		h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
@@ -180,7 +181,8 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 	}
 	_ = headResp.Body.Close()
 
-	if !(headResp.StatusCode >= 200 && headResp.StatusCode < 300 || headResp.StatusCode == http.StatusMethodNotAllowed || headResp.StatusCode == http.StatusNotImplemented) {
+	// Must negotiate HTTP/2 and return 2xx / 405 / 501
+	if headResp.ProtoMajor < 2 || !(headResp.StatusCode >= 200 && headResp.StatusCode < 300 || headResp.StatusCode == http.StatusMethodNotAllowed || headResp.StatusCode == http.StatusNotImplemented) {
 		h2FailsMu.Lock()
 		h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
 		h2FailsMu.Unlock()
@@ -226,13 +228,16 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				}
 				packetBody := append([]byte(nil), framer.plain[:n]...)
 				framer.plain = framer.plain[n:]
+				if len(framer.plain) == 0 {
+					framer.plain = framer.plain[:0]
+				}
 
 				// Strip length prefix from packetBody before HTTP/2 POST
 				var rawMTProto []byte
 				switch framer.proto {
 				case 0xEFEFEFEF:
 					if len(packetBody) > 0 {
-						if packetBody[0] == 0x7f || packetBody[0] == 0xff {
+						if (packetBody[0] & 0x7f) == 0x7f {
 							if len(packetBody) >= 4 {
 								rawMTProto = packetBody[4:]
 							}
@@ -270,12 +275,29 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 					}
 					defer resp.Body.Close()
 
+					// Capture CF-Ray & CF-PoP telemetry from response
+					cfRay := strings.TrimSpace(resp.Header.Get("CF-Ray"))
+					if cfRay != "" {
+						lastCFRay.Store(&cfRay)
+						if pop := parseCFRayPoP(cfRay); pop != "" {
+							lastCFPoP.Store(&pop)
+						}
+					}
+
 					if resp.StatusCode != http.StatusOK {
+						h2FailsMu.Lock()
+						h2Fails[selectedHost] = time.Now().Add(30 * time.Second)
+						h2FailsMu.Unlock()
+						return
+					}
+
+					// Verify response is not HTML error page
+					if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
 						return
 					}
 
 					respData, readErr := io.ReadAll(io.LimitReader(resp.Body, maxWSFrame))
-					if readErr != nil || len(respData) == 0 {
+					if readErr != nil || len(respData) == 0 || len(respData)%4 != 0 {
 						return
 					}
 
