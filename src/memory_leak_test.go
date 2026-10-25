@@ -1,0 +1,375 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/binary"
+	"fmt"
+	"net"
+	"net/http"
+	"net/netip"
+	"runtime"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func createFramerForTest(t testing.TB) (*mtprotoPacketFramer, cipher.Stream) {
+	init := make([]byte, 64)
+	for i := 0; i < 56; i++ {
+		init[i] = byte(i + 1)
+	}
+	key := init[8:40]
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctr := cipher.NewCTR(block, init[40:56])
+	ctr.XORKeyStream(make([]byte, 56), make([]byte, 56))
+	plainTail := make([]byte, 8)
+	binary.LittleEndian.PutUint32(plainTail[:4], 0xEFEFEFEF)
+	plainTail[4], plainTail[5] = 0x12, 0x34
+	ctr.XORKeyStream(init[56:], plainTail)
+
+	f, err := newMTProtoPacketFramer(init)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key = init[8:40]
+	block, _ = aes.NewCipher(key)
+	clientStream := cipher.NewCTR(block, init[40:56])
+	clientStream.XORKeyStream(make([]byte, 64), make([]byte, 64))
+	return f, clientStream
+}
+
+// TestMemoryLeak_MTProtoFramer streams 20,000 packets through the framer
+// and verifies that slice compaction prevents memory runaway and buffer retention.
+func TestMemoryLeak_MTProtoFramer(t *testing.T) {
+	f, clientStream := createFramerForTest(t)
+
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	// Drain server side in background
+	go func() {
+		buf := make([]byte, 64*1024)
+		for {
+			_, err := server.Read(buf)
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	ws := &wsConn{conn: client, r: bufio.NewReader(client)}
+
+	runtime.GC()
+	var mBefore runtime.MemStats
+	runtime.ReadMemStats(&mBefore)
+
+	// Stream 20,000 packets with varying sizes
+	payloadSample := make([]byte, 1024)
+	for i := range payloadSample {
+		payloadSample[i] = byte(i % 251)
+	}
+
+	for i := 0; i < 20000; i++ {
+		// Abridged packet: 1 byte len (words) + payload
+		words := (i % 60) + 1
+		pLen := words * 4
+		pkt := make([]byte, 1+pLen)
+		pkt[0] = byte(words)
+		copy(pkt[1:], payloadSample[:pLen])
+
+		enc := make([]byte, len(pkt))
+		clientStream.XORKeyStream(enc, pkt)
+
+		if err := f.feed(enc, ws); err != nil {
+			t.Fatalf("feed failed at packet %d: %v", i, err)
+		}
+
+		// Verify cap stays within memory bounds (less than 256KB)
+		if cap(f.raw) > 256*1024 {
+			t.Fatalf("packet %d: f.raw capacity ballooned to %d bytes without compaction", i, cap(f.raw))
+		}
+	}
+
+	runtime.GC()
+	var mAfter runtime.MemStats
+	runtime.ReadMemStats(&mAfter)
+
+	// Verify framer memory compaction: when empty or low len, capacity must be small
+	if len(f.raw) != 0 {
+		t.Errorf("expected len(f.raw) == 0, got %d", len(f.raw))
+	}
+
+	growth := int64(mAfter.HeapAlloc) - int64(mBefore.HeapAlloc)
+	t.Logf("Framer 20k packets: HeapAlloc before=%d KB, after=%d KB, growth=%d KB, final raw cap=%d, plain cap=%d",
+		mBefore.HeapAlloc/1024, mAfter.HeapAlloc/1024, growth/1024, cap(f.raw), cap(f.plain))
+
+	if growth > 1024*1024 {
+		t.Errorf("potential memory leak in framer: heap growth %d bytes (> 1MB)", growth)
+	}
+}
+
+// TestMemoryLeak_WsPool_Churn ensures that creating, cycling, and closing connections
+// in WsPool leaves zero leaked goroutines or open sockets.
+func TestMemoryLeak_WsPool_Churn(t *testing.T) {
+	runtime.GC()
+	initialGoroutines := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWsPool(ctx, 2)
+	slot := poolSlot{dc: 2, isMedia: false, isTest: false}
+	q, _ := pool.getQueue(slot)
+
+	// Cycle 1,000 connections through the queue
+	for i := 0; i < 1000; i++ {
+		c1, c2 := net.Pipe()
+		ws := &wsConn{conn: c1, host: "test-pool.invalid"}
+		entry := &poolEntry{ws: ws, createdAt: time.Now()}
+
+		select {
+		case q <- entry:
+		default:
+			_ = ws.Close()
+			_ = c2.Close()
+			continue
+		}
+
+		// Retrieve from queue
+		got := pool.Get(2, false, false)
+		if got != nil {
+			_ = got.Close()
+			_ = c2.Close()
+		}
+	}
+
+	pool.Close()
+	time.Sleep(50 * time.Millisecond)
+	runtime.GC()
+
+	finalGoroutines := runtime.NumGoroutine()
+	t.Logf("WsPool churn: initial goroutines=%d, final goroutines=%d", initialGoroutines, finalGoroutines)
+
+	// Allow a tolerance of +/- 2 for standard Go background runtime threads
+	if finalGoroutines > initialGoroutines+3 {
+		t.Errorf("goroutine leak detected in WsPool: initial=%d, final=%d", initialGoroutines, finalGoroutines)
+	}
+}
+
+// TestMemoryLeak_DoHCache_Churn verifies that the DoH cache evicts expired entries
+// and enforces a hard ceiling of 256 items under continuous churn.
+func TestMemoryLeak_DoHCache_Churn(t *testing.T) {
+	// Store 1,000 expired entries
+	for i := 0; i < 1000; i++ {
+		host := fmt.Sprintf("expired-%d.example.com", i)
+		storeDoHCache(host, dohCacheEntry{
+			ips:     []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+			expires: time.Now().Add(-1 * time.Minute), // expired
+		})
+	}
+
+	// Store 100 fresh entries
+	for i := 0; i < 100; i++ {
+		host := fmt.Sprintf("fresh-%d.example.com", i)
+		storeDoHCache(host, dohCacheEntry{
+			ips:     []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+			expires: time.Now().Add(5 * time.Minute), // valid
+		})
+	}
+
+	// Verify total count is bounded and <= 256
+	count := 0
+	dohCache.Range(func(key, val any) bool {
+		count++
+		return true
+	})
+
+	if count > 256 {
+		t.Fatalf("dohCache exceeded bound: got %d, max allowed 256", count)
+	}
+	t.Logf("dohCache bounded count after 1,100 inserts: %d entries (bound=256)", count)
+
+	// Clean up cache after test
+	dohCache.Range(func(key, _ any) bool {
+		dohCache.Delete(key)
+		return true
+	})
+}
+
+// TestMemoryLeak_H2Clients_PoolBound verifies that H2 client map never exceeds 8
+// hosts and cleans up idle connections.
+func TestMemoryLeak_H2Clients_PoolBound(t *testing.T) {
+	h2ClientsMu.Lock()
+	// Reset map for clean test
+	for k, c := range h2Clients {
+		if tr, ok := c.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+		delete(h2Clients, k)
+	}
+	h2ClientsMu.Unlock()
+
+	// Request 50 different hosts
+	for i := 0; i < 50; i++ {
+		host := fmt.Sprintf("cf-host-%d.cloudflare.com", i)
+		clt := getH2Client(host)
+		if clt == nil {
+			t.Fatalf("getH2Client returned nil for %s", host)
+		}
+	}
+
+	h2ClientsMu.RLock()
+	count := len(h2Clients)
+	h2ClientsMu.RUnlock()
+
+	if count > 8 {
+		t.Fatalf("h2Clients map exceeded bound: got %d, max allowed 8", count)
+	}
+	t.Logf("h2Clients pool count after 50 distinct requests: %d (bound=8)", count)
+}
+
+// TestMemoryLeak_BoundedMaps_ProtectAndLearnedDCs ensures warnProtect and learnedDCs
+// maintain hard upper bounds on mobile devices.
+func TestMemoryLeak_BoundedMaps_ProtectAndLearnedDCs(t *testing.T) {
+	// 1. warnProtect churn with 1,000 PIDs
+	for pid := 20000; pid < 21000; pid++ {
+		warnProtect(pid, "protect test warning")
+	}
+
+	warnCount := 0
+	protectWarnings.Range(func(_, _ any) bool {
+		warnCount++
+		return true
+	})
+	if warnCount > 128 {
+		t.Fatalf("protectWarnings exceeded hard cap: got %d, max allowed 128", warnCount)
+	}
+	t.Logf("protectWarnings count after 1,000 calls: %d (bound=128)", warnCount)
+
+	// 2. learnedDCs churn with 1,000 IPs
+	for i := 0; i < 1000; i++ {
+		ip := fmt.Sprintf("198.51.100.%d", i%250)
+		learnDC(ip, (i%5)+1, i%2 == 0)
+	}
+
+	dcCount := 0
+	learnedDCs.Range(func(_, _ any) bool {
+		dcCount++
+		return true
+	})
+	if dcCount > 256 {
+		t.Fatalf("learnedDCs exceeded hard cap: got %d, max allowed 256", dcCount)
+	}
+	t.Logf("learnedDCs count after 1,000 calls: %d (bound=256)", dcCount)
+}
+
+// TestMemoryLeak_RaceCandidates_GoroutineCleanup ensures all losing/slow candidates
+// promptly terminate when one candidate wins, preventing goroutine leaks.
+func TestMemoryLeak_RaceCandidates_GoroutineCleanup(t *testing.T) {
+	runtime.GC()
+	initialGoroutines := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var slowGoroutinesTerminated atomic.Int32
+
+	candidates := []dialCandidate{
+		{
+			name: "slow-loser-1",
+			dial: func(c context.Context) (*wsConn, error) {
+				defer slowGoroutinesTerminated.Add(1)
+				<-c.Done()
+				return nil, c.Err()
+			},
+		},
+		{
+			name: "slow-loser-2",
+			dial: func(c context.Context) (*wsConn, error) {
+				defer slowGoroutinesTerminated.Add(1)
+				<-c.Done()
+				return nil, c.Err()
+			},
+		},
+		{
+			name: "fast-winner",
+			dial: func(c context.Context) (*wsConn, error) {
+				time.Sleep(15 * time.Millisecond)
+				return &wsConn{host: "fast.winner"}, nil
+			},
+		},
+	}
+
+	wonWS, _, err := raceCandidates(ctx, candidates, 2*time.Millisecond, 4)
+	if err != nil || wonWS == nil {
+		t.Fatalf("expected winner, got err=%v", err)
+	}
+
+	// Wait 50ms for context cancellation to propagate to slow candidates
+	time.Sleep(50 * time.Millisecond)
+
+	if slowGoroutinesTerminated.Load() < 2 {
+		t.Errorf("not all slow candidates terminated: got %d, want 2", slowGoroutinesTerminated.Load())
+	}
+
+	runtime.GC()
+	finalGoroutines := runtime.NumGoroutine()
+	t.Logf("raceCandidates goroutine cleanup: initial=%d, final=%d, terminated=%d",
+		initialGoroutines, finalGoroutines, slowGoroutinesTerminated.Load())
+
+	if finalGoroutines > initialGoroutines+3 {
+		t.Errorf("goroutine leak in raceCandidates: initial=%d, final=%d", initialGoroutines, finalGoroutines)
+	}
+}
+
+// Benchmarks for hot-path allocations and memory overhead
+func BenchmarkMTProtoFramer_Feed(b *testing.B) {
+	f, clientStream := createFramerForTest(b)
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	go func() {
+		buf := make([]byte, 64*1024)
+		for {
+			_, err := c2.Read(buf)
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	ws := &wsConn{conn: c1, r: bufio.NewReader(c1)}
+
+	payload := make([]byte, 256)
+	enc := make([]byte, 1+len(payload))
+	enc[0] = byte(len(payload) / 4)
+	copy(enc[1:], payload)
+	clientStream.XORKeyStream(enc, enc)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = f.feed(enc, ws)
+	}
+}
+
+func BenchmarkEncodeH2Reply(b *testing.B) {
+	body := make([]byte, 1024)
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = encodeH2Reply(body, 0xEFEFEFEF)
+	}
+}

@@ -56,6 +56,17 @@ func getH2Client(host string) *http.Client {
 		return c
 	}
 
+	// Bound cache to 8 hosts to avoid socket/memory leaks
+	if len(h2Clients) >= 8 {
+		for h, clt := range h2Clients {
+			if tr, ok := clt.Transport.(*http.Transport); ok {
+				tr.CloseIdleConnections()
+			}
+			delete(h2Clients, h)
+			break
+		}
+	}
+
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			ServerName:         host,

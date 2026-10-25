@@ -82,6 +82,26 @@ func writeDoHEnabled(v bool) error {
 	return os.WriteFile(path("doh_enabled"), []byte(val), 0600)
 }
 
+
+func storeDoHCache(host string, entry dohCacheEntry) {
+	var count int
+	dohCache.Range(func(key, val any) bool {
+		count++
+		if e, ok := val.(dohCacheEntry); ok && time.Now().After(e.expires) {
+			dohCache.Delete(key)
+		}
+		return true
+	})
+	if count > 256 {
+		dohCache.Range(func(key, _ any) bool {
+			dohCache.Delete(key)
+			count--
+			return count > 128
+		})
+	}
+	dohCache.Store(host, entry)
+}
+
 func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
 	if !readDoHEnabled() {
 		return nil, errors.New("DoH is disabled")
@@ -183,7 +203,7 @@ func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
 			if ttlSec > 600 {
 				ttlSec = 600
 			}
-			dohCache.Store(host, dohCacheEntry{
+			storeDoHCache(host, dohCacheEntry{
 				ips:     res.ips,
 				expires: time.Now().Add(time.Duration(ttlSec) * time.Second),
 			})

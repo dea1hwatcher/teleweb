@@ -1300,6 +1300,14 @@ func learnDC(ip string, dc int, isMedia bool) {
 			return
 		}
 	}
+	var count int
+	learnedDCs.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count >= 256 {
+		return
+	}
 	learnedDCs.Store(ip, learnedDCEntry{DC: dc, IsMedia: isMedia})
 	learnedDCMu.Lock()
 	learnedDCDirty = true
@@ -1586,6 +1594,27 @@ func protectAppPID(pid int) {
 }
 
 func warnProtect(pid int, message string) {
+	var count int
+	protectWarnings.Range(func(key, _ any) bool {
+		count++
+		return true
+	})
+	if count > 128 {
+		protectWarnings.Range(func(key, _ any) bool {
+			if p, ok := key.(int); ok && !isPidAlive(p) {
+				protectWarnings.Delete(key)
+				count--
+			}
+			return true
+		})
+		if count > 128 {
+			protectWarnings.Range(func(key, _ any) bool {
+				protectWarnings.Delete(key)
+				count--
+				return count > 64
+			})
+		}
+	}
 	if previous, loaded := protectWarnings.LoadOrStore(pid, message); !loaded {
 		logf("protect: %s", message)
 	} else if previous != message {
@@ -3142,6 +3171,14 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 		if len(f.raw) == 0 {
 			f.raw = f.raw[:0]
 			f.plain = f.plain[:0]
+		} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
+			newRaw := make([]byte, len(f.raw))
+			copy(newRaw, f.raw)
+			f.raw = newRaw
+
+			newPlain := make([]byte, len(f.plain))
+			copy(newPlain, f.plain)
+			f.plain = newPlain
 		}
 	}
 }
