@@ -1862,3 +1862,26 @@ func TestDC203DirectTCP_Config(t *testing.T) {
 		t.Fatalf("expected DC203 direct TCP to be true after write")
 	}
 }
+
+func TestKnownDCOverridesLearnedNoise(t *testing.T) {
+	// 149.154.167.222 is an authoritative DC2 media endpoint.
+	targetIP := "149.154.167.222"
+	addr := netip.MustParseAddr(targetIP)
+
+	// Ensure clean state
+	learnedDCs.Delete(targetIP)
+	defer learnedDCs.Delete(targetIP)
+
+	// Attempt to simulate random CTR noise trying to learn DC1 media=false
+	learnDC(targetIP, 1, false)
+
+	// Authoritative mapping must NEVER be overridden by learned noise
+	if got := dcFor(addr); got != 2 {
+		t.Fatalf("dcFor(%s) = %d; want 2 (authoritative DC2 must not be overridden)", targetIP, got)
+	}
+
+	// mediaForIP must return true regardless of any dynamic entries
+	if got := mediaForIP(addr); !got {
+		t.Fatalf("mediaForIP(%s) = false; want true", targetIP)
+	}
+}

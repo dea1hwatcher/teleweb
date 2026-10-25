@@ -64,6 +64,8 @@ chmod 0755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh" \
 
 if [ -d /data/adb/teleweb ]; then
   ui_print "- Сохранение существующих настроек: /data/adb/teleweb"
+  # Очищаем устаревший динамический кэш конечных точек для исключения старых отравленных записей
+  rm -f /data/adb/teleweb/dc-learned.json 2>/dev/null || true
 else
   mkdir -p /data/adb/teleweb
   ui_print "- Создан каталог настроек: /data/adb/teleweb"

@@ -1096,14 +1096,24 @@ func installedApps() ([]App, []int) {
 var telegramV4 = []string{"149.154.160.0/20", "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22", "91.108.16.0/22", "91.108.20.0/22", "91.108.56.0/22", "185.76.151.0/24", "91.105.192.0/23"}
 
 func runCmd(name string, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	c := exec.CommandContext(ctx, name, args...)
-	b, e := c.CombinedOutput()
-	if e != nil {
-		return fmt.Errorf("%s %s: %v (%s)", name, strings.Join(args, " "), e, strings.TrimSpace(string(b)))
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		c := exec.CommandContext(ctx, name, args...)
+		b, e := c.CombinedOutput()
+		cancel()
+		if e == nil {
+			return nil
+		}
+		outStr := strings.TrimSpace(string(b))
+		lastErr = fmt.Errorf("%s %s: %v (%s)", name, strings.Join(args, " "), e, outStr)
+		if strings.Contains(outStr, "xtables.lock") || strings.Contains(outStr, "Can't lock") || strings.Contains(outStr, "exit status 4") {
+			time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
+			continue
+		}
+		return lastErr
 	}
-	return nil
+	return lastErr
 }
 func findBin(name string) string {
 	if p, e := exec.LookPath(name); e == nil {
@@ -1273,14 +1283,25 @@ func loadLearnedDCs() {
 		return
 	}
 	count := 0
+	cleaned := false
 	for ip, entry := range saved {
 		if entry.DC >= 1 && (entry.DC <= 5 || entry.DC == 203) {
+			if known := knownDCMap[ip]; known != 0 && known != entry.DC {
+				cleaned = true
+				continue
+			}
 			learnedDCs.Store(ip, entry)
 			count++
 		}
 	}
 	if count > 0 {
 		logf("dc-learn: restored %d learned IP->DC endpoints from storage", count)
+	}
+	if cleaned {
+		learnedDCMu.Lock()
+		learnedDCDirty = true
+		learnedDCMu.Unlock()
+		go persistLearnedDCs()
 	}
 }
 
@@ -1309,6 +1330,9 @@ func persistLearnedDCs() {
 
 func learnDC(ip string, dc int, isMedia bool) {
 	if dc < 1 || (dc > 5 && dc != 203) || ip == "" {
+		return
+	}
+	if known := knownDCMap[ip]; known != 0 && known != dc {
 		return
 	}
 	if val, ok := learnedDCs.Load(ip); ok {
@@ -2310,11 +2334,11 @@ var (
 	knownDCMap = map[string]int{
 		"149.154.175.50": 1, "149.154.175.51": 1, "149.154.175.53": 1, "149.154.175.54": 1, "149.154.175.55": 1,
 		"149.154.175.100": 3, "149.154.175.101": 3, "149.154.175.211": 1,
-		"149.154.167.50": 2, "149.154.167.51": 2, "149.154.167.52": 2, "149.154.167.91": 4, "149.154.167.92": 4,
+		"149.154.167.41": 2, "149.154.167.50": 2, "149.154.167.51": 2, "149.154.167.52": 2, "149.154.167.91": 4, "149.154.167.92": 4,
 		"149.154.167.99": 2, "149.154.167.118": 4, "149.154.167.151": 2, "149.154.167.220": 2, "149.154.167.222": 2,
 		"149.154.167.223": 2, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4,
 		"149.154.166.121": 4, "149.154.175.52": 1, "149.154.175.102": 3, "149.154.174.100": 1, "149.154.170.100": 5,
-		"149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.128": 5, "91.108.56.151": 5,
+		"149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.118": 5, "91.108.56.128": 5, "91.108.56.151": 5,
 		"91.105.192.100": 203,
 	}
 
@@ -2336,14 +2360,14 @@ func dcFor(ip netip.Addr) int {
 	if !ip.Is4() {
 		return 0
 	}
-	if dc, _, ok := lookupLearnedDC(ip.String()); ok {
-		return dc
-	}
 	if d := knownDCMap[ip.String()]; d != 0 {
 		return d
 	}
 	if d := knownTestDCMap[ip.String()]; d != 0 {
 		return d
+	}
+	if dc, _, ok := lookupLearnedDC(ip.String()); ok {
+		return dc
 	}
 	if ip.IsPrivate() {
 		return 0
@@ -2474,6 +2498,17 @@ func handleClient(c net.Conn) {
 	isTestDC := readForceTestDC() || dc >= 10000
 	if dc >= 10000 {
 		dc -= 10000
+	}
+	if parsed {
+		// If the destination IP is an authoritative known Telegram endpoint,
+		// check if parsed DC contradicts it. In direct MTProto connections,
+		// bytes 60..62 of init are random CTR keystream padding. If random
+		// bytes happen to form a valid DC tag that differs from the target IP's
+		// DC, it is random keystream noise and MUST NOT be trusted.
+		if known := knownDCMap[orig.Addr().String()]; known != 0 && known != dc {
+			logf("conn #%d %s: ignoring random CTR noise in init (parsed DC%d, expected DC%d)", id, orig, dc, known)
+			parsed = false
+		}
 	}
 	if parsed {
 		if !isTestDC {
@@ -2836,17 +2871,14 @@ func mediaForIP(ip netip.Addr) bool {
 	if !ip.Is4() {
 		return false
 	}
-	if _, isMedia, ok := lookupLearnedDC(ip.String()); ok {
-		return isMedia
-	}
-	// Exact media endpoints observed in Telegram client/proxy tables. This is
-	// only a fallback for clients whose init DC field is random (useSecret=0).
-	// Experimental: 149.154.171.255 is marked media because this device logs it
-	// as DC5 and thumbnails now load, while full media still stalls. Test the
-	// kws5-1 route for this exact endpoint without changing other DC5 traffic.
+	// Exact media endpoints observed in Telegram client/proxy tables. Authoritative
+	// static classification takes precedence over any dynamically learned cache.
 	switch ip.String() {
 	case "149.154.175.52", "149.154.175.211", "149.154.167.151", "149.154.167.222", "149.154.167.223", "149.154.162.123", "149.154.167.35", "149.154.175.102", "149.154.164.250", "149.154.166.120", "149.154.166.121", "149.154.167.118", "149.154.165.111", "149.154.165.136", "149.154.171.255", "91.108.56.102", "91.108.56.128", "91.108.56.151":
 		return true
+	}
+	if _, isMedia, ok := lookupLearnedDC(ip.String()); ok {
+		return isMedia
 	}
 	return false
 }
