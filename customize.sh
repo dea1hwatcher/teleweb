@@ -4,6 +4,12 @@ type abort >/dev/null 2>&1 || abort() { ui_print "$1"; exit 1; }
 
 umask 077
 
+version=$(sed -n 's/^version=//p' "$MODPATH/module.prop" | tr -d '\r')
+ui_print "*******************************************"
+ui_print "- TeleWEB"
+ui_print "- $version"
+ui_print "*******************************************"
+
 # Определение архитектуры устройства (ARM64, ARM, x86, x86_64)
 ABI=""
 case "$ARCH" in
@@ -43,12 +49,27 @@ fi
 # Удаляем остальные архитектуры для экономии места на устройстве
 rm -rf "$MODPATH/bin/arm64" "$MODPATH/bin/arm" "$MODPATH/bin/x86" "$MODPATH/bin/x86_64"
 
+# Очистка сервисных файлов репозитория
+rm -rf "$MODPATH/.git" "$MODPATH/.github" "$MODPATH/.gitattributes" \
+       "$MODPATH/update.json" "$MODPATH/changelog.md"
+rm -f "$MODPATH"/*.zip
+
+# Иконка модуля для Magisk / KernelSU / APatch / MMRL
+if [ -f "$MODPATH/webroot/module_icon.png" ] && [ ! -f "$MODPATH/icon.png" ]; then
+  cp -f "$MODPATH/webroot/module_icon.png" "$MODPATH/icon.png" 2>/dev/null || true
+fi
+
 chmod 0755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh" \
   "$MODPATH/action.sh" "$MODPATH/uninstall.sh" "$MODPATH/bin/tgws" 2>/dev/null
 
-mkdir -p /data/adb/teleweb
+if [ -d /data/adb/teleweb ]; then
+  ui_print "- Сохранение существующих настроек: /data/adb/teleweb"
+else
+  mkdir -p /data/adb/teleweb
+  ui_print "- Создан каталог настроек: /data/adb/teleweb"
+fi
 
-# Остановка предыдущего процесса tgws перед запуском
+# Остановка предыдущего процесса tgws перед обновлением/запуском
 export TELEWEB_DIR=/data/adb/teleweb
 export TELEWEB_MOD="$MODPATH"
 [ -x "$MODPATH/bin/tgws" ] && "$MODPATH/bin/tgws" stop >/dev/null 2>&1

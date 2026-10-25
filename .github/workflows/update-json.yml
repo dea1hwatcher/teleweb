@@ -1,0 +1,47 @@
+name: update-json
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (for example v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Build update.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          git fetch --tags --force
+          code=$(git show "$TAG:module.prop" | sed -n 's/^versionCode=//p' | tr -d '\r')
+          ver=$(git show "$TAG:module.prop" | sed -n 's/^version=//p' | tr -d '\r')
+          [ -n "$code" ] || { echo "::error::module.prop on $TAG has no versionCode"; exit 1; }
+          rel=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
+          zip=$(printf '%s' "$rel" | jq -r '[.assets[] | select(.name | endswith(".zip")) | .browser_download_url][0] // empty')
+          [ -n "$zip" ] || zip="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/teleweb-$TAG-multiarch.zip"
+          jq -n --arg v "$ver" --argjson c "$code" --arg z "$zip" \
+                --arg l "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/master/changelog.md" \
+                '{version: $v, versionCode: $c, zipUrl: $z, changelog: $l}' > update.json
+          cat update.json
+
+      - name: Commit to master
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git add update.json
+          git diff --cached --quiet && { echo "update.json is already up to date"; exit 0; }
+          git commit -m "update.json: ${{ inputs.tag }}"
+          git push origin HEAD:master

@@ -25,6 +25,7 @@
 * **Автообнаружение любых клиентов Telegram**: официальный Telegram, Telegram X, Nekogram, Forkgram, Cherrygram, Ayugram, MDGram, Swiftgram, Turbotel и любые сторонние сборки определяются автоматически по установленным пакетам.
 * **Cgroup Unfreezer & Anti-Freeze Watchdog**: защита демона `tgws` от завершения системой (`oom_score_adj = -1000`) и автоматический периодический вывод фоновых процессов клиентов Telegram из `cgroup freezer` для гарантированной доставки уведомлений в режиме глубокого сна (Doze).
 * **WebUI в стиле Material Design 3 Expressive**: светлая, тёмная и чистая AMOLED-тема, динамические Monet-цвета с обоев или спектрального круга, поддержка системного жеста Android «Назад» (`backInterceptor`), 120 FPS анимации и 100% Zero-CDN автономность.
+* **Обновления модуля из менеджера**: KernelSU, Magisk и APatch сами покажут уведомление о выходе новой версии благодаря поддержке `updateJson`.
 * **Управление из терминала**: консольная утилита `tgws` (`tgws status`, `tgws boot`, `tgws stop`, `tgws ensure`, `tgws check`) для полного контроля из Termux или root-оболочки.
 
 ## Требования
