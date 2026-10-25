@@ -1026,11 +1026,50 @@ html.no-anim *::after {
   transition: transform var(--dur-short) var(--standard), color var(--dur-short) var(--standard);
 }
 .tf input:focus + label,
-.tf input:not(:placeholder-shown) + label {
+.tf input:not(:placeholder-shown) + label,
+.tf select + label,
+.tf select:focus + label {
   transform: translateY(-11px) scale(.75);
 }
-.tf input:focus + label {
+.tf input:focus + label,
+.tf select:focus + label {
   color: var(--md-sys-color-primary);
+}
+.tf select {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 24px 40px 6px 16px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  color: var(--md-sys-color-on-surface);
+  caret-color: var(--md-sys-color-primary);
+  font-family: inherit;
+  font-size: var(--ts-body-medium);
+  cursor: pointer;
+}
+.tf select option {
+  background: var(--md-sys-color-surface-container, #1e1e24);
+  color: var(--md-sys-color-on-surface, #e6e1e5);
+}
+.tf .tf-arrow {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--md-sys-color-on-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--dur-short) var(--standard), color var(--dur-short) var(--standard);
+}
+.tf:focus-within .tf-arrow {
+  color: var(--md-sys-color-primary);
+  transform: translateY(-50%) rotate(180deg);
 }
 .helper {
   font-size: var(--ts-body-small);
@@ -1577,6 +1616,7 @@ html.no-anim *::after {
 <symbol id="i-settings" viewBox="0 -960 960 960"><path d="m370-80-16-128q-13-5-24.5-12T307-235l-119 50L78-375l103-78q-1-7-1-13.5v-27q0-6.5 1-13.5L78-585l110-190 119 50q11-8 23-15t24-12l16-128h220l16 128q13 5 24.5 12t22.5 15l119-50 110 190-103 78q1 7 1 13.5v27q0 6.5-2 13.5l103 78-110 190-118-50q-11 8-23 15t-24 12L590-80H370Zm70-80h79l14-106q31-8 57.5-23.5T639-327l99 41 39-68-86-65q5-14 7-29.5t2-31.5q0-16-2-31.5t-7-29.5l86-65-39-68-99 42q-22-23-48.5-38.5T533-694l-13-106h-79l-14 106q-31 8-57.5 23.5T321-633l-99-41-39 68 86 64q-5 15-7 30t-2 32q0 16 2 31t7 30l-86 65 39 68 99-42q22 23 48.5 38.5T427-266l13 106Zm42-180q58 0 99-41t41-99q0-58-41-99t-99-41q-59 0-99.5 41T342-480q0 58 40.5 99t99.5 41Zm-2-140Z"/></symbol>
 <symbol id="i-back" viewBox="0 -960 960 960"><path d="m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z"/></symbol>
 <symbol id="i-chevron-right" viewBox="0 -960 960 960"><path d="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z"/></symbol>
+<symbol id="i-chevron-down" viewBox="0 -960 960 960"><path d="M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z"/></symbol>
 <symbol id="i-motion" viewBox="0 -960 960 960"><path d="M160-160v-480h480v480H160Zm80-80h320v-320H240v320Zm160-240v-80h320v320h-80v-240H400Zm160-160v-80h320v320h-80v-240H560Z"/></symbol>
 </defs></svg>
 
@@ -1767,13 +1807,14 @@ html.no-anim *::after {
         <!-- Pre-warmed WSS Pool Size -->
         <div class="field">
           <div class="tf">
-            <select id="selectPoolSize" style="background:transparent;border:none;color:inherit;font:inherit;width:100%;outline:none;padding:12px 0 4px 0;">
-              <option value="0" style="background:var(--md-sys-color-surface-container, #1e1e24);color:inherit;">Отключен (0)</option>
-              <option value="1" style="background:var(--md-sys-color-surface-container, #1e1e24);color:inherit;">Эконом (1 сокет на DC)</option>
-              <option value="2" style="background:var(--md-sys-color-surface-container, #1e1e24);color:inherit;">Стандарт (2 сокета на DC, реком.)</option>
-              <option value="4" style="background:var(--md-sys-color-surface-container, #1e1e24);color:inherit;">Максимум (4 сокета на DC)</option>
+            <select id="selectPoolSize">
+              <option value="0">Отключен (0)</option>
+              <option value="1">Эконом (1 сокет на DC)</option>
+              <option value="2">Стандарт (2 сокета на DC, реком.)</option>
+              <option value="4">Максимум (4 сокета на DC)</option>
             </select>
             <label for="selectPoolSize">Пул предпрогретых WSS-сокетов</label>
+            <span class="tf-arrow"><svg class="icon s20"><use href="#i-chevron-down"/></svg></span>
           </div>
         </div>
 
@@ -1930,16 +1971,7 @@ html.no-anim *::after {
     </span>
   </label>
 
-  <!-- Themed Monet Icons Toggle -->
-  <label class="list-item clickable state monet-icons-row">
-    <span class="li-icon"><svg class="icon s24"><use href="#i-palette"/></svg></span>
-    <span class="li-text">
-      <span class="li-primary">Monet-иконки клиентов</span>
-    </span>
-    <span class="li-trail">
-      <input type="checkbox" class="switch" role="switch" id="monet-icons-toggle" aria-label="Monet-иконки клиентов" onchange="toggleMonetIcons(this.checked)">
-    </span>
-  </label>
+
 
   <h2 class="subhead plain">Цвет акцента</h2>
   <div class="swatch-row" id="palette-grid" role="group" aria-label="Готовые палитры"></div>
@@ -2838,25 +2870,17 @@ function render() {
   const appsList = $("appsList");
   if (state.apps && state.apps.length > 0) {
     appsList.innerHTML = "";
-    const monet = isMonetTheme();
     state.apps.forEach(app => {
       const item = document.createElement("div");
       item.className = "list-item";
       let iconHtml = "";
-      if (monet) {
-        if (app.iconMonet) {
-          iconHtml = `<div class="app-ico-wrap monet"><img class="app-ico-img" src="${esc(app.iconMonet)}" alt=""></div>`;
-        } else if (app.iconNormal) {
-          iconHtml = `<div class="app-ico-wrap monet"><img class="app-ico-img monet-tinted" src="${esc(app.iconNormal)}" alt=""></div>`;
-        } else {
-          iconHtml = `<div class="app-ico-wrap monet"><svg class="icon s24"><use href="#i-tg"/></svg></div>`;
-        }
+      // Forced Monet-themed icon display
+      if (app.iconMonet) {
+        iconHtml = `<div class="app-ico-wrap monet"><img class="app-ico-img" src="${esc(app.iconMonet)}" alt=""></div>`;
+      } else if (app.iconNormal) {
+        iconHtml = `<div class="app-ico-wrap monet"><img class="app-ico-img monet-tinted" src="${esc(app.iconNormal)}" alt=""></div>`;
       } else {
-        if (app.iconNormal) {
-          iconHtml = `<div class="app-ico-wrap normal"><img class="app-ico-img" src="${esc(app.iconNormal)}" alt=""></div>`;
-        } else {
-          iconHtml = `<div class="app-ico-wrap normal"><svg class="icon s40"><use href="#i-tg-color"/></svg></div>`;
-        }
+        iconHtml = `<div class="app-ico-wrap monet"><svg class="icon s24"><use href="#i-tg"/></svg></div>`;
       }
       item.innerHTML = `
         <span class="li-icon">${iconHtml}</span>
