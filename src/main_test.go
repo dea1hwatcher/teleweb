@@ -1420,7 +1420,7 @@ func TestWsPool_Lifecycle(t *testing.T) {
 	defer pool.Close()
 
 	// 1. Initial Get on empty pool should miss
-	ws := pool.Get(2, false)
+	ws := pool.Get(2, false, false)
 	if ws != nil {
 		t.Fatalf("expected nil from empty pool, got %v", ws)
 	}
@@ -1434,7 +1434,7 @@ func TestWsPool_Lifecycle(t *testing.T) {
 	defer c2.Close()
 	mockWS := &wsConn{conn: c1, host: "mock-host.invalid"}
 
-	slot := poolSlot{dc: 2, isMedia: false}
+	slot := poolSlot{dc: 2, isMedia: false, isTest: false}
 	q, _ := pool.getQueue(slot)
 	q <- &poolEntry{ws: mockWS, createdAt: time.Now()}
 
@@ -1443,7 +1443,7 @@ func TestWsPool_Lifecycle(t *testing.T) {
 	}
 
 	// 3. Get should hit
-	retrieved := pool.Get(2, false)
+	retrieved := pool.Get(2, false, false)
 	if retrieved == nil {
 		t.Fatalf("expected valid connection from pool, got nil")
 	}
@@ -1463,7 +1463,7 @@ func TestWsPool_Lifecycle(t *testing.T) {
 	staleWS := &wsConn{conn: c3, host: "stale-host.invalid"}
 	q <- &poolEntry{ws: staleWS, createdAt: time.Now().Add(-200 * time.Second)}
 
-	staleRetrieved := pool.Get(2, false)
+	staleRetrieved := pool.Get(2, false, false)
 	if staleRetrieved != nil {
 		t.Fatalf("expected stale entry to be dropped, got %v", staleRetrieved)
 	}
@@ -1580,5 +1580,139 @@ func TestApiMain_PoolSize_And_DoH_Config(t *testing.T) {
 	}
 	if readDoHEnabled() != false {
 		t.Fatalf("expected dohEnabled false, got %t", readDoHEnabled())
+	}
+}
+
+func TestCFRay_PoPParsing(t *testing.T) {
+	cases := []struct {
+		ray  string
+		want string
+	}{
+		{"938b18f8e0bc-FRA", "FRA"},
+		{"938b18f8e0bc-WAW", "WAW"},
+		{"938b18f8e0bc-DME", "DME"},
+		{"8f2038101-AMS", "AMS"},
+		{"7bca-SVO2", "SVO2"},
+		{"", ""},
+		{"no-hyphen-here", "HERE"},
+		{"short-xy", ""},
+		{"938b18f8e0bc-TOOLONG", ""},
+	}
+	for _, tc := range cases {
+		got := parseCFRayPoP(tc.ray)
+		if got != tc.want {
+			t.Errorf("parseCFRayPoP(%q) = %q, want %q", tc.ray, got, tc.want)
+		}
+	}
+}
+
+func TestTestDC_MappingAndConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TELEWEB_DIR", tmpDir)
+
+	if readForceTestDC() {
+		t.Fatalf("expected false default for force_test_dc")
+	}
+	if err := writeForceTestDC(true); err != nil {
+		t.Fatalf("writeForceTestDC error: %v", err)
+	}
+	if !readForceTestDC() {
+		t.Fatalf("expected true after writeForceTestDC(true)")
+	}
+	if err := writeForceTestDC(false); err != nil {
+		t.Fatalf("writeForceTestDC(false) error: %v", err)
+	}
+	if readForceTestDC() {
+		t.Fatalf("expected false after writeForceTestDC(false)")
+	}
+
+	ip1 := netip.MustParseAddr("149.154.175.10")
+	ip2 := netip.MustParseAddr("149.154.167.40")
+	ip3 := netip.MustParseAddr("149.154.175.117")
+
+	if dc := dcFor(ip1); dc != 1 {
+		t.Errorf("dcFor(%s) = %d, want 1", ip1, dc)
+	}
+	if dc := dcFor(ip2); dc != 2 {
+		t.Errorf("dcFor(%s) = %d, want 2", ip2, dc)
+	}
+	if dc := dcFor(ip3); dc != 3 {
+		t.Errorf("dcFor(%s) = %d, want 3", ip3, dc)
+	}
+}
+
+func TestH2Media_ConfigAndReplyEncoding(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TELEWEB_DIR", tmpDir)
+
+	if readH2MediaEnabled() {
+		t.Fatalf("expected false default for h2_media_enabled")
+	}
+	if err := writeH2MediaEnabled(true); err != nil {
+		t.Fatalf("writeH2MediaEnabled error: %v", err)
+	}
+	if !readH2MediaEnabled() {
+		t.Fatalf("expected true after writeH2MediaEnabled(true)")
+	}
+	_ = writeH2MediaEnabled(false)
+
+	// Short abridged (< 127 words = 508 bytes)
+	rawPayload := make([]byte, 16) // 4 words
+	for i := range rawPayload {
+		rawPayload[i] = byte(i)
+	}
+	abridgedShort := encodeH2Reply(rawPayload, 0xEFEFEFEF)
+	if len(abridgedShort) != 17 || abridgedShort[0] != 4 {
+		t.Fatalf("abridgedShort unexpected header: %x", abridgedShort[:1])
+	}
+
+	// Long abridged (>= 127 words, e.g. 128 words = 512 bytes)
+	rawLong := make([]byte, 512)
+	abridgedLong := encodeH2Reply(rawLong, 0xEFEFEFEF)
+	if len(abridgedLong) != 516 || abridgedLong[0] != 0x7f {
+		t.Fatalf("abridgedLong unexpected header: %x", abridgedLong[:4])
+	}
+
+	// Intermediate
+	inter := encodeH2Reply(rawPayload, 0xEEEEEEEE)
+	if len(inter) != 20 || binary.LittleEndian.Uint32(inter[:4]) != 16 {
+		t.Fatalf("intermediate unexpected header: %x", inter[:4])
+	}
+}
+
+func TestApiMain_NewFeaturesConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+	t.Setenv("TELEWEB_DIR", tmpDir)
+
+	forceTest := true
+	h2Media := true
+	req := apiRequest{
+		Cmd:            "setConfig",
+		ForceTestDC:    &forceTest,
+		H2MediaEnabled: &h2Media,
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(b)
+	apiMain(encoded)
+
+	if !readForceTestDC() {
+		t.Fatalf("expected forceTestDc = true")
+	}
+	if !readH2MediaEnabled() {
+		t.Fatalf("expected h2MediaEnabled = true")
+	}
+
+	st := status()
+	if !st.ForceTestDC {
+		t.Fatalf("st.ForceTestDC is false")
+	}
+	if !st.H2MediaEnabled {
+		t.Fatalf("st.H2MediaEnabled is false")
 	}
 }

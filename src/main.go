@@ -226,6 +226,10 @@ type Status struct {
 	PoolMisses        int64          `json:"poolMisses"`
 	PoolIdle          int            `json:"poolIdle"`
 	DoHEnabled        bool           `json:"dohEnabled"`
+	LastCFPoP         string         `json:"lastCfPoP"`
+	LastCFRay         string         `json:"lastCfRay"`
+	ForceTestDC       bool           `json:"forceTestDc"`
+	H2MediaEnabled    bool           `json:"h2MediaEnabled"`
 }
 
 type apiRequest struct {
@@ -238,6 +242,8 @@ type apiRequest struct {
 	DCOverrides    *string `json:"dcOverrides,omitempty"`
 	PoolSize       *int    `json:"poolSize,omitempty"`
 	DoHEnabled     *bool   `json:"dohEnabled,omitempty"`
+	ForceTestDC    *bool   `json:"forceTestDc,omitempty"`
+	H2MediaEnabled *bool   `json:"h2MediaEnabled,omitempty"`
 }
 
 func envOr(k, d string) string {
@@ -547,6 +553,45 @@ func writeCustomCFWorker(w string) error {
 		return nil
 	}
 	return os.WriteFile(path("custom-cf-worker"), []byte(w+"\n"), 0600)
+}
+
+
+var (
+	lastCFRay atomic.Pointer[string]
+	lastCFPoP atomic.Pointer[string]
+)
+
+func parseCFRayPoP(ray string) string {
+	ray = strings.TrimSpace(ray)
+	if idx := strings.LastIndex(ray, "-"); idx != -1 && idx < len(ray)-1 {
+		pop := strings.ToUpper(strings.TrimSpace(ray[idx+1:]))
+		if len(pop) >= 3 && len(pop) <= 4 {
+			for _, r := range pop {
+				if !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') {
+					return ""
+				}
+			}
+			return pop
+		}
+	}
+	return ""
+}
+
+func readForceTestDC() bool {
+	b, err := os.ReadFile(path("force_test_dc"))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == "1"
+}
+
+func writeForceTestDC(v bool) error {
+	ensureDir()
+	val := "0"
+	if v {
+		val = "1"
+	}
+	return os.WriteFile(path("force_test_dc"), []byte(val), 0600)
 }
 
 func readDCOverridesRaw() string {
@@ -1846,6 +1891,10 @@ func currentStatus() Status {
 		PoolMisses:        misses,
 		PoolIdle:          idle,
 		DoHEnabled:        readDoHEnabled(),
+		LastCFPoP:         func() string { if p := lastCFPoP.Load(); p != nil { return *p }; return "" }(),
+		LastCFRay:         func() string { if p := lastCFRay.Load(); p != nil { return *p }; return "" }(),
+		ForceTestDC:       readForceTestDC(),
+		H2MediaEnabled:    readH2MediaEnabled(),
 	}
 }
 func status() Status {
@@ -1870,6 +1919,10 @@ func status() Status {
 			s.DCOverrides = readDCOverridesRaw()
 			s.PoolSize = readPoolSize()
 			s.DoHEnabled = readDoHEnabled()
+			s.ForceTestDC = readForceTestDC()
+			s.H2MediaEnabled = readH2MediaEnabled()
+			if p := lastCFPoP.Load(); p != nil { s.LastCFPoP = *p }
+			if p := lastCFRay.Load(); p != nil { s.LastCFRay = *p }
 			if globalWsPool != nil {
 				s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
 			}
@@ -1894,6 +1947,10 @@ func status() Status {
 		DCOverrides:    readDCOverridesRaw(),
 		PoolSize:       readPoolSize(),
 		DoHEnabled:     readDoHEnabled(),
+		ForceTestDC:    readForceTestDC(),
+		H2MediaEnabled: readH2MediaEnabled(),
+		LastCFPoP:      func() string { if p := lastCFPoP.Load(); p != nil { return *p }; return "" }(),
+		LastCFRay:      func() string { if p := lastCFRay.Load(); p != nil { return *p }; return "" }(),
 	}
 }
 func writeStatus() {
@@ -2017,6 +2074,18 @@ func apiMain(arg string) {
 		}
 		if q.DoHEnabled != nil {
 			if err := writeDoHEnabled(*q.DoHEnabled); err != nil {
+				emitErr(err)
+				return
+			}
+		}
+		if q.ForceTestDC != nil {
+			if err := writeForceTestDC(*q.ForceTestDC); err != nil {
+				emitErr(err)
+				return
+			}
+		}
+		if q.H2MediaEnabled != nil {
+			if err := writeH2MediaEnabled(*q.H2MediaEnabled); err != nil {
 				emitErr(err)
 				return
 			}
@@ -2177,6 +2246,13 @@ func serve() {
 	}
 }
 
+
+var knownTestDCMap = map[string]int{
+	"149.154.175.10":  1,
+	"149.154.167.40":  2,
+	"149.154.175.117": 3,
+}
+
 var (
 	knownDCMap = map[string]int{
 		"149.154.175.50": 1, "149.154.175.51": 1, "149.154.175.53": 1, "149.154.175.54": 1, "149.154.175.55": 1,
@@ -2211,6 +2287,9 @@ func dcFor(ip netip.Addr) int {
 		return dc
 	}
 	if d := knownDCMap[ip.String()]; d != 0 {
+		return d
+	}
+	if d := knownTestDCMap[ip.String()]; d != 0 {
 		return d
 	}
 	if ip.IsPrivate() {
@@ -2339,12 +2418,21 @@ func handleClient(c net.Conn) {
 		return
 	}
 	dc, isMedia, parsed := parseMTProtoDC(init)
+	isTestDC := readForceTestDC() || dc >= 10000
+	if dc >= 10000 {
+		dc -= 10000
+	}
 	if parsed {
 		learnDC(orig.Addr().String(), dc, isMedia)
 	} else {
-		dc = dcFor(orig.Addr())
+		if testDC, ok := knownTestDCMap[orig.Addr().String()]; ok {
+			dc = testDC
+			isTestDC = true
+		} else {
+			dc = dcFor(orig.Addr())
+		}
 		isMedia = mediaForIP(orig.Addr())
-		logf("conn #%d %s: DC not recognized in init, fallback by IP -> DC%d media=%t", id, orig, dc, isMedia)
+		logf("conn #%d %s: DC not recognized in init, fallback by IP -> DC%d (test=%t) media=%t", id, orig, dc, isTestDC, isMedia)
 	}
 	if orig.Addr().String() == "91.105.192.100" || dc == 203 {
 		handleCDN203(c, orig, init, id)
@@ -2358,30 +2446,47 @@ func handleClient(c net.Conn) {
 	statsMu.Lock()
 	dcCounts[strconv.Itoa(dc)]++
 	statsMu.Unlock()
+
+	// HTTP/2 Media Multiplexing route
+	if isMedia && readH2MediaEnabled() {
+		if tryBridgeH2Media(c, init, id, dc, isTestDC) {
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	var ws *wsConn
 	if globalWsPool != nil && globalWsPool.size.Load() > 0 {
-		ws = globalWsPool.Get(dc, isMedia)
+		ws = globalWsPool.Get(dc, isMedia, isTestDC)
 	}
 	if ws == nil {
 		var err error
-		ws, err = dialTelegramWS(ctx, dc, isMedia)
+		ws, err = dialTelegramWS(ctx, dc, isMedia, isTestDC)
 		if err != nil {
 			if !isNeutralError(err) {
 				atomic.AddInt64(&failCnt, 1)
-				logf("DC%d media=%t WSS failed: %v; WSS-only, connection closed", dc, isMedia, err)
+				logf("DC%d (test=%t) media=%t WSS failed: %v; WSS-only, connection closed", dc, isTestDC, isMedia, err)
 			}
 			return
 		}
 		if globalWsPool != nil && globalWsPool.size.Load() > 0 {
-			go globalWsPool.Refill(dc, isMedia)
+			go globalWsPool.Refill(dc, isMedia, isTestDC)
 		}
 	}
 	atomic.AddInt64(&wsCount, 1)
 	defer atomic.AddInt64(&wsCount, -1)
 	defer ws.Close()
-	logf("conn #%d %s -> DC%d media=%t via WSS", id, orig, dc, isMedia)
+
+	rayInfo := ""
+	if ws.cfRay != "" {
+		rayInfo = fmt.Sprintf(" [CF-Ray: %s PoP: %s]", ws.cfRay, ws.cfPoP)
+	}
+	testTag := ""
+	if isTestDC {
+		testTag = " (test)"
+	}
+	logf("conn #%d %s -> DC%d%s media=%t via WSS (%s)%s", id, orig, dc, testTag, isMedia, ws.host, rayInfo)
 	pipeWSTunnel(c, ws, init, id, dc, isMedia)
 }
 
@@ -2396,7 +2501,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	worker := readCustomCFWorker()
 	if worker != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		ws, err := dialCFWorker(ctx, 203, "91.105.192.100", worker)
+		ws, err := dialCFWorker(ctx, 203, "91.105.192.100", worker, false)
 		cancel()
 		if err == nil {
 			logf("conn #%d %s -> CDN203 via Cloudflare Worker %s", id, orig, worker)
@@ -2655,6 +2760,8 @@ func mediaForIP(ip netip.Addr) bool {
 type wsConn struct {
 	conn       net.Conn
 	host       string
+	cfRay      string
+	cfPoP      string
 	r          *bufio.Reader
 	mu         sync.Mutex
 	fragOpcode byte
@@ -3204,12 +3311,15 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 	return nil, "", fmt.Errorf("all %d candidates failed: %s", len(candidates), strings.Join(errorsSeen, " | "))
 }
 
-func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) {
+func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*wsConn, error) {
 	hosts := wsHostsForDC(dc, isMedia)
 	if len(hosts) == 0 {
 		return nil, fmt.Errorf("unknown DC: %d", dc)
 	}
 	key := routeKey(dc, isMedia)
+	if isTest {
+		key = fmt.Sprintf("dc%d_test_%s", dc, func() string { if isMedia { return "media" }; return "main" }())
+	}
 	resolver := androidDNSResolver()
 
 	cfPriority := readCFPriority()
@@ -3222,10 +3332,21 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 	// 1. Cloudflare Worker candidate (high priority if cfPriority, else deferred)
 	if worker != "" {
 		workerHost := worker
+		dst := workerDstForDC(dc)
+		if isTest {
+			switch dc {
+			case 1:
+				dst = "149.154.175.10"
+			case 2:
+				dst = "149.154.167.40"
+			case 3:
+				dst = "149.154.175.117"
+			}
+		}
 		candWorker := dialCandidate{
 			name: fmt.Sprintf("cf-worker (%s)", workerHost),
 			dial: func(c context.Context) (*wsConn, error) {
-				return dialCFWorker(c, dc, workerDstForDC(dc), workerHost)
+				return dialCFWorker(c, dc, dst, workerHost, isTest)
 			},
 		}
 		if cfPriority {
@@ -3235,71 +3356,90 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 		}
 	}
 
-	// 2. DC1 special preferred host: kws1.pclead.co.uk
-	if dc == 1 && !cfBalance {
-		const preferredDC1Host = "kws1.pclead.co.uk"
-		if !routeCoolingDown(preferredDC1Host) {
-			candDC1 := dialCandidate{
-				name: fmt.Sprintf("cf-preferred (%s)", preferredDC1Host),
-				dial: func(c context.Context) (*wsConn, error) {
-					return dialCFHost(c, resolver, preferredDC1Host)
-				},
+	if !isTest {
+		// 2. DC1 special preferred host: kws1.pclead.co.uk
+		if dc == 1 && !cfBalance {
+			const preferredDC1Host = "kws1.pclead.co.uk"
+			if !routeCoolingDown(preferredDC1Host) {
+				candDC1 := dialCandidate{
+					name: fmt.Sprintf("cf-preferred (%s)", preferredDC1Host),
+					dial: func(c context.Context) (*wsConn, error) {
+						return dialCFHost(c, resolver, preferredDC1Host)
+					},
+				}
+				candidates = append(candidates, candDC1)
 			}
-			candidates = append(candidates, candDC1)
 		}
-	}
 
-	// 3. Fast path: cached Cloudflare route
-	if cached, ok := cfHostCache.Load(key); ok {
-		if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
-			h := host
-			candCached := dialCandidate{
-				name: fmt.Sprintf("cf-cached (%s)", h),
-				dial: func(c context.Context) (*wsConn, error) {
-					return dialCFHost(c, resolver, h)
-				},
+		// 3. Fast path: cached Cloudflare route
+		if cached, ok := cfHostCache.Load(key); ok {
+			if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
+				h := host
+				candCached := dialCandidate{
+					name: fmt.Sprintf("cf-cached (%s)", h),
+					dial: func(c context.Context) (*wsConn, error) {
+						return dialCFHost(c, resolver, h)
+					},
+				}
+				candidates = append(candidates, candCached)
 			}
-			candidates = append(candidates, candCached)
 		}
-	}
 
-	// 4. Pre-warmed route pool candidates
-	if pooled, ok := routePool.Load(key); ok {
-		if poolList, ok := pooled.([]routeCandidate); ok && len(poolList) > 0 {
-			for _, pc := range poolList {
-				if pc.host != "" && !routeCoolingDown(pc.host) {
-					h := pc.host
-					candPool := dialCandidate{
-						name: fmt.Sprintf("cf-pool (%s)", h),
-						dial: func(c context.Context) (*wsConn, error) {
-							return dialCFHost(c, resolver, h)
-						},
+		// 4. Pre-warmed route pool candidates
+		if pooled, ok := routePool.Load(key); ok {
+			if poolList, ok := pooled.([]routeCandidate); ok && len(poolList) > 0 {
+				for _, pc := range poolList {
+					if pc.host != "" && !routeCoolingDown(pc.host) {
+						h := pc.host
+						candPool := dialCandidate{
+							name: fmt.Sprintf("cf-pool (%s)", h),
+							dial: func(c context.Context) (*wsConn, error) {
+								return dialCFHost(c, resolver, h)
+							},
+						}
+						candidates = append(candidates, candPool)
 					}
-					candidates = append(candidates, candPool)
 				}
 			}
 		}
 	}
 
-	// 5. Direct Ingress IP candidates
-	targetHost := hosts[0]
-	preferredIP := preferredIngressForDC(dc)
-	candIPs := candidateIngressesForDC(dc)
+	// 5. Direct IP routes (cached DNS or fallback IPs / Test DC IPs)
 	var directIPs []netip.Addr
-	if preferredIP != "" {
-		directIPs = appendUniqueIP(directIPs, netip.MustParseAddr(preferredIP))
-	}
-	for _, cip := range candIPs {
-		if parsed, err := netip.ParseAddr(cip); err == nil {
-			directIPs = appendUniqueIP(directIPs, parsed)
+	targetHost := hosts[0]
+	wsUpgradePath := "/apiws"
+	if isTest {
+		wsUpgradePath = "/apiws_test"
+		var testIPStr string
+		switch dc {
+		case 1:
+			testIPStr = "149.154.175.10"
+		case 2:
+			testIPStr = "149.154.167.40"
+		case 3:
+			testIPStr = "149.154.175.117"
 		}
-	}
-	if preferredIP == "" && len(candIPs) == 0 {
-		for _, h := range hosts {
-			if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
-				for _, ip := range ips {
-					if ip.Is4() {
-						directIPs = appendUniqueIP(directIPs, ip)
+		if ip, err := netip.ParseAddr(testIPStr); err == nil {
+			directIPs = []netip.Addr{ip}
+		}
+	} else {
+		preferredIP := preferredIngressForDC(dc)
+		candIPs := candidateIngressesForDC(dc)
+		if preferredIP != "" {
+			directIPs = appendUniqueIP(directIPs, netip.MustParseAddr(preferredIP))
+		}
+		for _, cip := range candIPs {
+			if parsed, err := netip.ParseAddr(cip); err == nil {
+				directIPs = appendUniqueIP(directIPs, parsed)
+			}
+		}
+		if preferredIP == "" && len(candIPs) == 0 {
+			for _, h := range hosts {
+				if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
+					for _, ip := range ips {
+						if ip.Is4() {
+							directIPs = appendUniqueIP(directIPs, ip)
+						}
 					}
 				}
 			}
@@ -3319,7 +3459,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 					return nil, err
 				}
 				setConnSockOpts(raw)
-				return finishTelegramWS(attemptCtx, raw, targetHost)
+				return finishTelegramWSPath(attemptCtx, raw, targetHost, wsUpgradePath)
 			},
 		}
 		if !cfPriority {
@@ -3329,18 +3469,20 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool) (*wsConn, error) 
 		}
 	}
 
-	// 6. Cloudflare Fronting Domains
-	for _, dom := range cfDomains() {
-		d := dom
-		host := fmt.Sprintf("kws%d.%s", dc, d)
-		if !routeCoolingDown(host) {
-			candDomain := dialCandidate{
-				name: fmt.Sprintf("cf-domain (%s)", host),
-				dial: func(c context.Context) (*wsConn, error) {
-					return dialCFHost(c, resolver, host)
-				},
+	if !isTest {
+		// 6. Cloudflare Fronting Domains
+		for _, dom := range cfDomains() {
+			d := dom
+			host := fmt.Sprintf("kws%d.%s", dc, d)
+			if !routeCoolingDown(host) {
+				candDomain := dialCandidate{
+					name: fmt.Sprintf("cf-domain (%s)", host),
+					dial: func(c context.Context) (*wsConn, error) {
+						return dialCFHost(c, resolver, host)
+					},
+				}
+				candidates = append(candidates, candDomain)
 			}
-			candidates = append(candidates, candDomain)
 		}
 	}
 
@@ -3637,6 +3779,10 @@ func prepareUTLSForHTTP1(conn *utls.UConn) error {
 }
 
 func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, error) {
+	return finishTelegramWSPath(ctx, raw, host, "/apiws")
+}
+
+func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path string) (*wsConn, error) {
 	setConnSockOpts(raw)
 	sni := host
 	if customSNI := configuredFrontingSNI(); customSNI != "" {
@@ -3664,7 +3810,7 @@ func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, 
 		_ = raw.Close()
 		return nil, err
 	}
-	ws, err := websocketUpgrade(uConn, host)
+	ws, err := websocketUpgradePath(uConn, host, path)
 	if err != nil {
 		_ = uConn.Close()
 		return nil, err
@@ -3720,7 +3866,15 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 	if p := resp.Header.Get("Sec-WebSocket-Protocol"); p != "" && p != "binary" {
 		return nil, fmt.Errorf("server selected unknown subprotocol %q", p)
 	}
-	return &wsConn{conn: conn, r: r, host: host}, nil
+	cfRay := strings.TrimSpace(resp.Header.Get("CF-Ray"))
+	cfPoP := parseCFRayPoP(cfRay)
+	if cfRay != "" {
+		lastCFRay.Store(&cfRay)
+		if cfPoP != "" {
+			lastCFPoP.Store(&cfPoP)
+		}
+	}
+	return &wsConn{conn: conn, r: r, host: host, cfRay: cfRay, cfPoP: cfPoP}, nil
 }
 
 func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string) (*wsConn, error) {
@@ -3775,7 +3929,7 @@ func workerDstForDC(dc int) string {
 	}
 }
 
-func dialCFWorker(ctx context.Context, dc int, dstIP, worker string) (*wsConn, error) {
+func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool) (*wsConn, error) {
 	worker = strings.TrimSpace(worker)
 	if worker == "" {
 		return nil, errors.New("worker is not configured")
@@ -3800,7 +3954,11 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string) (*wsConn, e
 		return nil, fmt.Errorf("worker %s is in rate limit cooldown", host)
 	}
 
-	path := fmt.Sprintf("/apiws?dst=%s&dc=%d", dstIP, dc)
+	basePath := "/apiws"
+	if isTest {
+		basePath = "/apiws_test"
+	}
+	path := fmt.Sprintf("%s?dst=%s&dc=%d", basePath, dstIP, dc)
 	if query != "" {
 		path += "&" + query
 	}

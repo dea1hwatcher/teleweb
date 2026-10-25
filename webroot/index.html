@@ -1644,6 +1644,7 @@ html.no-anim *::after {
         <span>Активно: <strong id="meta-active">0</strong></span>
         <span>WS сессий: <strong id="meta-ws">0</strong></span>
         <span>Пул сокетов: <strong id="meta-pool">0</strong></span>
+        <span>CF PoP: <strong id="meta-pop">—</strong></span>
       </div>
     </div>
 
@@ -1698,6 +1699,28 @@ html.no-anim *::after {
           </span>
           <span class="li-trail">
             <input type="checkbox" class="switch" role="switch" id="swDoH" aria-label="Защищенный DNS">
+          </span>
+        </label>
+
+        <!-- HTTP/2 Media Multiplexing -->
+        <label class="list-item clickable state">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-motion"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">HTTP/2 ускорение медиа (CF H2)</span>
+          </span>
+          <span class="li-trail">
+            <input type="checkbox" class="switch" role="switch" id="swH2Media" aria-label="HTTP/2 ускорение медиа">
+          </span>
+        </label>
+
+        <!-- Telegram Test DC -->
+        <label class="list-item clickable state">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-tune"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">Тестовые датацентры (Test DC)</span>
+          </span>
+          <span class="li-trail">
+            <input type="checkbox" class="switch" role="switch" id="swForceTestDC" aria-label="Тестовые датацентры">
           </span>
         </label>
       </div>
@@ -2843,6 +2866,12 @@ function render() {
   if ($("swCFPriority")) $("swCFPriority").checked = !!(state && state.cfPriority);
   if ($("swCFBalance")) $("swCFBalance").checked = !!(state && state.cfBalance);
   if ($("swDoH")) $("swDoH").checked = !!(state && state.dohEnabled);
+  if ($("swH2Media")) $("swH2Media").checked = !!(state && state.h2MediaEnabled);
+  if ($("swForceTestDC")) $("swForceTestDC").checked = !!(state && state.forceTestDc);
+  if ($("meta-pop")) {
+    const pop = (state && state.lastCfPoP) || "";
+    $("meta-pop").textContent = pop ? pop : "—";
+  }
   if ($("selectPoolSize") && document.activeElement !== $("selectPoolSize")) {
     $("selectPoolSize").value = String(state && typeof state.poolSize === "number" ? state.poolSize : 2);
   }
@@ -3234,6 +3263,36 @@ if ($("swDoH")) {
   });
 }
 
+if ($("swH2Media")) {
+  $("swH2Media").addEventListener("change", async (e) => {
+    if (busy) return;
+    haptic(8);
+    const val = e.target.checked;
+    try {
+      state = await api("setConfig", { h2MediaEnabled: val });
+      toast(val ? "HTTP/2 ускорение медиа включено" : "HTTP/2 ускорение медиа выключено");
+    } catch (err) {
+      toast(err.message);
+    }
+    render();
+  });
+}
+
+if ($("swForceTestDC")) {
+  $("swForceTestDC").addEventListener("change", async (e) => {
+    if (busy) return;
+    haptic(8);
+    const val = e.target.checked;
+    try {
+      state = await api("setConfig", { forceTestDc: val });
+      toast(val ? "Тестовые DC Telegram форсированы" : "Тестовые DC отключены");
+    } catch (err) {
+      toast(err.message);
+    }
+    render();
+  });
+}
+
 // Save Routing Settings
 $("saveConfigBtn").addEventListener("click", async () => {
   if (busy) return;
@@ -3244,10 +3303,12 @@ $("saveConfigBtn").addEventListener("click", async () => {
   const cfPriority = $("swCFPriority").checked;
   const cfBalance = $("swCFBalance").checked;
   const dohEnabled = $("swDoH") ? $("swDoH").checked : true;
+  const h2MediaEnabled = $("swH2Media") ? $("swH2Media").checked : false;
+  const forceTestDc = $("swForceTestDC") ? $("swForceTestDC").checked : false;
   const poolSize = $("selectPoolSize") ? parseInt($("selectPoolSize").value, 10) : 2;
 
   try {
-    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance, dohEnabled, poolSize });
+    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance, dohEnabled, h2MediaEnabled, forceTestDc, poolSize });
     toast("Настройки успешно сохранены");
   } catch (e) {
     toast(e.message);

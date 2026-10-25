@@ -14,6 +14,7 @@ import (
 type poolSlot struct {
 	dc      int
 	isMedia bool
+	isTest  bool
 }
 
 type poolEntry struct {
@@ -83,11 +84,11 @@ func isPoolConnAlive(c net.Conn) bool {
 	return n == 0
 }
 
-func (p *WsPool) Get(dc int, isMedia bool) *wsConn {
+func (p *WsPool) Get(dc int, isMedia bool, isTest bool) *wsConn {
 	if p == nil || p.size.Load() <= 0 {
 		return nil
 	}
-	slot := poolSlot{dc: dc, isMedia: isMedia}
+	slot := poolSlot{dc: dc, isMedia: isMedia, isTest: isTest}
 	q, _ := p.getQueue(slot)
 	now := time.Now()
 
@@ -106,7 +107,7 @@ func (p *WsPool) Get(dc int, isMedia bool) *wsConn {
 				continue
 			}
 			p.hits.Add(1)
-			go p.Refill(dc, isMedia)
+			go p.Refill(dc, isMedia, isTest)
 			return entry.ws
 		default:
 			p.misses.Add(1)
@@ -115,7 +116,7 @@ func (p *WsPool) Get(dc int, isMedia bool) *wsConn {
 	}
 }
 
-func (p *WsPool) Refill(dc int, isMedia bool) {
+func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 	if p == nil {
 		return
 	}
@@ -123,7 +124,7 @@ func (p *WsPool) Refill(dc int, isMedia bool) {
 	if sz <= 0 {
 		return
 	}
-	slot := poolSlot{dc: dc, isMedia: isMedia}
+	slot := poolSlot{dc: dc, isMedia: isMedia, isTest: isTest}
 	q, rf := p.getQueue(slot)
 	if !rf.CompareAndSwap(0, 1) {
 		return // another refiller is already running for this slot
@@ -144,7 +145,7 @@ func (p *WsPool) Refill(dc int, isMedia bool) {
 			}
 
 			dialCtx, dialCancel := context.WithTimeout(p.ctx, 8*time.Second)
-			ws, err := dialTelegramWS(dialCtx, dc, isMedia)
+			ws, err := dialTelegramWS(dialCtx, dc, isMedia, isTest)
 			dialCancel()
 
 			if err == nil && ws != nil {
@@ -168,8 +169,8 @@ func (p *WsPool) Warmup(activeDCs []int) {
 	}
 	for _, dc := range activeDCs {
 		if dc >= 1 && dc <= 5 {
-			go p.Refill(dc, false)
-			go p.Refill(dc, true)
+			go p.Refill(dc, false, false)
+			go p.Refill(dc, true, false)
 		}
 	}
 }
@@ -234,7 +235,7 @@ func (p *WsPool) rotate() {
 
 		sz := int(p.size.Load())
 		if len(q) < sz {
-			go p.Refill(slot.dc, slot.isMedia)
+			go p.Refill(slot.dc, slot.isMedia, slot.isTest)
 		}
 		return true
 	})
