@@ -8,7 +8,6 @@
 [![Magisk](https://img.shields.io/badge/Magisk-Supported-blue.svg)](https://github.com/topjohnwu/Magisk)
 [![APatch](https://img.shields.io/badge/APatch-Supported-orange.svg)](https://github.com/bmax121/APatch)
 [![Release](https://img.shields.io/github/v/release/dea1hwatcher/teleweb?label=Release)](https://github.com/dea1hwatcher/teleweb/releases/latest)
-[![Telegram](https://img.shields.io/badge/Telegram-чат_проекта-26A5E4?logo=telegram&logoColor=white)](https://t.me/nfqws2android)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
 Модуль предназначен для прозрачного перехвата и обхода блокировок дата-центров Telegram (DC1–DC5) нативно на уровне ядра через `iptables nat REDIRECT` в зашифрованные WebSocket-сессии (WSS). В отличие от классических VPN-приложений (V2Ray, Clash, ByeDPI и др.), этот метод **не создает виртуального сетевого интерфейса (tun)**, не требует настройки прокси внутри мессенджера, не расходует дополнительный заряд батареи и не режет скорость соединения.
