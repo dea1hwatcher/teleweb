@@ -14,18 +14,15 @@
 
 ## Особенности
 
-* **Нативный перехват без VPN (`iptables REDIRECT`)**: перенаправление трафика ядра Linux только для установленных клиентов Telegram на локальный порт `17841`. Никаких VPN-интерфейсов (`tun0`), нулевой оверхед на процессор и полная совместимость с любыми внешними VPN-приложениями.
+* **Нативный перехват без VPN (`iptables REDIRECT`)**: перенаправление трафика ядра Linux только для установленных клиентов Telegram на локальный порт `17841`. Никаких VPN-интерфейсов (`tun0`), полная совместимость с любыми внешними VPN-приложениями.
 * **Пул предпрогретых сокетов (WsPool)**: фоновое поддержание пула готовых WSS-сессий (от 1 до 8 сокетов) с Keep-Alive пингами каждые 15 секунд. Обеспечивает мгновенный отклик (0 мс задержки) при открытии каналов, чатов и медиа сразу после включения экрана.
 * **Happy Eyeballs v2 Connection Racing**: параллельный запуск соединения по всем доступным маршрутам (Direct KWS, Cloudflare Domain Fronting, Custom Worker) со ступенчатым стартом (stagger 250 мс) — мгновенный выбор маршрута с минимальной задержкой рукопожатия и автоотмена проигравших попыток.
-* **Multi-DoH Racing**: параллельное защищенное разрешение доменов через Google, Cloudflare и Quad9 DoH с внутренним LRU-кэшем (до 256 записей) для полного обхода DNS-блокировок и DNS poisoning со стороны провайдеров.
+* **Multi-DoH Racing**: параллельное защищенное разрешение доменов через Google, Cloudflare и Quad9 DoH с внутренним LRU-кэшем (до 256 записей) для обхода DNS-блокировок и DNS poisoning со стороны провайдеров.
 * **HTTP/2 мультиплексирование медиа**: одновременная параллельная загрузка «тяжелых» медиа-файлов через мультиплексированные HTTP/2 потоки без создания очередей и без блокировки основного канала сообщений.
-* **Прямой TCP Pass-Through для CDN203**: выделенный сверхнизколатентный туннель для кэширующих серверов медиа CDN203 (`91.105.192.0/23`) с возможностью быстрого переключения между прямым TCP и WSS прямо в WebUI.
-* **Защита голосовых и видеозвонков (VoIP Protection)**: автоматический пропуск STUN/TURN пакетов (UDP) мимо перехвата во избежание джиттера, задержек и разрывов аудио/видеосвязи.
-* **Экспоненциальный Route Backoff**: интеллектуальный алгоритм детекции сетевых аномалий и блокировок (HTTP 429/403/5xx или ранние EOF) с динамическим карантином проблемного маршрута от 30 секунд до 30 минут.
+* **Защита голосовых и видеозвонков (VoIP Protection)**: автоматический пропуск STUN/TURN пакетов (UDP) мимо перехвата во избежание задержек и разрывов аудио/видеосвязи.
 * **Автообнаружение любых клиентов Telegram**: официальный Telegram, Telegram X, Nekogram, Forkgram, Cherrygram, Ayugram, MDGram, Swiftgram, Turbotel и любые сторонние сборки определяются автоматически по установленным пакетам.
-* **Cgroup Unfreezer & Anti-Freeze Watchdog**: защита демона `tgws` от завершения системой (`oom_score_adj = -1000`) и автоматический периодический вывод фоновых процессов клиентов Telegram из `cgroup freezer` для гарантированной доставки уведомлений в режиме глубокого сна (Doze).
-* **WebUI в стиле Material Design 3 Expressive**: светлая, тёмная и чистая AMOLED-тема, динамические Monet-цвета с обоев или спектрального круга, поддержка системного жеста Android «Назад» (`backInterceptor`), 120 FPS анимации и 100% Zero-CDN автономность.
-* **Обновления модуля из менеджера**: KernelSU, Magisk и APatch сами покажут уведомление о выходе новой версии благодаря поддержке `updateJson`.
+* **Cgroup Unfreezer & Anti-Freeze Watchdog**: защита демона `tgws` от завершения системой (`oom_score_adj = -1000`) и автоматический вывод фоновых процессов клиентов Telegram из `cgroup freezer` для гарантированной доставки уведомлений в режиме глубокого сна (Doze).
+* **WebUI Material Design 3 Expressive**: светлая, тёмная и AMOLED-тема.
 * **Управление из терминала**: консольная утилита `tgws` (`tgws status`, `tgws boot`, `tgws stop`, `tgws ensure`, `tgws check`) для полного контроля из Termux или root-оболочки.
 
 ## Требования
@@ -115,7 +112,7 @@ powershell -ExecutionPolicy Bypass -File .\build_all.ps1
 
 ## Благодарности
 
-* [amurcanov/tg-ws-proxy-android](https://github.com/amurcanov/tg-ws-proxy-android) — за вдохновение и концепцию прозрачного WSS-модуля для Android.
-* [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) — за фундаментальные исследования протокола MTProto и наработку Cloudflare-инфраструктуры.
-* [nfqws2-android](https://github.com/Dea1hwa1cher/nfqws2-android) — за эталонную архитектуру MD3 Expressive WebUI, жестовую систему и принципы интеграции с Android.
+* [amurcanov/tg-ws-proxy-android](https://github.com/amurcanov/tg-ws-proxy-android) — за концепцию прозрачного WSS-модуля для Android.
+* [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) — за исследования протокола MTProto и наработку Cloudflare-инфраструктуры.
+* [nfqws2-android](https://github.com/Dea1hwa1cher/nfqws2-android) — за идеи в MD3e WebUI.
 * Разработчикам [KernelSU](https://github.com/tiann/kernelSU), [Magisk](https://github.com/topjohnwu/magisk) и [APatch](https://github.com/bmax121/APatch).
