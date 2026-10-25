@@ -188,9 +188,24 @@ type routeDecision struct {
 }
 
 type routeHealthState struct {
-	count int
-	last  time.Time
-	until time.Time
+	count    int
+	failures int
+	last     time.Time
+	until    time.Time
+}
+
+func routeBackoff(failures int) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	d := 30 * time.Second
+	for i := 1; i < failures && d < 30*time.Minute; i++ {
+		d *= 2
+	}
+	if d > 30*time.Minute {
+		d = 30 * time.Minute
+	}
+	return d
 }
 
 type App struct {
@@ -230,6 +245,7 @@ type Status struct {
 	LastCFRay         string         `json:"lastCfRay"`
 	ForceTestDC       bool           `json:"forceTestDc"`
 	H2MediaEnabled    bool           `json:"h2MediaEnabled"`
+	DC203DirectTCP    bool           `json:"dc203DirectTcp"`
 }
 
 type apiRequest struct {
@@ -244,6 +260,7 @@ type apiRequest struct {
 	DoHEnabled     *bool   `json:"dohEnabled,omitempty"`
 	ForceTestDC    *bool   `json:"forceTestDc,omitempty"`
 	H2MediaEnabled *bool   `json:"h2MediaEnabled,omitempty"`
+	DC203DirectTCP *bool   `json:"dc203DirectTcp,omitempty"`
 }
 
 func envOr(k, d string) string {
@@ -1924,6 +1941,7 @@ func currentStatus() Status {
 		LastCFRay:         func() string { if p := lastCFRay.Load(); p != nil { return *p }; return "" }(),
 		ForceTestDC:       readForceTestDC(),
 		H2MediaEnabled:    readH2MediaEnabled(),
+		DC203DirectTCP:    readDC203DirectTCP(),
 	}
 }
 func status() Status {
@@ -2115,6 +2133,12 @@ func apiMain(arg string) {
 		}
 		if q.H2MediaEnabled != nil {
 			if err := writeH2MediaEnabled(*q.H2MediaEnabled); err != nil {
+				emitErr(err)
+				return
+			}
+		}
+		if q.DC203DirectTCP != nil {
+			if err := writeDC203DirectTCP(*q.DC203DirectTCP); err != nil {
 				emitErr(err)
 				return
 			}
@@ -2521,6 +2545,41 @@ func handleClient(c net.Conn) {
 	pipeWSTunnel(c, ws, init, id, dc, isMedia)
 }
 
+
+func readDC203DirectTCP() bool {
+	b, err := os.ReadFile(path("dc203_direct_tcp"))
+	if err != nil {
+		return true // enabled by default for maximum compatibility
+	}
+	return strings.TrimSpace(string(b)) != "0"
+}
+
+func writeDC203DirectTCP(v bool) error {
+	ensureDir()
+	val := "1"
+	if !v {
+		val = "0"
+	}
+	return os.WriteFile(path("dc203_direct_tcp"), []byte(val), 0600)
+}
+
+func tglockIngressesForDC(dc int) []string {
+	switch dc {
+	case 1:
+		return []string{"149.154.175.50"}
+	case 2:
+		return []string{"149.154.167.220", "149.154.167.51"}
+	case 3:
+		return []string{"149.154.175.100"}
+	case 4:
+		return []string{"149.154.167.220", "149.154.167.91"}
+	case 5:
+		return []string{"149.154.171.5"}
+	default:
+		return nil
+	}
+}
+
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
@@ -2544,6 +2603,10 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	}
 
 	// Dedicated native TCP pass-through for CDN203 (91.105.192.100:443)
+	if !readDC203DirectTCP() {
+		logf("conn #%d CDN203 direct TCP disabled by configuration", id)
+		return
+	}
 	d := net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	remote, err := d.Dial("tcp4", "91.105.192.100:443")
 	if err != nil {
@@ -3238,11 +3301,12 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 	state.count++
 	state.last = now
 	if state.count >= 2 {
-		state.until = now.Add(3 * time.Minute)
+		state.failures++
+		state.until = now.Add(routeBackoff(state.failures))
 		state.count = 0
 	}
 	routeHealth[host] = state
-	cooling := now.Before(state.until)
+	cooling, until, failures := now.Before(state.until), state.until, state.failures
 	routeHealthMu.Unlock()
 	if cooling {
 		cfHostCache.Delete(key)
@@ -3251,7 +3315,7 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 				routeChoice.Delete(key)
 			}
 		}
-		logf("WSS route %s temporarily excluded for 3m after repeated early EOF (age=%s up=%d down=%d): %v", host, age.Round(time.Second), up, down, err)
+		logf("WSS route %s temporarily excluded for %s after repeated early EOF (series=%d, age=%s up=%d down=%d): %v", host, time.Until(until).Round(time.Second), failures, age.Round(time.Second), up, down, err)
 	} else {
 		logf("WSS route %s: early remote EOF #%d (age=%s up=%d down=%d): %v", host, state.count, age.Round(time.Second), up, down, err)
 	}
@@ -3472,13 +3536,12 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 				directIPs = appendUniqueIP(directIPs, parsed)
 			}
 		}
-		if preferredIP == "" && len(candIPs) == 0 {
-			for _, h := range hosts {
-				if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
-					for _, ip := range ips {
-						if ip.Is4() {
-							directIPs = appendUniqueIP(directIPs, ip)
-						}
+		// Always supplement candidate list with live DNS-resolved addresses
+		for _, h := range hosts {
+			if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
+				for _, ip := range ips {
+					if ip.Is4() {
+						directIPs = appendUniqueIP(directIPs, ip)
 					}
 				}
 			}
@@ -3706,6 +3769,11 @@ func noteRouteHTTPFailure(host string, err error) {
 	now := time.Now()
 	routeHealthMu.Lock()
 	state := routeHealth[host]
+	state.failures++
+	cooldown = routeBackoff(state.failures)
+	if reason == "Timeout" && cooldown > 3*time.Minute {
+		cooldown = 3 * time.Minute
+	}
 	wasCooling := now.Before(state.until)
 	state.until = now.Add(cooldown)
 	state.last = now

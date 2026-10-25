@@ -1723,6 +1723,17 @@ html.no-anim *::after {
             <input type="checkbox" class="switch" role="switch" id="swForceTestDC" aria-label="Тестовые датацентры">
           </span>
         </label>
+
+        <!-- CDN203 Direct TCP -->
+        <label class="list-item clickable state">
+          <span class="li-icon"><svg class="icon s20"><use href="#i-hub"/></svg></span>
+          <span class="li-text">
+            <span class="li-primary">Прямой TCP-путь для CDN203</span>
+          </span>
+          <span class="li-trail">
+            <input type="checkbox" class="switch" role="switch" id="swDC203" aria-label="Прямой TCP-путь для CDN203">
+          </span>
+        </label>
       </div>
     </div>
 
@@ -2868,6 +2879,7 @@ function render() {
   if ($("swDoH")) $("swDoH").checked = !!(state && state.dohEnabled);
   if ($("swH2Media")) $("swH2Media").checked = !!(state && state.h2MediaEnabled);
   if ($("swForceTestDC")) $("swForceTestDC").checked = !!(state && state.forceTestDc);
+  if ($("swDC203")) $("swDC203").checked = state && state.dc203DirectTcp !== undefined ? !!state.dc203DirectTcp : true;
   if ($("meta-pop")) {
     const pop = (state && state.lastCfPoP) || "";
     $("meta-pop").textContent = pop ? pop : "—";
@@ -3293,6 +3305,21 @@ if ($("swForceTestDC")) {
   });
 }
 
+if ($("swDC203")) {
+  $("swDC203").addEventListener("change", async (e) => {
+    if (busy) return;
+    haptic(8);
+    const val = e.target.checked;
+    try {
+      state = await api("setConfig", { dc203DirectTcp: val });
+      toast(val ? "Прямой TCP CDN203 включен" : "Прямой TCP CDN203 отключен");
+    } catch (err) {
+      toast(err.message);
+    }
+    render();
+  });
+}
+
 // Save Routing Settings
 $("saveConfigBtn").addEventListener("click", async () => {
   if (busy) return;
@@ -3305,10 +3332,11 @@ $("saveConfigBtn").addEventListener("click", async () => {
   const dohEnabled = $("swDoH") ? $("swDoH").checked : true;
   const h2MediaEnabled = $("swH2Media") ? $("swH2Media").checked : false;
   const forceTestDc = $("swForceTestDC") ? $("swForceTestDC").checked : false;
+  const dc203DirectTcp = $("swDC203") ? $("swDC203").checked : true;
   const poolSize = $("selectPoolSize") ? parseInt($("selectPoolSize").value, 10) : 2;
 
   try {
-    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance, dohEnabled, h2MediaEnabled, forceTestDc, poolSize });
+    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance, dohEnabled, h2MediaEnabled, forceTestDc, dc203DirectTcp, poolSize });
     toast("Настройки успешно сохранены");
   } catch (e) {
     toast(e.message);

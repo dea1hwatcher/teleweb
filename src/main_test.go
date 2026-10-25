@@ -1689,10 +1689,12 @@ func TestApiMain_NewFeaturesConfig(t *testing.T) {
 
 	forceTest := true
 	h2Media := true
+	dc203Direct := false
 	req := apiRequest{
 		Cmd:            "setConfig",
 		ForceTestDC:    &forceTest,
 		H2MediaEnabled: &h2Media,
+		DC203DirectTCP: &dc203Direct,
 	}
 	b, err := json.Marshal(req)
 	if err != nil {
@@ -1707,6 +1709,9 @@ func TestApiMain_NewFeaturesConfig(t *testing.T) {
 	if !readH2MediaEnabled() {
 		t.Fatalf("expected h2MediaEnabled = true")
 	}
+	if readDC203DirectTCP() {
+		t.Fatalf("expected dc203DirectTcp = false")
+	}
 
 	st := status()
 	if !st.ForceTestDC {
@@ -1714,6 +1719,9 @@ func TestApiMain_NewFeaturesConfig(t *testing.T) {
 	}
 	if !st.H2MediaEnabled {
 		t.Fatalf("st.H2MediaEnabled is false")
+	}
+	if st.DC203DirectTCP {
+		t.Fatalf("st.DC203DirectTCP should be false")
 	}
 }
 
@@ -1790,5 +1798,67 @@ func TestWsPool_BufferedDataCheck(t *testing.T) {
 	got := pool.Get(2, false, false)
 	if got != nil {
 		t.Fatalf("expected pool to drop socket with buffered unread data, got %v", got)
+	}
+}
+
+func TestRouteBackoffCapsAtThirtyMinutes(t *testing.T) {
+	if got := routeBackoff(1); got != 30*time.Second {
+		t.Fatalf("first backoff=%s, want 30s", got)
+	}
+	if got := routeBackoff(2); got != time.Minute {
+		t.Fatalf("second backoff=%s, want 1m", got)
+	}
+	if got := routeBackoff(3); got != 2*time.Minute {
+		t.Fatalf("third backoff=%s, want 2m", got)
+	}
+	if got := routeBackoff(99); got != 30*time.Minute {
+		t.Fatalf("cap backoff=%s, want 30m", got)
+	}
+}
+
+func TestTGLockPinnedIngressCandidates(t *testing.T) {
+	want := map[int][]string{
+		1: {"149.154.175.50"},
+		2: {"149.154.167.220", "149.154.167.51"},
+		3: {"149.154.175.100"},
+		4: {"149.154.167.220", "149.154.167.91"},
+		5: {"149.154.171.5"},
+	}
+	for dc, expected := range want {
+		got := tglockIngressesForDC(dc)
+		if len(got) != len(expected) {
+			t.Fatalf("DC%d got %v, want %v", dc, got, expected)
+		}
+		for i := range got {
+			if got[i] != expected[i] {
+				t.Errorf("DC%d candidate %d=%s, want %s", dc, i, got[i], expected[i])
+			}
+		}
+	}
+}
+
+func TestDC203DirectTCP_Config(t *testing.T) {
+	dir := t.TempDir()
+	origDir := baseDir
+	baseDir = dir
+	defer func() { baseDir = origDir }()
+
+	// Default should be true
+	if !readDC203DirectTCP() {
+		t.Fatalf("expected DC203 direct TCP to be enabled by default")
+	}
+
+	if err := writeDC203DirectTCP(false); err != nil {
+		t.Fatalf("writeDC203DirectTCP(false) failed: %v", err)
+	}
+	if readDC203DirectTCP() {
+		t.Fatalf("expected DC203 direct TCP to be false after write")
+	}
+
+	if err := writeDC203DirectTCP(true); err != nil {
+		t.Fatalf("writeDC203DirectTCP(true) failed: %v", err)
+	}
+	if !readDC203DirectTCP() {
+		t.Fatalf("expected DC203 direct TCP to be true after write")
 	}
 }
