@@ -418,8 +418,31 @@ html.no-anim *::after {
   flex-direction: column;
   gap: var(--gap);
 }
-.page.active {
+.page.active, .page.leaving {
   display: flex;
+}
+.page.leaving {
+  pointer-events: none;
+  z-index: 1;
+}
+.page.peek {
+  display: flex;
+  position: fixed;
+  pointer-events: none;
+  z-index: 1;
+}
+body:not(.nav-hidden) .content {
+  touch-action: pan-y;
+}
+body.swiping {
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.swiping .state:active {
+  transform: none;
+}
+body.swiping .state::after {
+  opacity: 0 !important;
 }
 .page.enter-fade {
   animation: page-fade 250ms var(--emphasized-decelerate) both;
@@ -1636,7 +1659,7 @@ html.no-anim *::after {
   </div>
 </header>
 
-<main class="content">
+<main class="content" id="content">
   <!-- ========================================================================
        PAGE 1: СОСТОЯНИЕ (Control)
        ======================================================================== -->
@@ -2599,7 +2622,21 @@ function closeThemeSheet() {
   if (typeof scheduleSync === 'function') scheduleSync();
 }
 
-/* Sheet drag handle gesture: swipe down to dismiss or tap */
+/* ── Bottom sheet: смахивание вниз за drag handle и по телу шторки ──────── */
+function sheetScrimFollow(sheet, dy) {
+  const sc = $('theme-scrim');
+  if (!sc) return;
+  const p = Math.max(0, Math.min(1, 1 - dy / Math.max(1, sheet.offsetHeight)));
+  sc.style.transition = 'none';
+  sc.style.opacity = p;
+}
+
+function sheetScrimRelease() {
+  const sc = $('theme-scrim');
+  if (!sc) return;
+  sc.style.transition = sc.style.opacity = '';
+}
+
 function initSheetDrag(sheet) {
   if (!sheet) return;
   const zone = sheet.querySelector('.sheet-drag') || sheet;
@@ -2619,12 +2656,14 @@ function initSheetDrag(sheet) {
     dy = Math.max(0, e.clientY - y0);
     if (dy > 4) dragged = true;
     sheet.style.transform = 'translateY(' + dy + 'px)';
+    sheetScrimFollow(sheet, dy);
   });
 
   const end = () => {
     if (y0 === null) return;
     y0 = null;
     sheet.style.transition = '';
+    sheetScrimRelease();
     if (dy > Math.min(120, sheet.offsetHeight * 0.25)) {
       requestAnimationFrame(() => closeThemeSheet());
     } else {
@@ -2634,15 +2673,68 @@ function initSheetDrag(sheet) {
 
   zone.addEventListener('pointerup', end);
   zone.addEventListener('pointercancel', end);
-  zone.addEventListener('click', (e) => {
+  zone.addEventListener('click', () => {
     if (dragged) {
       dragged = false;
       return;
     }
-    if (e.target.closest('.sheet-drag')) {
+    if (zone.classList.contains('sheet-drag')) {
       closeThemeSheet();
     }
   });
+}
+
+function initSheetSwipe(sheet) {
+  if (!sheet) return;
+  let y0 = 0, lastY = 0, lastT = 0, v = 0, state = '';
+  sheet.addEventListener('touchstart', (e) => {
+    state = '';
+    if (e.touches.length !== 1 || e.target.closest('.sheet-drag')) return;
+    if (e.target.closest('.wheel, #wheel, input, select, button, .swatch-dot')) return;
+    y0 = lastY = e.touches[0].clientY;
+    lastT = e.timeStamp;
+    v = 0;
+    state = sheet.scrollTop <= 0 ? 'wait' : 'scroll';
+  }, { passive: true });
+
+  sheet.addEventListener('touchmove', (e) => {
+    if (!state || state === 'scroll') return;
+    const y = e.touches[0].clientY, dy = y - y0;
+    if (state === 'wait') {
+      if (dy < 0 || sheet.scrollTop > 0) { state = 'scroll'; return; }
+      if (e.cancelable) e.preventDefault();
+      if (dy < 8) return;
+      state = 'drag';
+      y0 = y;
+      sheet.style.transition = 'none';
+    }
+    if (e.cancelable) e.preventDefault();
+    if (e.timeStamp > lastT) {
+      v = (y - lastY) / (e.timeStamp - lastT);
+      lastY = y;
+      lastT = e.timeStamp;
+    }
+    const curDy = Math.max(0, y - y0);
+    sheet.style.transform = 'translateY(' + curDy + 'px)';
+    sheetScrimFollow(sheet, curDy);
+  }, { passive: false });
+
+  const end = (e) => {
+    if (state !== 'drag') { state = ''; return; }
+    state = '';
+    if (e.cancelable) e.preventDefault();
+    const dy = Math.max(0, lastY - y0);
+    sheet.style.transition = '';
+    sheetScrimRelease();
+    if (e.type === 'touchend' && (dy > Math.min(120, sheet.offsetHeight * 0.25) || (v > 0.5 && dy > 24))) {
+      requestAnimationFrame(() => closeThemeSheet());
+    } else {
+      sheet.style.transform = '';
+    }
+  };
+
+  sheet.addEventListener('touchend', end, { passive: false });
+  sheet.addEventListener('touchcancel', end);
 }
 
 function updateThemeSummary() {
@@ -2679,6 +2771,7 @@ function initTheme() {
   applyTheme();
   initWheel();
   initSheetDrag($('theme-sheet'));
+  initSheetSwipe($('theme-sheet'));
   updateThemeSummary();
   if (window.matchMedia) {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -2960,7 +3053,8 @@ async function refresh() {
 // Navigation / Tabs Switching & State
 let currentPage = "control";
 let lastMainPage = "control";
-const MAIN_TABS = ["control", "routing", "logs"];
+const TOP_PAGES = ["control", "routing", "logs"];
+const MAIN_TABS = TOP_PAGES;
 const PAGE_TITLES = {
   control: "Состояние",
   routing: "Маршрутизация",
@@ -2968,12 +3062,66 @@ const PAGE_TITLES = {
   settings: "Настройки"
 };
 
-function navigateTo(pageId) {
+const SLIDE_EASE = "cubic-bezier(.2, .8, .2, 1)";
+const pageScroll = {};
+let transitionCleanup = null;
+
+function pageBox(el) {
+  const r = el.getBoundingClientRect();
+  return { top: r.top, left: r.left, width: r.width };
+}
+
+function slideDuration(dist, v) {
+  const W = window.innerWidth || 360;
+  let ms = 300 * Math.min(1, Math.abs(dist) / W) + 40;
+  if (v) ms = Math.min(ms, Math.abs(dist) / Math.abs(v) * 1.6);
+  return Math.max(140, Math.min(320, ms));
+}
+
+function slidePages(from, to, opt) {
+  const dir = opt.dir, W = window.innerWidth || 360, dx = opt.dx || 0;
+  const box = opt.box || pageBox(from);
+  to.classList.remove("peek");
+  to.style.cssText = "";
+  from.style.cssText = "position:fixed;top:" + box.top + "px;left:" + box.left + "px;width:" + box.width + "px;transform:translateX(" + dx + "px)";
+  from.classList.add("leaving");
+  from.classList.remove("active");
+  to.classList.add("active");
+
+  const fromPage = from.getAttribute("data-page");
+  const toPage = to.getAttribute("data-page");
+  if (fromPage) pageScroll[fromPage] = window.scrollY;
+  window.scrollTo(0, pageScroll[toPage] || 0);
+
+  const ms = slideDuration(W - Math.abs(dx), opt.v);
+  const timing = { duration: ms, easing: SLIDE_EASE, fill: "forwards" };
+  const a1 = from.animate([
+    { transform: "translateX(" + dx + "px)" },
+    { transform: "translateX(" + (-dir * W) + "px)" }
+  ], timing);
+  const a2 = to.animate([
+    { transform: "translateX(" + (dx + dir * W) + "px)" },
+    { transform: "none" }
+  ], timing);
+
+  const cleanup = () => {
+    try { a1.cancel(); a2.cancel(); } catch (_) {}
+    from.classList.remove("leaving");
+    from.style.cssText = "";
+    if (transitionCleanup === cleanup) transitionCleanup = null;
+  };
+  transitionCleanup = cleanup;
+  a2.onfinish = cleanup;
+}
+
+function navigateTo(pageId, opt) {
   if (!pageId || !PAGE_TITLES[pageId] || currentPage === pageId) return;
   const isSettings = pageId === "settings";
+  const wasSettings = currentPage === "settings";
   if (!isSettings) {
     lastMainPage = pageId;
   }
+  const fromPage = currentPage;
   currentPage = pageId;
   haptic(8);
 
@@ -2988,12 +3136,24 @@ function navigateTo(pageId) {
     }
   });
 
-  document.querySelectorAll(".page").forEach(p => {
-    p.classList.remove("active", "enter-fade");
-    if (p.getAttribute("data-page") === pageId) {
-      p.classList.add("active", "enter-fade");
-    }
-  });
+  const fromEl = document.querySelector('.page[data-page="' + fromPage + '"]');
+  const toEl = document.querySelector('.page[data-page="' + pageId + '"]');
+
+  if (opt && opt.dir && fromEl && toEl) {
+    slidePages(fromEl, toEl, opt);
+  } else if (!isSettings && !wasSettings && fromEl && toEl && TOP_PAGES.includes(fromPage) && TOP_PAGES.includes(pageId)) {
+    const dir = TOP_PAGES.indexOf(pageId) > TOP_PAGES.indexOf(fromPage) ? 1 : -1;
+    slidePages(fromEl, toEl, { dir, dx: 0 });
+  } else {
+    document.querySelectorAll(".page").forEach(p => {
+      p.classList.remove("active", "enter-fade", "leaving", "peek");
+      p.style.cssText = "";
+      if (p.getAttribute("data-page") === pageId) {
+        p.classList.add("active", "enter-fade");
+      }
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   const backBtn = $("back-btn");
   const settingsBtn = $("settings-btn");
@@ -3008,7 +3168,6 @@ function navigateTo(pageId) {
     tEl.classList.add("swap");
   }
 
-  window.scrollTo({ top: 0, behavior: "smooth" });
   if (typeof scheduleSync === "function") scheduleSync();
 }
 
@@ -3035,7 +3194,7 @@ function handleBack(allowExit) {
     navigateBack();
     return true;
   }
-  if (currentPage !== "control") {
+  if (allowExit && currentPage !== "control") {
     navigateTo("control");
     return true;
   }
@@ -3055,18 +3214,19 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") handleBack(false);
 });
 
-let histDepth = (history.state && (history.state.tw || history.state.tg)) || 0;
+let histDepth = (history.state && (history.state.tw || history.state.nfq)) || 0;
 let histPending = false;
 let syncTimer = 0;
 
 function uiLayers() {
   let n = (currentPage !== "control") ? 1 : 0;
+  if (currentPage === "settings") n++;
   const sheet = $("theme-sheet");
   if (sheet && sheet.classList.contains("open")) n++;
   return n;
 }
 
-const canPush = () => !navigator.userActivation || navigator.userActivation.isActive;
+const canPush = () => !navigator.userActivation || navigator.userActivation.isActive || navigator.userActivation.hasBeenActive;
 
 function syncHistory() {
   syncTimer = 0;
@@ -3091,7 +3251,7 @@ function scheduleSync() {
 }
 
 window.addEventListener("popstate", (e) => {
-  const d = (e.state && (e.state.tw || e.state.tg)) || 0;
+  const d = (e.state && (e.state.tw || e.state.nfq)) || 0;
   if (histPending) {
     histPending = false;
     histDepth = d;
@@ -3141,77 +3301,154 @@ window.addEventListener("orientationchange", () => {
   setTimeout(updateKeyboard, 300);
 });
 
-/* Interactive Horizontal Tab Swipe Paging */
+/* ── Interactive Horizontal Tab Swipe Paging (nfqws2-android physics) ──── */
+const swipe = { st: 0, from: null, peek: null, peekDir: 0, dx: 0, clickGuard: 0 };
+
+function swipeBlocked(t) {
+  if (!t || !t.closest) return true;
+  if (!t.closest("#content, .content, #nav-bar, #app-bar") || t.closest(".no-swipe")) return true;
+  const ed = t.closest('input, textarea, select, [contenteditable="true"]');
+  if (ed && (ed === document.activeElement || ed.type === "range")) return true;
+  for (let el = t; el && el.id !== "content" && !el.classList.contains("content") && el.id !== "nav-bar" && el.id !== "app-bar"; el = el.parentElement) {
+    if (el.classList && el.classList.contains("log-view")) continue;
+    if (el.scrollWidth > el.clientWidth + 1) {
+      const ox = getComputedStyle(el).overflowX;
+      if (ox === "auto" || ox === "scroll") return true;
+    }
+  }
+  return false;
+}
+
+function swipeAllowed() {
+  const sheet = $("theme-sheet");
+  const isSheetOpen = sheet && sheet.classList.contains("open");
+  return currentPage !== "settings" &&
+         TOP_PAGES.includes(currentPage) &&
+         !isSheetOpen &&
+         !document.documentElement.classList.contains("scroll-locked") &&
+         !transitionCleanup;
+}
+
+function swipePeek(dir) {
+  const i = TOP_PAGES.indexOf(currentPage) + dir;
+  if (swipe.peek) {
+    swipe.peek.classList.remove("peek");
+    swipe.peek.style.cssText = "";
+    swipe.peek = null;
+  }
+  swipe.peekDir = dir;
+  if (i < 0 || i >= TOP_PAGES.length) return;
+  const el = document.querySelector('.page[data-page="' + TOP_PAGES[i] + '"]');
+  if (!el) return;
+  const b = swipe.box;
+  const top = b.top + window.scrollY - (pageScroll[TOP_PAGES[i]] || 0);
+  el.style.cssText = "top:" + top + "px;left:" + b.left + "px;width:" + b.width + "px";
+  el.classList.add("peek");
+  swipe.peek = el;
+}
+
+function swipeMove(dx) {
+  const W = window.innerWidth || 360;
+  if (!swipe.peek) dx = Math.sign(dx) * Math.min(Math.abs(dx) * 0.25, 64);
+  swipe.dx = dx;
+  if (swipe.from) swipe.from.style.transform = "translateX(" + dx + "px)";
+  if (swipe.peek) swipe.peek.style.transform = "translateX(" + (dx + swipe.peekDir * W) + "px)";
+}
+
+function swipeEnd(commit, v) {
+  const from = swipe.from, peek = swipe.peek, dx = swipe.dx, dir = swipe.peekDir;
+  document.body.classList.remove("swiping");
+  swipe.st = 0;
+  swipe.from = swipe.peek = null;
+  if (commit && peek) {
+    const targetPage = peek.getAttribute("data-page");
+    navigateTo(targetPage, { dir, dx, v, box: swipe.box });
+    return;
+  }
+  const W = window.innerWidth || 360;
+  const timing = { duration: slideDuration(dx), easing: SLIDE_EASE };
+  if (from) {
+    from.style.transform = "";
+    from.animate([
+      { transform: "translateX(" + dx + "px)" },
+      { transform: "none" }
+    ], timing);
+  }
+  if (peek) {
+    const a = peek.animate([
+      { transform: "translateX(" + (dx + dir * W) + "px)" },
+      { transform: "translateX(" + (dir * W) + "px)" }
+    ], timing);
+    a.onfinish = () => {
+      if (swipe.peek !== peek) {
+        peek.classList.remove("peek");
+        peek.style.cssText = "";
+      }
+    };
+  }
+}
+
 function initTabSwipe() {
-  let x0 = 0, y0 = 0, dx = 0, dy = 0;
-  let tracking = false, locked = false;
+  document.addEventListener("pointerdown", (e) => {
+    if (swipe.st || !e.isPrimary || (e.pointerType === "mouse" && e.button !== 0)) return;
+    if (!swipeAllowed() || swipeBlocked(e.target)) return;
+    if (e.pointerType !== "mouse" && (e.clientX < 12 || e.clientX > (window.innerWidth - 12))) return;
+    swipe.st = 1;
+    swipe.id = e.pointerId;
+    swipe.x0 = e.clientX;
+    swipe.y0 = e.clientY;
+    swipe.trail = [[e.timeStamp, e.clientX]];
+  });
 
-  window.addEventListener("pointerdown", (e) => {
-    if (!e.isPrimary) return;
-    if (e.target.closest("input, textarea, select, pre, .sheet, .scrim, #wheel, .wheel, button, .swatch-dot, .switch")) return;
-    
-    // Ignore extreme edges (24px) for Android system back gesture
-    const edgeMargin = 24;
-    if (e.clientX < edgeMargin || e.clientX > window.innerWidth - edgeMargin) return;
-
-    // Do not swipe tabs when bottom sheet modal is open
-    const sheet = $("theme-sheet");
-    if (sheet && sheet.classList.contains("open")) return;
-
-    x0 = e.clientX;
-    y0 = e.clientY;
-    dx = 0;
-    dy = 0;
-    tracking = true;
-    locked = false;
-  }, { passive: true });
-
-  window.addEventListener("pointermove", (e) => {
-    if (!tracking) return;
-    dx = e.clientX - x0;
-    dy = e.clientY - y0;
-    const absX = Math.abs(dx);
-    const absY = Math.abs(dy);
-
-    if (!locked) {
-      // Cancel early if vertical movement dominates (>16px) to maintain 120 FPS vertical scrolling
-      if (absY > 16 && absY >= absX) {
-        tracking = false;
-        return;
-      }
-      // Lock horizontal if dominance is clear (>12px and >1.5x vertical)
-      if (absX > 12 && absX > 1.5 * absY) {
-        locked = true;
-      }
+  document.addEventListener("pointermove", (e) => {
+    if (!swipe.st || e.pointerId !== swipe.id) return;
+    const dx = e.clientX - swipe.x0, dy = e.clientY - swipe.y0;
+    if (swipe.st === 1) {
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+      if (ady > 16 && ady > adx * 1.2) { swipe.st = 0; return; }
+      if (adx < 10 || adx < ady * 0.9) return;
+      swipe.st = 2;
+      swipe.from = document.querySelector(".page.active");
+      if (!swipe.from) { swipe.st = 0; return; }
+      swipe.box = pageBox(swipe.from);
+      swipe.slop = Math.sign(dx) * 10;
+      swipe.peekDir = 0;
+      document.body.classList.add("swiping");
     }
-  }, { passive: true });
+    const d = dx - swipe.slop;
+    const dir = d < 0 ? 1 : -1;
+    if (dir !== swipe.peekDir) swipePeek(dir);
+    swipeMove(d);
+    swipe.trail.push([e.timeStamp, e.clientX]);
+    if (swipe.trail.length > 6) swipe.trail.shift();
+  });
 
-  const onEnd = () => {
-    if (!tracking) return;
-    tracking = false;
-    if (!locked) return;
-    locked = false;
+  function swipeRelease(e, cancel) {
+    if (!swipe.st || e.pointerId !== swipe.id) return;
+    if (swipe.st === 1) { swipe.st = 0; return; }
+    const tr = swipe.trail, a = tr[0], b = tr[tr.length - 1];
+    const v = b[0] > a[0] ? (b[1] - a[1]) / (b[0] - a[0]) : 0;
+    const dx = swipe.dx, W = window.innerWidth || 360;
+    const fling = Math.abs(v) > 0.25 && Math.sign(v) === Math.sign(dx) && Math.abs(dx) > 16;
+    const commitDist = Math.max(48, Math.min(W * 0.22, 120));
+    swipeEnd(!cancel && (Math.abs(dx) > commitDist || fling), fling ? v : 0);
+    swipe.clickGuard = e.timeStamp + 60;
+  }
 
-    const threshold = 48; // minimum swipe distance
-    if (currentPage !== "settings") {
-      if (dx < -threshold) {
-        // Swiped Left -> Next tab
-        const idx = MAIN_TABS.indexOf(currentPage);
-        if (idx !== -1 && idx < MAIN_TABS.length - 1) {
-          navigateTo(MAIN_TABS[idx + 1]);
-        }
-      } else if (dx > threshold) {
-        // Swiped Right -> Previous tab
-        const idx = MAIN_TABS.indexOf(currentPage);
-        if (idx > 0) {
-          navigateTo(MAIN_TABS[idx - 1]);
-        }
-      }
+  document.addEventListener("click", (ev) => {
+    if (swipe.clickGuard && ev.timeStamp <= swipe.clickGuard) {
+      ev.stopPropagation();
+      ev.preventDefault();
     }
-  };
+    swipe.clickGuard = 0;
+  }, true);
 
-  window.addEventListener("pointerup", onEnd, { passive: true });
-  window.addEventListener("pointercancel", onEnd, { passive: true });
+  document.addEventListener("touchmove", (e) => {
+    if (swipe.st === 2 && e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener("pointerup", (e) => swipeRelease(e, false));
+  document.addEventListener("pointercancel", (e) => swipeRelease(e, true));
 }
 
 // Hero Toggle (Start / Stop)
