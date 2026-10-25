@@ -13,8 +13,6 @@
 
 Модуль предназначен для прозрачного перехвата и обхода блокировок дата-центров Telegram (DC1–DC5) нативно на уровне ядра через `iptables nat REDIRECT` в зашифрованные WebSocket-сессии (WSS). В отличие от классических VPN-приложений (V2Ray, Clash, ByeDPI и др.), этот метод **не создает виртуального сетевого интерфейса (tun)**, не требует настройки прокси внутри мессенджера, не расходует дополнительный заряд батареи и не режет скорость соединения.
 
-Вопросы, новости и обсуждение — в Telegram-чате проекта: **[t.me/nfqws2android](https://t.me/nfqws2android)**
-
 ## Особенности
 
 * **Нативный перехват без VPN (`iptables REDIRECT`)**: перенаправление трафика ядра Linux только для установленных клиентов Telegram на локальный порт `17841`. Никаких VPN-интерфейсов (`tun0`), нулевой оверхед на процессор и полная совместимость с любыми внешними VPN-приложениями.
@@ -119,6 +117,5 @@ powershell -ExecutionPolicy Bypass -File .\build_all.ps1
 
 * [amurcanov/tg-ws-proxy-android](https://github.com/amurcanov/tg-ws-proxy-android) — за вдохновение и концепцию прозрачного WSS-модуля для Android.
 * [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) — за фундаментальные исследования протокола MTProto и наработку Cloudflare-инфраструктуры.
-* [bol-van](https://github.com/bol-van) — за легендарный проект zapret и глубокие идеи перехвата сетевого стека в ядре Linux.
 * [nfqws2-android](https://github.com/Dea1hwa1cher/nfqws2-android) — за эталонную архитектуру MD3 Expressive WebUI, жестовую систему и принципы интеграции с Android.
 * Разработчикам [KernelSU](https://github.com/tiann/kernelSU), [Magisk](https://github.com/topjohnwu/magisk) и [APatch](https://github.com/bmax121/APatch).
