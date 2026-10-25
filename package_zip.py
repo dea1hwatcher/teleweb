@@ -29,6 +29,7 @@ FILES_TO_PACK = [
     "uninstall.sh",
     "LICENSE",
     "README.md",
+    "icon.png",
     
     # Webroot UI
     "webroot/index.html",
