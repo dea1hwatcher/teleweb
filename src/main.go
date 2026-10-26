@@ -1678,10 +1678,20 @@ func stopPID(pid int) {
 		_ = killProcess(pid)
 		for i := 0; i < 20; i++ {
 			if !isPidAlive(pid) {
-				break
+				return
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		// Grace period exhausted: force-kill so a stuck daemon cannot keep the
+		// listen port forever while the supervisor respawns a failing successor.
+		_ = killProcessForce(pid)
+		for i := 0; i < 10; i++ {
+			if !isPidAlive(pid) {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		logf("stop: PID %d survived SIGKILL; leaving it to the kernel", pid)
 	}
 }
 
@@ -1972,6 +1982,7 @@ func status() Status {
 		DoHEnabled:     readDoHEnabled(),
 		ForceTestDC:    readForceTestDC(),
 		H2MediaEnabled: readH2MediaEnabled(),
+		DC203DirectTCP: readDC203DirectTCP(),
 		LastCFPoP:      func() string { if p := lastCFPoP.Load(); p != nil { return *p }; return "" }(),
 		LastCFRay:      func() string { if p := lastCFRay.Load(); p != nil { return *p }; return "" }(),
 	}
@@ -2243,6 +2254,13 @@ func serve() {
 	if globalWsPool != nil {
 		globalWsPool.Warmup([]int{1, 2, 4})
 	}
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for range t.C {
+			sweepRouteCaches()
+		}
+	}()
 	ln, e := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort))
 	if e != nil {
 		logf("failed to open local port: %v", e)
@@ -3243,6 +3261,58 @@ func routeCoolingDown(host string) bool {
 	return ok && time.Now().Before(state.until)
 }
 
+// clearRouteHealth resets the failure history after a successful dial so a
+// single later timeout cannot inherit a fully grown 30-minute backoff.
+func clearRouteHealth(host string) {
+	if host == "" {
+		return
+	}
+	routeHealthMu.Lock()
+	delete(routeHealth, host)
+	routeHealthMu.Unlock()
+}
+
+// sweepRouteCaches bounds the host-keyed health maps. Keys accumulate as the
+// hourly-updated Cloudflare domain list drifts, so stale entries must be
+// evicted or the maps grow without bound for the lifetime of the daemon.
+func sweepRouteCaches() {
+	now := time.Now()
+	routeHealthMu.Lock()
+	for host, state := range routeHealth {
+		if state.until.Before(now.Add(-10 * time.Minute)) {
+			delete(routeHealth, host)
+		}
+	}
+	for len(routeHealth) > 256 {
+		var oldestHost string
+		var oldest time.Time
+		for host, state := range routeHealth {
+			if oldestHost == "" || state.until.Before(oldest) {
+				oldestHost, oldest = host, state.until
+			}
+		}
+		if oldestHost == "" {
+			break
+		}
+		delete(routeHealth, oldestHost)
+	}
+	routeHealthMu.Unlock()
+
+	h2FailsMu.Lock()
+	for host, until := range h2Fails {
+		if until.Before(now) {
+			delete(h2Fails, host)
+		}
+	}
+	for len(h2Fails) > 256 {
+		for host := range h2Fails {
+			delete(h2Fails, host)
+			break
+		}
+	}
+	h2FailsMu.Unlock()
+}
+
 // Repeated early remote EOFs indicate a frontend that accepts the WebSocket
 // upgrade but does not sustain MTProto traffic. Cool it down briefly so the
 // next Telegram reconnect can select another WSS frontend. One EOF alone is
@@ -3259,6 +3329,7 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 	}
 	state.count++
 	state.last = now
+	series := state.count // log value: position within the current EOF series
 	if state.count >= 2 {
 		state.failures++
 		state.until = now.Add(routeBackoff(state.failures))
@@ -3271,7 +3342,7 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 		cfHostCache.Delete(key)
 		logf("WSS route %s temporarily excluded for %s after repeated early EOF (series=%d, age=%s up=%d down=%d): %v", host, time.Until(until).Round(time.Second), failures, age.Round(time.Second), up, down, err)
 	} else {
-		logf("WSS route %s: early remote EOF #%d (age=%s up=%d down=%d): %v", host, state.count, age.Round(time.Second), up, down, err)
+		logf("WSS route %s: early remote EOF #%d (age=%s up=%d down=%d): %v", host, series, age.Round(time.Second), up, down, err)
 	}
 }
 
@@ -3669,6 +3740,7 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 			ws, e = finishTelegramWS(attemptCtx, raw, host)
 			if e == nil {
 				cancel()
+				clearRouteHealth(host)
 				return ws, nil
 			}
 			noteRouteHTTPFailure(host, e)
@@ -3996,7 +4068,13 @@ func (w *wsConn) writeFrame(op byte, p []byte) error {
 		payload[i] = p[i] ^ mask[i&3]
 	}
 
-	_ = w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	// Large media frames on a slow uplink can take well over 10s to flush;
+	// scale the deadline with payload size so healthy transfers are not cut.
+	writeTimeout := 10 * time.Second
+	if n > 1<<20 {
+		writeTimeout = 60 * time.Second
+	}
+	_ = w.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	err := writeFull(w.conn, header)
 	if err == nil {
 		err = writeFull(w.conn, payload)

@@ -1861,3 +1861,77 @@ func TestKnownDCOverridesLearnedNoise(t *testing.T) {
 		t.Fatalf("mediaForIP(%s) = false; want true", targetIP)
 	}
 }
+
+func TestRouteHealthResetOnSuccess(t *testing.T) {
+	host := "health-reset.example"
+	clearRouteHealth(host)
+	defer clearRouteHealth(host)
+
+	for i := 0; i < 10; i++ {
+		noteRouteHTTPFailure(host, errors.New("HTTP 500: boom"))
+	}
+	routeHealthMu.Lock()
+	failuresBefore := routeHealth[host].failures
+	routeHealthMu.Unlock()
+	if failuresBefore < 10 {
+		t.Fatalf("expected accumulated failures, got %d", failuresBefore)
+	}
+	if !routeCoolingDown(host) {
+		t.Fatal("host must be cooling down after repeated 500s")
+	}
+
+	// A successful dial resets the history: the next single failure must
+	// produce the base 30s backoff, not the accumulated 30-minute one.
+	clearRouteHealth(host)
+	if routeCoolingDown(host) {
+		t.Fatal("host must be immediately usable after health reset")
+	}
+	noteRouteHTTPFailure(host, errors.New("HTTP 500: boom"))
+	routeHealthMu.Lock()
+	state := routeHealth[host]
+	routeHealthMu.Unlock()
+	if state.failures != 1 {
+		t.Fatalf("expected failures reset to 1 after clear, got %d", state.failures)
+	}
+	if backoff := time.Until(state.until); backoff > routeBackoff(1)+5*time.Second {
+		t.Fatalf("expected base backoff after reset, got %s", backoff.Round(time.Second))
+	}
+}
+
+func TestSweepRouteCachesRemovesStale(t *testing.T) {
+	stale := "sweep-stale.example"
+	fresh := "sweep-fresh.example"
+	clearRouteHealth(stale)
+	clearRouteHealth(fresh)
+	defer clearRouteHealth(stale)
+	defer clearRouteHealth(fresh)
+
+	noteRouteHTTPFailure(stale, errors.New("HTTP 403: forbidden"))
+	// Make the fresh entry outlive the sweep window.
+	routeHealthMu.Lock()
+	st := routeHealth[fresh]
+	st.until = time.Now().Add(2 * time.Hour)
+	routeHealth[fresh] = st
+	routeHealthMu.Unlock()
+
+	// Age both entries past the sweep horizon is not possible directly;
+	// instead rewind the stale entry's until far into the past.
+	routeHealthMu.Lock()
+	st = routeHealth[stale]
+	st.until = time.Now().Add(-1 * time.Hour)
+	routeHealth[stale] = st
+	routeHealthMu.Unlock()
+
+	sweepRouteCaches()
+
+	routeHealthMu.Lock()
+	_, staleGone := routeHealth[stale]
+	_, freshKept := routeHealth[fresh]
+	routeHealthMu.Unlock()
+	if staleGone {
+		t.Errorf("stale entry must be evicted by sweep")
+	}
+	if !freshKept {
+		t.Errorf("active entry must survive the sweep")
+	}
+}

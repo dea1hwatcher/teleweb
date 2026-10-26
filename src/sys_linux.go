@@ -32,6 +32,15 @@ func killProcess(pid int) error {
 	return syscall.Kill(pid, syscall.SIGTERM)
 }
 
+// killProcessForce is the last-resort SIGKILL used by stopPID after the grace
+// period, so a stuck daemon cannot squat the listen port forever.
+func killProcessForce(pid int) error {
+	if pid <= 1 {
+		return nil
+	}
+	return syscall.Kill(pid, syscall.SIGKILL)
+}
+
 func notifySignals(ch chan<- os.Signal) {
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 }

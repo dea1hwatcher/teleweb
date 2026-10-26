@@ -29,8 +29,13 @@ update_description() { # running | stopped | error
   esac
   d=$(printf '%s' "$d | $DESC_BASE" | tr -d '\n\r')
   tmp="/data/adb/teleweb/module.prop.$$"
-  awk -v d="$d" 'BEGIN { done = 0 } /^description=/ { print "description=" d; done = 1; next } { print }
-    END { if (!done) print "description=" d }' "$prop" > "$tmp" 2>/dev/null && cat "$tmp" > "$prop" 2>/dev/null
+  # Atomic rename instead of in-place truncate: the Go supervisor updates the
+  # same file concurrently, and a mid-write cat could clobber its content.
+  if awk -v d="$d" 'BEGIN { done = 0 } /^description=/ { print "description=" d; done = 1; next } { print }
+    END { if (!done) print "description=" d }' "$prop" > "$tmp" 2>/dev/null; then
+    chmod 0644 "$tmp" 2>/dev/null
+    mv -f "$tmp" "$prop" 2>/dev/null
+  fi
   rm -f "$tmp" 2>/dev/null
   return 0
 }

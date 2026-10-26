@@ -35,6 +35,12 @@ func killProcess(pid int) error {
 	return p.Kill()
 }
 
+// killProcessForce mirrors killProcess on non-Linux platforms where p.Kill()
+// is already unconditional.
+func killProcessForce(pid int) error {
+	return killProcess(pid)
+}
+
 func notifySignals(ch chan<- os.Signal) {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 }
