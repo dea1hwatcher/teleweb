@@ -59,10 +59,6 @@ var (
 	appCache         []App
 	uidCache         []int
 	cfHostCache      sync.Map // route key -> last working Cloudflare-fronted KWS hostname
-	directFailUntil  sync.Map // route key -> time.Time; avoid repeating known-dead direct path every connection
-	routeChoice      sync.Map // route key -> measured route decision (refreshed every 6 h)
-	routeProbeAt     sync.Map // route key -> last background probe start
-	routePool        sync.Map // route key -> []routeCandidate restored from an older cache
 	routeCacheMu     sync.Mutex
 	routeCacheDisk   = map[string]persistedRoute{}
 	routeHealthMu    sync.Mutex
@@ -82,20 +78,9 @@ var (
 	}
 )
 
-type routeCandidate struct {
-	host    string
-	latency time.Duration
-}
-
-type persistedCandidate struct {
-	Host      string `json:"host"`
-	LatencyNS int64  `json:"latency_ns"`
-}
-
 type persistedRoute struct {
-	Host       string               `json:"host,omitempty"`
-	Candidates []persistedCandidate `json:"candidates,omitempty"`
-	UpdatedAt  time.Time            `json:"updated_at"`
+	Host      string    `json:"host,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // loadRouteCache restores the last known-good routes across daemon restarts.
@@ -111,58 +96,31 @@ func loadRouteCache() {
 		return
 	}
 	n := 0
+	routeCacheMu.Lock()
 	for key, entry := range saved {
 		if entry.Host != "" {
 			cfHostCache.Store(key, entry.Host)
-			routeChoice.Store(key, routeDecision{preferCF: true, host: entry.Host, expires: time.Now().Add(6 * time.Hour)})
 			n++
-		}
-		if len(entry.Candidates) > 0 {
-			candidates := make([]routeCandidate, 0, len(entry.Candidates))
-			for _, candidate := range entry.Candidates {
-				if candidate.Host != "" {
-					candidates = append(candidates, routeCandidate{host: candidate.Host, latency: time.Duration(candidate.LatencyNS)})
-				}
-			}
-			if len(candidates) > 0 {
-				routePool.Store(key, candidates)
-			}
 		}
 		routeCacheDisk[key] = entry
 	}
+	routeCacheMu.Unlock()
 	if n > 0 {
 		logf("route-cache: restored previously successful WSS routes for %d DC/media profiles", n)
 	}
 }
 
-func saveRouteCache(key, host string, candidates []routeCandidate) {
+func saveRouteCache(key, host string) {
+	if host == "" {
+		return
+	}
 	routeCacheMu.Lock()
 	defer routeCacheMu.Unlock()
 	entry := routeCacheDisk[key]
-	changed := false
-	if host != "" && entry.Host != host {
-		entry.Host = host
-		changed = true
-	}
-	if candidates != nil {
-		if len(entry.Candidates) != len(candidates) {
-			changed = true
-		} else {
-			for i := range candidates {
-				if entry.Candidates[i].Host != candidates[i].host {
-					changed = true
-					break
-				}
-			}
-		}
-		entry.Candidates = make([]persistedCandidate, 0, len(candidates))
-		for _, candidate := range candidates {
-			entry.Candidates = append(entry.Candidates, persistedCandidate{Host: candidate.host, LatencyNS: int64(candidate.latency)})
-		}
-	}
-	if !changed {
+	if entry.Host == host {
 		return
 	}
+	entry.Host = host
 	entry.UpdatedAt = time.Now()
 	routeCacheDisk[key] = entry
 	b, err := json.MarshalIndent(routeCacheDisk, "", "  ")
@@ -179,12 +137,6 @@ func saveRouteCache(key, host string, candidates []routeCandidate) {
 	if err := os.Rename(tmp, path("route-cache.json")); err != nil {
 		_ = os.Remove(tmp)
 	}
-}
-
-type routeDecision struct {
-	preferCF bool
-	host     string
-	expires  time.Time
 }
 
 type routeHealthState struct {
@@ -2598,23 +2550,6 @@ func writeDC203DirectTCP(v bool) error {
 	return os.WriteFile(path("dc203_direct_tcp"), []byte(val), 0600)
 }
 
-func tglockIngressesForDC(dc int) []string {
-	switch dc {
-	case 1:
-		return []string{"149.154.175.50"}
-	case 2:
-		return []string{"149.154.167.220", "149.154.167.51"}
-	case 3:
-		return []string{"149.154.175.100"}
-	case 4:
-		return []string{"149.154.167.220", "149.154.167.91"}
-	case 5:
-		return []string{"149.154.171.5"}
-	default:
-		return nil
-	}
-}
-
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
@@ -3037,14 +2972,6 @@ func androidDNSResolver() *net.Resolver {
 	}}
 }
 
-func wsHostForDC(dc int) string {
-	hosts := wsHostsForDC(dc, false)
-	if len(hosts) == 0 {
-		return ""
-	}
-	return hosts[0]
-}
-
 func wsHostsForDC(dc int, isMedia bool) []string {
 	if dc < 1 || dc > 5 {
 		return nil
@@ -3342,11 +3269,6 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 	routeHealthMu.Unlock()
 	if cooling {
 		cfHostCache.Delete(key)
-		if v, ok := routeChoice.Load(key); ok {
-			if choice, ok := v.(routeDecision); ok && choice.host == host {
-				routeChoice.Delete(key)
-			}
-		}
 		logf("WSS route %s temporarily excluded for %s after repeated early EOF (series=%d, age=%s up=%d down=%d): %v", host, time.Until(until).Round(time.Second), failures, age.Round(time.Second), up, down, err)
 	} else {
 		logf("WSS route %s: early remote EOF #%d (age=%s up=%d down=%d): %v", host, state.count, age.Round(time.Second), up, down, err)
@@ -3520,23 +3442,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 			}
 		}
 
-		// 4. Pre-warmed route pool candidates
-		if pooled, ok := routePool.Load(key); ok {
-			if poolList, ok := pooled.([]routeCandidate); ok && len(poolList) > 0 {
-				for _, pc := range poolList {
-					if pc.host != "" && !routeCoolingDown(pc.host) {
-						h := pc.host
-						candPool := dialCandidate{
-							name: fmt.Sprintf("cf-pool (%s)", h),
-							dial: func(c context.Context) (*wsConn, error) {
-								return dialCFHost(c, resolver, h)
-							},
-						}
-						candidates = append(candidates, candPool)
-					}
-				}
-			}
-		}
+		// 4. Pre-warmed route pool candidates: see cf-cached fast path above.
 	}
 
 	// 5. Direct IP routes (cached DNS or fallback IPs / Test DC IPs)
@@ -3648,107 +3554,13 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 				h := winningRoute[start+1 : start+end]
 				if !cfBalance && h != "" && !strings.HasPrefix(winningRoute, "cf-worker") {
 					cfHostCache.Store(key, h)
-					routeChoice.Store(key, routeDecision{preferCF: true, host: h, expires: time.Now().Add(6 * time.Hour)})
-					saveRouteCache(key, h, nil)
+					saveRouteCache(key, h)
 				}
 			}
 		}
-	} else if strings.HasPrefix(winningRoute, "direct") {
-		directFailUntil.Delete(key)
 	}
 
 	return ws, nil
-}
-
-// maybeProbeCloudflare mirrors the original module's path measurement: probe
-// Cloudflare-fronted KWS hosts off the live path, cache the fastest, and prefer
-// it only if it is at least one-third faster than direct. Re-measure every 6 h.
-func maybeProbeCloudflare(key string, dc int, isMedia bool, directDuration time.Duration) {
-	now := time.Now()
-	if v, ok := routeProbeAt.Load(key); ok {
-		if t, ok := v.(time.Time); ok && now.Sub(t) < 6*time.Hour {
-			return
-		}
-	}
-	routeProbeAt.Store(key, now)
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
-	defer cancel()
-	resolver := androidDNSResolver()
-	domains := cfDomains()
-	if len(domains) > 8 {
-		domains = domains[:8]
-	}
-	type result struct {
-		host    string
-		ws      *wsConn
-		elapsed time.Duration
-		err     error
-	}
-	ch := make(chan result, len(domains))
-	for _, domain := range domains {
-		host := fmt.Sprintf("kws%d.%s", dc, domain)
-		go func(h string) {
-			started := time.Now()
-			ws, err := dialCFHost(ctx, resolver, h)
-			select {
-			case ch <- result{host: h, ws: ws, elapsed: time.Since(started), err: err}:
-			case <-ctx.Done():
-				if ws != nil {
-					_ = ws.Close()
-				}
-			}
-		}(host)
-	}
-	var best result
-	var poolCandidates []routeCandidate
-	for i := 0; i < len(domains); i++ {
-		select {
-		case r := <-ch:
-			if r.ws != nil && r.err == nil {
-				_ = r.ws.Close()
-				poolCandidates = append(poolCandidates, routeCandidate{host: r.host, latency: r.elapsed})
-				if best.host == "" || r.elapsed < best.elapsed {
-					best = r
-				}
-			}
-		case <-ctx.Done():
-			go func(c chan result, rem int) {
-				for rem > 0 {
-					select {
-					case res := <-c:
-						rem--
-						if res.ws != nil {
-							_ = res.ws.Close()
-						}
-					case <-time.After(2 * time.Second):
-						return
-					}
-				}
-			}(ch, len(domains)-i)
-			i = len(domains)
-		}
-	}
-	if len(poolCandidates) > 0 {
-		routePool.Store(key, poolCandidates)
-	}
-	if best.host == "" {
-		routeChoice.Store(key, routeDecision{preferCF: false, expires: time.Now().Add(6 * time.Hour)})
-		logf("DC%d media=%t route selection: CF unresponsive, keeping direct", dc, isMedia)
-		return
-	}
-	prefer := best.elapsed*3 < directDuration*2
-	routeChoice.Store(key, routeDecision{preferCF: prefer, host: best.host, expires: time.Now().Add(6 * time.Hour)})
-	cfHostCache.Store(key, best.host)
-	if prefer {
-		saveRouteCache(key, best.host, poolCandidates)
-	} else if len(poolCandidates) > 0 {
-		saveRouteCache(key, "", poolCandidates)
-	}
-	pick := "direct"
-	if prefer {
-		pick = "Cloudflare"
-	}
-	logf("DC%d media=%t route selection: direct=%dms, CF %s=%dms, choice=%s", dc, isMedia, directDuration.Milliseconds(), best.host, best.elapsed.Milliseconds(), pick)
 }
 
 func isTimeout(err error) bool {
@@ -3817,11 +3629,6 @@ func noteRouteHTTPFailure(host string, err error) {
 			k := routeKey(dc, media)
 			if v, ok := cfHostCache.Load(k); ok && v == host {
 				cfHostCache.Delete(k)
-			}
-			if v, ok := routeChoice.Load(k); ok {
-				if choice, ok := v.(routeDecision); ok && choice.host == host {
-					routeChoice.Delete(k)
-				}
 			}
 		}
 	}
@@ -3956,10 +3763,6 @@ func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path s
 	}
 	_ = uConn.SetDeadline(time.Time{})
 	return ws, nil
-}
-
-func websocketUpgrade(conn net.Conn, host string) (*wsConn, error) {
-	return websocketUpgradePath(conn, host, "/apiws")
 }
 
 func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, error) {

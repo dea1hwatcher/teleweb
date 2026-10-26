@@ -60,12 +60,13 @@ func TestWebSocketHostForDC(t *testing.T) {
 		5: "kws5.web.telegram.org",
 	}
 	for dc, host := range want {
-		if got := wsHostForDC(dc); got != host {
-			t.Errorf("wsHostForDC(%d)=%q, want %q", dc, got, host)
+		got := wsHostsForDC(dc, false)
+		if len(got) != 2 || got[0] != host {
+			t.Errorf("wsHostsForDC(%d)=%v, want primary %q first", dc, got, host)
 		}
 	}
-	if got := wsHostForDC(0); got != "" {
-		t.Errorf("invalid DC host=%q, want empty", got)
+	if got := wsHostsForDC(0, false); got != nil {
+		t.Errorf("invalid DC hosts=%v, want nil", got)
 	}
 	if got := wsHostsForDC(4, true); len(got) != 2 || got[0] != "kws4-1.web.telegram.org" || got[1] != "kws4.web.telegram.org" {
 		t.Errorf("media hosts=%v, want kws4-1 then kws4", got)
@@ -345,12 +346,12 @@ func TestWebSocketUpgradeHandshake(t *testing.T) {
 		_, err = fmt.Fprintf(server, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\nSec-WebSocket-Protocol: binary\r\n\r\n", accept)
 		serverErr <- err
 	}()
-	ws, err := websocketUpgrade(client, "pluto.web.telegram.org")
+	ws, err := websocketUpgradePath(client, "pluto.web.telegram.org", "/apiws")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ws == nil {
-		t.Fatal("websocketUpgrade returned nil")
+		t.Fatal("websocketUpgradePath returned nil")
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
@@ -640,12 +641,8 @@ func TestRouteCachePersistence(t *testing.T) {
 
 	testKey := "2"
 	testHost := "kws2.testpersist.co.uk"
-	testCandidates := []routeCandidate{
-		{host: "kws2.testpersist.co.uk", latency: 45 * time.Millisecond},
-		{host: "kws2.fallbackpersist.co.uk", latency: 70 * time.Millisecond},
-	}
 
-	saveRouteCache(testKey, testHost, testCandidates)
+	saveRouteCache(testKey, testHost)
 
 	cacheFile := filepath.Join(tmpDir, "route-cache.json")
 	if _, err := os.Stat(cacheFile); err != nil {
@@ -654,8 +651,6 @@ func TestRouteCachePersistence(t *testing.T) {
 
 	// Clear memory state before load
 	cfHostCache.Delete(testKey)
-	routeChoice.Delete(testKey)
-	routePool.Delete(testKey)
 
 	loadRouteCache()
 
@@ -664,16 +659,18 @@ func TestRouteCachePersistence(t *testing.T) {
 		t.Fatalf("expected cached host %s, got %#v", testHost, v)
 	}
 
-	pooled, ok := routePool.Load(testKey)
-	if !ok {
-		t.Fatalf("expected routePool for %s", testKey)
+	// saveRouteCache must be a no-op for the same host (no rewrite churn)
+	infoBefore, err := os.Stat(cacheFile)
+	if err != nil {
+		t.Fatal(err)
 	}
-	candidates, ok := pooled.([]routeCandidate)
-	if !ok || len(candidates) != 2 {
-		t.Fatalf("expected 2 candidates in routePool, got %#v", pooled)
+	saveRouteCache(testKey, testHost)
+	infoAfter, err := os.Stat(cacheFile)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if candidates[0].host != testCandidates[0].host || candidates[0].latency != testCandidates[0].latency {
-		t.Errorf("candidate 0 mismatch: %#v vs %#v", candidates[0], testCandidates[0])
+	if !infoAfter.ModTime().Equal(infoBefore.ModTime()) {
+		t.Errorf("saveRouteCache rewrote unchanged cache file")
 	}
 }
 
@@ -1813,27 +1810,6 @@ func TestRouteBackoffCapsAtThirtyMinutes(t *testing.T) {
 	}
 	if got := routeBackoff(99); got != 30*time.Minute {
 		t.Fatalf("cap backoff=%s, want 30m", got)
-	}
-}
-
-func TestTGLockPinnedIngressCandidates(t *testing.T) {
-	want := map[int][]string{
-		1: {"149.154.175.50"},
-		2: {"149.154.167.220", "149.154.167.51"},
-		3: {"149.154.175.100"},
-		4: {"149.154.167.220", "149.154.167.91"},
-		5: {"149.154.171.5"},
-	}
-	for dc, expected := range want {
-		got := tglockIngressesForDC(dc)
-		if len(got) != len(expected) {
-			t.Fatalf("DC%d got %v, want %v", dc, got, expected)
-		}
-		for i := range got {
-			if got[i] != expected[i] {
-				t.Errorf("DC%d candidate %d=%s, want %s", dc, i, got[i], expected[i])
-			}
-		}
 	}
 }
 
