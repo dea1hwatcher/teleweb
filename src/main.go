@@ -2851,27 +2851,37 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 	wg.Wait()
 }
 
-func parseMTProtoDC(init []byte) (dc int, isMedia bool, ok bool) {
+// decryptMTProtoInit decrypts the obfuscated MTProto init header's control
+// tail and returns the transport tag plus a CTR stream positioned exactly at
+// payload offset 64. Obfuscated2 keeps bytes 0:56 as key/IV material: the
+// keystream is advanced over those 56 bytes before decrypting the encrypted
+// 8-byte tail at offset 56; payload decryption starts at offset 64. The
+// original encrypted bytes must still be forwarded verbatim to the relay —
+// this stream is for inspection and parallel framing only.
+func decryptMTProtoInit(init []byte) (proto uint32, plainTail [8]byte, stream cipher.Stream, err error) {
 	if len(init) != 64 {
-		return 0, false, false
+		return 0, plainTail, nil, fmt.Errorf("MTProto init length %d, want 64", len(init))
 	}
-	// Normal direct MTProto obfuscation uses an empty secret. The pre-key and
-	// IV are carried in the init itself; decrypt only to inspect protocol/DC.
-	key := init[8:40]
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(init[8:40])
 	if err != nil {
-		return 0, false, false
+		return 0, plainTail, nil, err
 	}
-	// Obfuscated2 keeps bytes 0:56 as key/IV material. The CTR stream is
-	// advanced over those 56 bytes before decrypting the encrypted 8-byte
-	// tail; after the full 64-byte header, payload decryption starts at offset 64.
-	stream := cipher.NewCTR(block, init[40:56])
+	// Normal direct MTProto obfuscation uses an empty secret: the IV is part
+	// of the init itself. Copy it so the stream cannot alias the caller's slice.
+	stream = cipher.NewCTR(block, append([]byte(nil), init[40:56]...))
 	var zero56 [56]byte
 	stream.XORKeyStream(zero56[:], zero56[:])
-	var plainTail [8]byte
 	stream.XORKeyStream(plainTail[:], init[56:64])
-	proto := binary.LittleEndian.Uint32(plainTail[0:4])
+	proto = binary.LittleEndian.Uint32(plainTail[0:4])
 	if proto != 0xEFEFEFEF && proto != 0xEEEEEEEE && proto != 0xDDDDDDDD {
+		return 0, plainTail, nil, fmt.Errorf("unsupported MTProto transport tag %#x", proto)
+	}
+	return proto, plainTail, stream, nil
+}
+
+func parseMTProtoDC(init []byte) (dc int, isMedia bool, ok bool) {
+	_, plainTail, _, err := decryptMTProtoInit(init)
+	if err != nil {
 		return 0, false, false
 	}
 	idx := int(int16(binary.LittleEndian.Uint16(plainTail[4:6])))
@@ -3074,22 +3084,57 @@ func wsHostsForDC(dc int, isMedia bool) []string {
 	return []string{primary, alternate}
 }
 
+// dcSpec is the single source of truth for per-DC endpoint tables: the
+// preferred ingress IP, the direct-dial candidate list, the Cloudflare Worker
+// ?dst= target and the test-DC endpoint (empty when Telegram defines none).
+type dcSpec struct {
+	ingress    string
+	candidates []string
+	workerDst  string
+	testIP     string
+}
+
+var dcSpecs = map[int]dcSpec{
+	1: {
+		ingress:    "149.154.175.50",
+		candidates: []string{"149.154.175.50", "149.154.175.51", "149.154.175.53", "149.154.175.54", "149.154.175.55"},
+		workerDst:  "149.154.175.50",
+		testIP:     "149.154.175.10",
+	},
+	2: {
+		ingress:    "149.154.167.220",
+		candidates: []string{"149.154.167.220", "149.154.167.51", "149.154.167.50", "149.154.167.41", "149.154.167.35", "149.154.167.36"},
+		workerDst:  "149.154.167.51",
+		testIP:     "149.154.167.40",
+	},
+	3: {
+		ingress:    "",
+		candidates: []string{"149.154.175.100", "149.154.175.101"},
+		workerDst:  "149.154.175.100",
+		testIP:     "149.154.175.117",
+	},
+	4: {
+		ingress:    "149.154.167.220",
+		candidates: []string{"149.154.167.220", "149.154.167.91", "149.154.167.92"},
+		workerDst:  "149.154.167.91",
+	},
+	5: {
+		ingress:    "",
+		candidates: []string{"91.108.56.100", "91.108.56.101", "91.108.56.116", "91.108.56.126", "91.108.56.198", "149.154.171.5"},
+		workerDst:  "149.154.171.5",
+	},
+	203: {
+		workerDst: "91.105.192.100",
+	},
+}
+
 func preferredIngressForDC(dc int) string {
 	if overrides := dcOverridesCached(); len(overrides) > 0 {
 		if ip, ok := overrides[dc]; ok && ip != "" {
 			return ip
 		}
 	}
-	switch dc {
-	case 1:
-		// Telegram Desktop built-in production DC1 endpoint is 149.154.175.50.
-		// The previous 149.154.174.100 value was not the canonical DC1 endpoint.
-		return "149.154.175.50"
-	case 2, 4:
-		return "149.154.167.220"
-	default:
-		return ""
-	}
+	return dcSpecs[dc].ingress
 }
 
 func candidateIngressesForDC(dc int) []string {
@@ -3098,20 +3143,7 @@ func candidateIngressesForDC(dc int) []string {
 			return []string{ip}
 		}
 	}
-	switch dc {
-	case 1:
-		return []string{"149.154.175.50", "149.154.175.51", "149.154.175.53", "149.154.175.54", "149.154.175.55"}
-	case 2:
-		return []string{"149.154.167.220", "149.154.167.51", "149.154.167.50", "149.154.167.41", "149.154.167.35", "149.154.167.36"}
-	case 3:
-		return []string{"149.154.175.100", "149.154.175.101"}
-	case 4:
-		return []string{"149.154.167.220", "149.154.167.91", "149.154.167.92"}
-	case 5:
-		return []string{"91.108.56.100", "91.108.56.101", "91.108.56.116", "91.108.56.126", "91.108.56.198", "149.154.171.5"}
-	default:
-		return nil
-	}
+	return dcSpecs[dc].candidates
 }
 
 var builtInCFDomains = []string{
@@ -3180,26 +3212,9 @@ type mtprotoPacketFramer struct {
 }
 
 func newMTProtoPacketFramer(initial []byte) (*mtprotoPacketFramer, error) {
-	if len(initial) != 64 {
-		return nil, fmt.Errorf("MTProto init length %d, want 64", len(initial))
-	}
-	key := initial[8:40]
-	block, err := aes.NewCipher(key)
+	proto, _, stream, err := decryptMTProtoInit(initial)
 	if err != nil {
 		return nil, err
-	}
-	iv := append([]byte(nil), initial[40:56]...)
-	stream := cipher.NewCTR(block, iv)
-	// The first 56 bytes are key/IV material. The encrypted tail uses the
-	// CTR keystream at offset 56; payload bytes follow the complete 64-byte
-	// header, so advance this stream to offset 64 before framing packets.
-	var zero56 [56]byte
-	stream.XORKeyStream(zero56[:], zero56[:])
-	var tail [8]byte
-	stream.XORKeyStream(tail[:], initial[56:64])
-	proto := binary.LittleEndian.Uint32(tail[:4])
-	if proto != 0xEFEFEFEF && proto != 0xEEEEEEEE && proto != 0xDDDDDDDD {
-		return nil, fmt.Errorf("unsupported MTProto transport tag %#x", proto)
 	}
 	return &mtprotoPacketFramer{proto: proto, stream: stream, initial: append([]byte(nil), initial...)}, nil
 }
@@ -3534,13 +3549,8 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 		workerHost := worker
 		dst := workerDstForDC(dc)
 		if isTest {
-			switch dc {
-			case 1:
-				dst = "149.154.175.10"
-			case 2:
-				dst = "149.154.167.40"
-			case 3:
-				dst = "149.154.175.117"
+			if testIP := dcSpecs[dc].testIP; testIP != "" {
+				dst = testIP
 			}
 		}
 		candWorker := dialCandidate{
@@ -3594,17 +3604,10 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 	wsUpgradePath := "/apiws"
 	if isTest {
 		wsUpgradePath = "/apiws_test"
-		var testIPStr string
-		switch dc {
-		case 1:
-			testIPStr = "149.154.175.10"
-		case 2:
-			testIPStr = "149.154.167.40"
-		case 3:
-			testIPStr = "149.154.175.117"
-		}
-		if ip, err := netip.ParseAddr(testIPStr); err == nil {
-			directIPs = []netip.Addr{ip}
+		if testIPStr := dcSpecs[dc].testIP; testIPStr != "" {
+			if ip, err := netip.ParseAddr(testIPStr); err == nil {
+				directIPs = []netip.Addr{ip}
+			}
 		}
 	} else {
 		preferredIP := preferredIngressForDC(dc)
@@ -3869,14 +3872,24 @@ func prepareUTLSForHTTP1(conn *utls.UConn) error {
 }
 
 func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, error) {
-	return finishTelegramWSPath(ctx, raw, host, "/apiws")
+	return finishTLSAndUpgrade(ctx, raw, host, "/apiws", true)
 }
 
 func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path string) (*wsConn, error) {
+	return finishTLSAndUpgrade(ctx, raw, host, path, true)
+}
+
+// finishTLSAndUpgrade performs the uTLS handshake plus the WebSocket upgrade
+// on an already-dialed raw connection. honorFrontingSNI switches the SNI to
+// the configured fronting value, which real Telegram endpoints accept for
+// CF-fronted domains; worker endpoints must keep their real hostname.
+func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, honorFrontingSNI bool) (*wsConn, error) {
 	setConnSockOpts(raw)
 	sni := host
-	if customSNI := configuredFrontingSNI(); customSNI != "" {
-		sni = customSNI
+	if honorFrontingSNI {
+		if customSNI := configuredFrontingSNI(); customSNI != "" {
+			sni = customSNI
+		}
 	}
 	uConfig := &utls.Config{
 		ServerName:                  sni,
@@ -3964,55 +3977,15 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 }
 
 func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string) (*wsConn, error) {
-	setConnSockOpts(raw)
-	uConfig := &utls.Config{
-		ServerName:                  host,
-		MinVersion:                  utls.VersionTLS12,
-		RootCAs:                     getSystemRootCAs(),
-		InsecureSkipVerify:          true,
-		NextProtos:                  []string{"http/1.1"},
-		DynamicRecordSizingDisabled: true,
-	}
-	uConn := utls.UClient(raw, uConfig, utls.HelloChrome_Auto)
-	if err := prepareUTLSForHTTP1(uConn); err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = uConn.SetDeadline(deadline)
-	} else {
-		_ = uConn.SetDeadline(time.Now().Add(8 * time.Second))
-	}
-	if err := uConn.HandshakeContext(ctx); err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
-	ws, err := websocketUpgradePath(uConn, host, path)
-	if err != nil {
-		_ = uConn.Close()
-		return nil, err
-	}
-	_ = uConn.SetDeadline(time.Time{})
-	return ws, nil
+	return finishTLSAndUpgrade(ctx, raw, host, path, false)
 }
 
 func workerDstForDC(dc int) string {
-	switch dc {
-	case 1:
-		return "149.154.175.50"
-	case 2:
-		return "149.154.167.51"
-	case 3:
-		return "149.154.175.100"
-	case 4:
-		return "149.154.167.91"
-	case 5:
-		return "149.154.171.5"
-	case 203:
-		return "91.105.192.100"
-	default:
-		return "149.154.167.51"
+	if spec, ok := dcSpecs[dc]; ok && spec.workerDst != "" {
+		return spec.workerDst
 	}
+	// Unknown DC: fall back to the DC2 relay, the same default as before.
+	return "149.154.167.51"
 }
 
 func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool) (*wsConn, error) {
