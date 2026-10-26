@@ -437,6 +437,78 @@ func writeEnabled(v bool) error {
 	return os.WriteFile(path("enabled"), []byte(s), 0600)
 }
 
+// cfgFileCache memoizes config-file parses for the hot per-connection path.
+// Entries are validated by a single Stat (mtime+size) and expire after 2s, so
+// a dial performs one cheap syscall instead of several full file reads and
+// regex passes, while external edits are picked up almost immediately.
+var cfgFileCache = struct {
+	mu      sync.Mutex
+	entries map[string]cfgFileEntry
+}{entries: map[string]cfgFileEntry{}}
+
+type cfgFileEntry struct {
+	sig     uint64
+	value   any
+	expires time.Time
+}
+
+func cfgFileSig(name string) uint64 {
+	st, err := os.Stat(path(name))
+	if err != nil {
+		return 0 // absent file: stable signature so absence is cacheable too
+	}
+	return uint64(st.ModTime().UnixNano())*31 ^ uint64(st.Size())
+}
+
+func cachedFileRead(name string, load func() any) any {
+	sig := cfgFileSig(name)
+	now := time.Now()
+	cfgFileCache.mu.Lock()
+	defer cfgFileCache.mu.Unlock()
+	if e, ok := cfgFileCache.entries[name]; ok && now.Before(e.expires) && e.sig == sig {
+		return e.value
+	}
+	v := load()
+	cfgFileCache.entries[name] = cfgFileEntry{sig: sig, value: v, expires: now.Add(2 * time.Second)}
+	return v
+}
+
+func dcOverridesCached() map[int]string {
+	return cachedFileRead("dc-override", func() any { return readDCOverrides() }).(map[int]string)
+}
+
+func cfPriorityCached() bool {
+	return cachedFileRead("cf-priority", func() any { return readCFPriority() }).(bool)
+}
+
+func cfBalanceCached() bool {
+	return cachedFileRead("cf-balance", func() any { return readCFBalance() }).(bool)
+}
+
+func customCFWorkerCached() string {
+	return cachedFileRead("custom-cf-worker", func() any { return readCustomCFWorker() }).(string)
+}
+
+func forceTestDCCached() bool {
+	return cachedFileRead("force_test_dc", func() any { return readForceTestDC() }).(bool)
+}
+
+func h2MediaEnabledCached() bool {
+	return cachedFileRead("h2_media_enabled", func() any { return readH2MediaEnabled() }).(bool)
+}
+
+func doHEnabledCached() bool {
+	return cachedFileRead("doh_enabled", func() any { return readDoHEnabled() }).(bool)
+}
+
+func dc203DirectTCPCached() bool {
+	return cachedFileRead("dc203_direct_tcp", func() any { return readDC203DirectTCP() }).(bool)
+}
+
+func cfDomainsCached() []string {
+	return cachedFileRead("cf-domains", func() any { return cfDomains() }).([]string)
+}
+
 func readCFPriority() bool {
 	b, err := os.ReadFile(path("cf-priority"))
 	if err != nil {
@@ -2465,7 +2537,7 @@ func handleClient(c net.Conn) {
 		return
 	}
 	dc, isMedia, parsed := parseMTProtoDC(init)
-	isTestDC := readForceTestDC() || dc >= 10000
+	isTestDC := forceTestDCCached() || dc >= 10000
 	if dc >= 10000 {
 		dc -= 10000
 	}
@@ -2508,7 +2580,7 @@ func handleClient(c net.Conn) {
 	statsMu.Unlock()
 
 	// HTTP/2 Media Multiplexing route
-	if isMedia && readH2MediaEnabled() {
+	if isMedia && h2MediaEnabledCached() {
 		if tryBridgeH2Media(c, init, id, dc, isTestDC) {
 			return
 		}
@@ -2576,7 +2648,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	defer atomic.AddInt64(&wsCount, -1)
 	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
 
-	worker := readCustomCFWorker()
+	worker := customCFWorkerCached()
 	if worker != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		ws, err := dialCFWorker(ctx, 203, "91.105.192.100", worker, false)
@@ -2591,7 +2663,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	}
 
 	// Dedicated native TCP pass-through for CDN203 (91.105.192.100:443)
-	if !readDC203DirectTCP() {
+	if !dc203DirectTCPCached() {
 		logf("conn #%d CDN203 direct TCP disabled by configuration", id)
 		return
 	}
@@ -3003,7 +3075,7 @@ func wsHostsForDC(dc int, isMedia bool) []string {
 }
 
 func preferredIngressForDC(dc int) string {
-	if overrides := readDCOverrides(); len(overrides) > 0 {
+	if overrides := dcOverridesCached(); len(overrides) > 0 {
 		if ip, ok := overrides[dc]; ok && ip != "" {
 			return ip
 		}
@@ -3021,7 +3093,7 @@ func preferredIngressForDC(dc int) string {
 }
 
 func candidateIngressesForDC(dc int) []string {
-	if overrides := readDCOverrides(); len(overrides) > 0 {
+	if overrides := dcOverridesCached(); len(overrides) > 0 {
 		if ip, ok := overrides[dc]; ok && ip != "" {
 			return []string{ip}
 		}
@@ -3450,9 +3522,9 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 	}
 	resolver := androidDNSResolver()
 
-	cfPriority := readCFPriority()
-	cfBalance := readCFBalance()
-	worker := readCustomCFWorker()
+	cfPriority := cfPriorityCached()
+	cfBalance := cfBalanceCached()
+	worker := customCFWorkerCached()
 
 	var candidates []dialCandidate
 	var deferCandidates []dialCandidate
@@ -3582,7 +3654,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 
 	if !isTest {
 		// 6. Cloudflare Fronting Domains
-		for _, dom := range cfDomains() {
+		for _, dom := range cfDomainsCached() {
 			d := dom
 			host := fmt.Sprintf("kws%d.%s", dc, d)
 			if !routeCoolingDown(host) {
@@ -3711,7 +3783,7 @@ func noteRouteHTTPFailure(host string, err error) {
 
 func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsConn, error) {
 	var ips []netip.Addr
-	if readDoHEnabled() {
+	if doHEnabledCached() {
 		dohCtx, dohCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 		dohIPs, err := resolveDoHRace(dohCtx, host)
 		dohCancel()

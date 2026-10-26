@@ -1985,3 +1985,43 @@ func TestH2ReplySequencerOrdering(t *testing.T) {
 	}
 	mu.Unlock()
 }
+
+func TestCachedFileReadInvalidation(t *testing.T) {
+	dir := t.TempDir()
+	origBase := baseDir
+	baseDir = dir
+	defer func() { baseDir = origBase }()
+
+	p := filepath.Join(dir, "cached-flag")
+	if err := os.WriteFile(p, []byte("1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	load := func() any {
+		calls++
+		b, err := os.ReadFile(p)
+		return err == nil && strings.TrimSpace(string(b)) == "1"
+	}
+	if got := cachedFileRead("cached-flag", load).(bool); !got {
+		t.Fatal("want true on first read")
+	}
+	if got := cachedFileRead("cached-flag", load).(bool); !got {
+		t.Fatal("want true on cached read")
+	}
+	if calls != 1 {
+		t.Fatalf("expected load() to run once, ran %d times", calls)
+	}
+
+	// Rewriting with a different size must invalidate via the Stat signature.
+	if err := os.WriteFile(p, []byte("0\n\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := cachedFileRead("cached-flag", load).(bool); got {
+		t.Fatal("want false after file change")
+	}
+	if calls != 2 {
+		t.Fatalf("expected load() to re-run after change, ran %d times", calls)
+	}
+}

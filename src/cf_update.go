@@ -135,10 +135,15 @@ func fetchCFDomainsFromURL(ctx context.Context, client *http.Client, targetURL s
 func refreshCFDomains(ctx context.Context) error {
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			RootCAs:            getSystemRootCAs(),
-			InsecureSkipVerify: true,
+			RootCAs: getSystemRootCAs(),
+			// GitHub raw endpoints use their real hostname: verify certificates.
 		},
+		IdleConnTimeout: 90 * time.Second,
 	}
+	// Close idle keep-alive sockets eagerly: this client is created fresh on
+	// every hourly refresh and an untimed Transport would otherwise hold FDs
+	// until the garbage collector runs its finalizers.
+	defer tr.CloseIdleConnections()
 	client := &http.Client{Transport: tr, Timeout: 12 * time.Second}
 	domains, err := fetchCFDomainsFromURL(ctx, client, primaryCFDomainsURL)
 	if err != nil {

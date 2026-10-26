@@ -228,12 +228,12 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 
 func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bool {
 	// Cloudflare does not front Telegram Test DCs; only production DCs 1-5
-	if isTest || !readH2MediaEnabled() {
+	if isTest || !h2MediaEnabledCached() {
 		return false
 	}
 
 	// 1. Pick candidate host for DC from active Cloudflare domains
-	domains := cfDomains()
+	domains := cfDomainsCached()
 	if len(domains) == 0 {
 		return false
 	}

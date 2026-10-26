@@ -50,8 +50,9 @@ func getDoHClient() *http.Client {
 	dohClientOnce.Do(func() {
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{
-				RootCAs:            getSystemRootCAs(),
-				InsecureSkipVerify: true,
+				RootCAs: getSystemRootCAs(),
+				// Certificate verification stays ON: DoH exists precisely to
+				// defeat spoofing, and these endpoints involve no SNI games.
 			},
 			DisableKeepAlives: false,
 			MaxIdleConns:      16,
