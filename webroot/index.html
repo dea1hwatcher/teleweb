@@ -2642,7 +2642,10 @@ function initSheetDrag(sheet) {
   const zone = sheet.querySelector('.sheet-drag') || sheet;
   let y0 = null, dy = 0, dragged = false;
 
+  // Mouse/pen only: on touch devices initSheetSwipe owns the gesture (velocity
+  // physics + scroll interplay); running both double-drags the sheet.
   zone.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse') return;
     if (e.target.closest('input, button:not(.sheet-drag), .wheel, .swatch-dot')) return;
     y0 = e.clientY;
     dy = 0;
@@ -2652,7 +2655,7 @@ function initSheetDrag(sheet) {
   });
 
   zone.addEventListener('pointermove', (e) => {
-    if (y0 === null) return;
+    if (y0 === null || e.pointerType !== 'mouse') return;
     dy = Math.max(0, e.clientY - y0);
     if (dy > 4) dragged = true;
     sheet.style.transform = 'translateY(' + dy + 'px)';
@@ -2813,9 +2816,12 @@ function haptic(ms = 10) {
 
 function formatBytes(val) {
   const n = Math.max(0, Number(val) || 0);
-  if (n >= 1e9) return (n / 1e9).toFixed(n >= 10e9 ? 1 : 2).replace(/\.?0+$/, "") + " ГБ";
-  if (n >= 1e6) return (n / 1e6).toFixed(n >= 100e6 ? 0 : n >= 10e6 ? 1 : 2).replace(/\.?0+$/, "") + " МБ";
-  if (n >= 1e3) return (n / 1e3).toFixed(n >= 100e3 ? 0 : 1).replace(/\.?0+$/, "") + " КБ";
+  // Strip trailing zeros only after a decimal point: /\.?0+$/ on "100" would
+  // eat significant zeros and render 100 МБ as "1 МБ".
+  const trim = (s) => s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  if (n >= 1e9) return trim((n / 1e9).toFixed(n >= 10e9 ? 1 : 2)) + " ГБ";
+  if (n >= 1e6) return trim((n / 1e6).toFixed(n >= 100e6 ? 0 : n >= 10e6 ? 1 : 2)) + " МБ";
+  if (n >= 1e3) return trim((n / 1e3).toFixed(n >= 100e3 ? 0 : 1)) + " КБ";
   return Math.round(n) + " Б";
 }
 
@@ -2891,6 +2897,7 @@ async function api(cmd, extra) {
 let state = null;
 let busy = false;
 let refreshing = false;
+let appsListSignature = "";
 
 // UI Rendering
 function render() {
@@ -2959,9 +2966,12 @@ function render() {
   $("meta-active").textContent = String((state && state.active) || 0);
   $("meta-ws").textContent = String((state && state.ws) || 0);
 
-  // Telegram Apps List
+  // Telegram Apps List — rebuilt only when the app set actually changes:
+  // it carries heavy base64 icons and runs every poll tick.
   const appsList = $("appsList");
-  if (state.apps && state.apps.length > 0) {
+  const appsSignature = JSON.stringify(state.apps || []);
+  if (state.apps && state.apps.length > 0 && appsSignature !== appsListSignature) {
+    appsListSignature = appsSignature;
     appsList.innerHTML = "";
     state.apps.forEach(app => {
       const item = document.createElement("div");
@@ -3494,41 +3504,17 @@ $("btn-refresh").addEventListener("click", async () => {
   await refresh();
 });
 
-// Routing Toggles
-$("swCFPriority").addEventListener("change", async (e) => {
-  if (busy) return;
-  haptic(8);
-  const val = e.target.checked;
-  try {
-    state = await api("setConfig", { cfPriority: val });
-    toast(val ? "Приоритет Cloudflare включён" : "Приоритет Cloudflare выключен");
-  } catch (err) {
-    toast(err.message);
-  }
-  render();
-});
-
-$("swCFBalance").addEventListener("change", async (e) => {
-  if (busy) return;
-  haptic(8);
-  const val = e.target.checked;
-  try {
-    state = await api("setConfig", { cfBalance: val });
-    toast(val ? "Балансировка доменов включена" : "Балансировка доменов выключена");
-  } catch (err) {
-    toast(err.message);
-  }
-  render();
-});
-
-if ($("swDoH")) {
-  $("swDoH").addEventListener("change", async (e) => {
+// Routing Toggles — one factory instead of six copy-pasted handlers
+function bindConfigToggle(id, key, msgOn, msgOff) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("change", async (e) => {
     if (busy) return;
     haptic(8);
     const val = e.target.checked;
     try {
-      state = await api("setConfig", { dohEnabled: val });
-      toast(val ? "Защищенный Multi-DoH включен" : "Multi-DoH выключен");
+      state = await api("setConfig", { [key]: val });
+      toast(val ? msgOn : msgOff);
     } catch (err) {
       toast(err.message);
     }
@@ -3536,50 +3522,18 @@ if ($("swDoH")) {
   });
 }
 
-if ($("swH2Media")) {
-  $("swH2Media").addEventListener("change", async (e) => {
-    if (busy) return;
-    haptic(8);
-    const val = e.target.checked;
-    try {
-      state = await api("setConfig", { h2MediaEnabled: val });
-      toast(val ? "HTTP/2 ускорение медиа включено" : "HTTP/2 ускорение медиа выключено");
-    } catch (err) {
-      toast(err.message);
-    }
-    render();
-  });
-}
-
-if ($("swForceTestDC")) {
-  $("swForceTestDC").addEventListener("change", async (e) => {
-    if (busy) return;
-    haptic(8);
-    const val = e.target.checked;
-    try {
-      state = await api("setConfig", { forceTestDc: val });
-      toast(val ? "Тестовые DC Telegram форсированы" : "Тестовые DC отключены");
-    } catch (err) {
-      toast(err.message);
-    }
-    render();
-  });
-}
-
-if ($("swDC203")) {
-  $("swDC203").addEventListener("change", async (e) => {
-    if (busy) return;
-    haptic(8);
-    const val = e.target.checked;
-    try {
-      state = await api("setConfig", { dc203DirectTcp: val });
-      toast(val ? "Прямой TCP CDN203 включен" : "Прямой TCP CDN203 отключен");
-    } catch (err) {
-      toast(err.message);
-    }
-    render();
-  });
-}
+bindConfigToggle("swCFPriority", "cfPriority",
+  "Приоритет Cloudflare включён", "Приоритет Cloudflare выключен");
+bindConfigToggle("swCFBalance", "cfBalance",
+  "Балансировка доменов включена", "Балансировка доменов выключена");
+bindConfigToggle("swDoH", "dohEnabled",
+  "Защищенный Multi-DoH включен", "Multi-DoH выключен");
+bindConfigToggle("swH2Media", "h2MediaEnabled",
+  "HTTP/2 ускорение медиа включено", "HTTP/2 ускорение медиа выключено");
+bindConfigToggle("swForceTestDC", "forceTestDc",
+  "Тестовые DC Telegram форсированы", "Тестовые DC отключены");
+bindConfigToggle("swDC203", "dc203DirectTcp",
+  "Прямой TCP CDN203 включен", "Прямой TCP CDN203 отключен");
 
 // Save Routing Settings
 $("saveConfigBtn").addEventListener("click", async () => {
