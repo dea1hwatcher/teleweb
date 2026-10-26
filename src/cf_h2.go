@@ -140,6 +140,92 @@ func createClientEncryptor(initial []byte) (cipher.Stream, error) {
 	return stream, nil
 }
 
+// h2Reply carries one HTTP/2 response to the ordered writer. A nil data field
+// means the request failed: the sequence slot is consumed without writing so
+// later replies are not blocked behind it.
+type h2Reply struct {
+	seq  uint64
+	data []byte
+}
+
+// h2ReplySequencer reassembles HTTP/2 responses in dispatch order. MTProto's
+// server->client CTR stream is strictly sequential, so a response that arrives
+// out of order must wait for its predecessors before being encrypted: writing
+// keystream blocks in arrival order would desynchronize the whole session.
+type h2ReplySequencer struct {
+	next     uint64
+	buffered map[uint64][]byte
+	write    func(body []byte) error
+}
+
+func newH2ReplySequencer(write func(body []byte) error) *h2ReplySequencer {
+	return &h2ReplySequencer{buffered: make(map[uint64][]byte), write: write}
+}
+
+// push hands one reply to the sequencer. A nil body marks a failed request:
+// it consumes its sequence slot without writing so later replies still flow.
+// Only a single goroutine (the reply writer) may call push.
+func (s *h2ReplySequencer) push(seq uint64, body []byte) error {
+	s.buffered[seq] = body
+	for {
+		data, ok := s.buffered[s.next]
+		if !ok {
+			return nil
+		}
+		delete(s.buffered, s.next)
+		s.next++
+		if data == nil {
+			continue
+		}
+		if err := s.write(data); err != nil {
+			return err
+		}
+	}
+}
+
+// h2PostPacket performs one MTProto-over-HTTP/2 POST and returns the decoded
+// response body, or nil when the request failed for any reason.
+func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string, body []byte) []byte {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Accept-Encoding", "identity")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Capture CF-Ray & CF-PoP telemetry from response
+	if cfRay := strings.TrimSpace(resp.Header.Get("CF-Ray")); cfRay != "" {
+		lastCFRay.Store(&cfRay)
+		if pop := parseCFRayPoP(cfRay); pop != "" {
+			lastCFPoP.Store(&pop)
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		h2FailsMu.Lock()
+		h2Fails[host] = time.Now().Add(30 * time.Second)
+		h2FailsMu.Unlock()
+		return nil
+	}
+
+	// Reject HTML error pages
+	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
+		return nil
+	}
+
+	respData, err := io.ReadAll(io.LimitReader(resp.Body, maxWSFrame))
+	if err != nil || len(respData) == 0 || len(respData)%4 != 0 {
+		return nil
+	}
+	return respData
+}
+
 func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bool {
 	// Cloudflare does not front Telegram Test DCs; only production DCs 1-5
 	if isTest || !readH2MediaEnabled() {
@@ -216,10 +302,38 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
 	defer bridgeCancel()
 
-	var writeMu sync.Mutex
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
 
+	// Single reply writer: response bodies are handed over out of band and
+	// reassembled in dispatch order before touching the shared CTR stream.
+	replyCh := make(chan h2Reply, 8)
+	go func() {
+		seq := newH2ReplySequencer(func(body []byte) error {
+			encoded := encodeH2Reply(body, framer.proto)
+			encrypted := make([]byte, len(encoded))
+			cltEnc.XORKeyStream(encrypted, encoded)
+			if err := writeFull(c, encrypted); err != nil {
+				return err
+			}
+			atomic.AddInt64(&trafficDownBytes, int64(len(body)))
+			lastActivity.Store(time.Now().UnixNano())
+			return nil
+		})
+		for {
+			select {
+			case r := <-replyCh:
+				if err := seq.push(r.seq, r.data); err != nil {
+					bridgeCancel()
+					return
+				}
+			case <-bridgeCtx.Done():
+				return
+			}
+		}
+	}()
+
+	postSeq := uint64(0)
 	// Read loop from client
 	buf := make([]byte, 32*1024)
 	for {
@@ -241,6 +355,11 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				framer.plain = framer.plain[n:]
 				if len(framer.plain) == 0 {
 					framer.plain = framer.plain[:0]
+				} else if cap(framer.plain) > 128*1024 && len(framer.plain) < 32*1024 {
+					// Shrink an oversized buffer like mtprotoPacketFramer.feed does.
+					compacted := make([]byte, len(framer.plain))
+					copy(compacted, framer.plain)
+					framer.plain = compacted
 				}
 
 				// Strip length prefix from packetBody before HTTP/2 POST
@@ -268,62 +387,19 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 					continue
 				}
 
-				// Asynchronous HTTP/2 POST stream
-				go func(body []byte) {
+				// Asynchronous HTTP/2 POST stream; every dispatched packet owns
+				// one sequence slot, even when its request ultimately fails.
+				seq := postSeq
+				postSeq++
+				go func(seq uint64, body []byte) {
 					postCtx, postCancel := context.WithTimeout(bridgeCtx, 45*time.Second)
 					defer postCancel()
-
-					req, reqErr := http.NewRequestWithContext(postCtx, http.MethodPost, apiURL, bytes.NewReader(body))
-					if reqErr != nil {
-						return
+					data := h2PostPacket(postCtx, client, apiURL, selectedHost, body)
+					select {
+					case replyCh <- h2Reply{seq: seq, data: data}:
+					case <-bridgeCtx.Done():
 					}
-					req.Header.Set("Content-Type", "application/octet-stream")
-					req.Header.Set("Accept-Encoding", "identity")
-
-					resp, respErr := client.Do(req)
-					if respErr != nil {
-						return
-					}
-					defer resp.Body.Close()
-
-					// Capture CF-Ray & CF-PoP telemetry from response
-					cfRay := strings.TrimSpace(resp.Header.Get("CF-Ray"))
-					if cfRay != "" {
-						lastCFRay.Store(&cfRay)
-						if pop := parseCFRayPoP(cfRay); pop != "" {
-							lastCFPoP.Store(&pop)
-						}
-					}
-
-					if resp.StatusCode != http.StatusOK {
-						h2FailsMu.Lock()
-						h2Fails[selectedHost] = time.Now().Add(30 * time.Second)
-						h2FailsMu.Unlock()
-						return
-					}
-
-					// Verify response is not HTML error page
-					if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
-						return
-					}
-
-					respData, readErr := io.ReadAll(io.LimitReader(resp.Body, maxWSFrame))
-					if readErr != nil || len(respData) == 0 || len(respData)%4 != 0 {
-						return
-					}
-
-					// Encode reply with transport length prefix
-					encoded := encodeH2Reply(respData, framer.proto)
-					encrypted := make([]byte, len(encoded))
-
-					writeMu.Lock()
-					cltEnc.XORKeyStream(encrypted, encoded)
-					_ = writeFull(c, encrypted)
-					writeMu.Unlock()
-
-					atomic.AddInt64(&trafficDownBytes, int64(len(respData)))
-					lastActivity.Store(time.Now().UnixNano())
-				}(rawMTProto)
+				}(seq, rawMTProto)
 			}
 		}
 

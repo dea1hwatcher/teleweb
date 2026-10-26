@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1934,4 +1935,53 @@ func TestSweepRouteCachesRemovesStale(t *testing.T) {
 	if !freshKept {
 		t.Errorf("active entry must survive the sweep")
 	}
+}
+
+func TestH2ReplySequencerOrdering(t *testing.T) {
+	var mu sync.Mutex
+	var written []string
+	seq := newH2ReplySequencer(func(body []byte) error {
+		mu.Lock()
+		written = append(written, string(body))
+		mu.Unlock()
+		return nil
+	})
+
+	// Out-of-order completion: packet 1 finishes before packet 0 and must wait.
+	if err := seq.push(1, []byte("AAAA")); err != nil {
+		t.Fatalf("push(1): %v", err)
+	}
+	mu.Lock()
+	if len(written) != 0 {
+		mu.Unlock()
+		t.Fatalf("wrote before predecessor: %v", written)
+	}
+	mu.Unlock()
+
+	if err := seq.push(0, []byte("BBBB")); err != nil {
+		t.Fatalf("push(0): %v", err)
+	}
+	mu.Lock()
+	if len(written) != 2 || written[0] != "BBBB" || written[1] != "AAAA" {
+		order := append([]string(nil), written...)
+		mu.Unlock()
+		t.Fatalf("wrong order: %v", order)
+	}
+	mu.Unlock()
+
+	// A failed request (nil body) consumes its slot without writing, so the
+	// CTR stream skips exactly that packet and later replies still flow.
+	if err := seq.push(3, []byte("CCCC")); err != nil {
+		t.Fatalf("push(3): %v", err)
+	}
+	if err := seq.push(2, nil); err != nil {
+		t.Fatalf("push(2,nil): %v", err)
+	}
+	mu.Lock()
+	if len(written) != 3 || written[2] != "CCCC" {
+		order := append([]string(nil), written...)
+		mu.Unlock()
+		t.Fatalf("expected CCC as third write, got %v", order)
+	}
+	mu.Unlock()
 }
