@@ -373,3 +373,48 @@ func BenchmarkEncodeH2Reply(b *testing.B) {
 		_ = encodeH2Reply(body, 0xEFEFEFEF)
 	}
 }
+
+// TestMemoryLeak_WsPool_DisabledDrain ensures that disabling the pool at
+// runtime (poolSize=0) releases every queued socket instead of leaking FDs.
+func TestMemoryLeak_WsPool_DisabledDrain(t *testing.T) {
+	pool := newWsPool(context.Background(), 2)
+	q, _ := pool.getQueue(poolSlot{dc: 1, isMedia: false, isTest: false})
+
+	type pipedEntry struct {
+		conn net.Conn // peer end; readable error signals our side closed
+	}
+	peers := make([]pipedEntry, 0, 3)
+	for i := 0; i < 3; i++ {
+		c1, c2 := net.Pipe()
+		entry := &poolEntry{ws: &wsConn{conn: c1, host: "drain-test"}, createdAt: time.Now()}
+		select {
+		case q <- entry:
+		default:
+			_ = c1.Close()
+			_ = c2.Close()
+			continue
+		}
+		peers = append(peers, pipedEntry{conn: c2})
+	}
+	if len(peers) == 0 {
+		t.Fatal("queue empty before drain; test setup broken")
+	}
+
+	// Disabling the pool must close every queued connection.
+	globalWsPool = pool
+	t.Cleanup(func() { globalWsPool = nil })
+	if err := writePoolSize(0); err != nil {
+		t.Fatalf("writePoolSize(0): %v", err)
+	}
+	if pool.IdleCount() != 0 {
+		t.Fatalf("expected empty queues after drain, got %d idle", pool.IdleCount())
+	}
+	for i, p := range peers {
+		_ = p.conn.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 1)
+		if _, err := p.conn.Read(buf); err == nil {
+			t.Errorf("peer %d: expected read error after drain, got data", i)
+		}
+		p.conn.Close()
+	}
+}

@@ -23,7 +23,12 @@ type poolEntry struct {
 }
 
 const (
-	wsPoolMaxAge        = 105 * time.Second // telegram drops idle WS at ~120s, CF at ~100s
+	// Telegram relays drop an idle WS at ~120s and Cloudflare fronts at ~100s.
+	// We retire pooled sockets at 90s so they are closed on our side before
+	// any frontend kills them. Keep-alive pings are deliberately NOT sent:
+	// the resulting PONG lands unread in the socket and the Get() liveness
+	// probe would treat it as out-of-sync data and destroy the entry.
+	wsPoolMaxAge        = 90 * time.Second
 	wsPoolCheckInterval = 15 * time.Second
 )
 
@@ -192,9 +197,6 @@ func (p *WsPool) StartRotation() {
 }
 
 func (p *WsPool) rotate() {
-	if p.size.Load() <= 0 {
-		return
-	}
 	now := time.Now()
 
 	p.queues.Range(func(key, value any) bool {
@@ -213,11 +215,6 @@ func (p *WsPool) rotate() {
 					_ = entry.ws.Close()
 					continue
 				}
-				// Keep-alive ping frame (Opcode 9)
-				if err := entry.ws.writeFrame(9, nil); err != nil {
-					_ = entry.ws.Close()
-					continue
-				}
 				retained = append(retained, entry)
 			default:
 				goto Drained
@@ -225,6 +222,15 @@ func (p *WsPool) rotate() {
 		}
 
 	Drained:
+		sz := int(p.size.Load())
+		if sz <= 0 {
+			// Pool disabled: release every queued socket instead of leaking
+			// file descriptors for connections nobody will ever hand out.
+			for _, entry := range retained {
+				_ = entry.ws.Close()
+			}
+			return true
+		}
 		for _, entry := range retained {
 			select {
 			case q <- entry:
@@ -233,11 +239,31 @@ func (p *WsPool) rotate() {
 			}
 		}
 
-		sz := int(p.size.Load())
 		if len(q) < sz {
 			go p.Refill(slot.dc, slot.isMedia, slot.isTest)
 		}
 		return true
+	})
+}
+
+// drainAll closes every queued connection immediately without changing the
+// pool size. Used when the pool is disabled at runtime.
+func (p *WsPool) drainAll() {
+	if p == nil {
+		return
+	}
+	p.queues.Range(func(_, value any) bool {
+		q := value.(chan *poolEntry)
+		for {
+			select {
+			case entry := <-q:
+				if entry != nil && entry.ws != nil {
+					_ = entry.ws.Close()
+				}
+			default:
+				return true
+			}
+		}
 	})
 }
 
@@ -306,6 +332,9 @@ func writePoolSize(sz int) error {
 	ensureDir()
 	if globalWsPool != nil {
 		globalWsPool.size.Store(int32(sz))
+		if sz == 0 {
+			globalWsPool.drainAll()
+		}
 	}
 	return os.WriteFile(path("pool_size"), []byte(strconv.Itoa(sz)), 0600)
 }
