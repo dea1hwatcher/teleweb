@@ -1097,6 +1097,23 @@ func TestCustomCFWorkerConfig(t *testing.T) {
 	}
 }
 
+func TestCDN203DisabledDoesNotCountInit(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() { baseDir = oldDir })
+	if err := writeDC203DirectTCP(false); err != nil {
+		t.Fatal(err)
+	}
+	client, peer := net.Pipe()
+	defer client.Close()
+	defer peer.Close()
+	before := atomic.LoadInt64(&trafficUpBytes)
+	handleCDN203(client, netip.MustParseAddrPort("91.105.192.100:443"), make([]byte, 64), 1)
+	if got := atomic.LoadInt64(&trafficUpBytes) - before; got != 0 {
+		t.Fatalf("disabled CDN203 counted %d unsent bytes", got)
+	}
+}
+
 func TestCloudflareWorkerContract(t *testing.T) {
 	cases := []struct {
 		dc       int

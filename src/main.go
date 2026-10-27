@@ -2711,7 +2711,6 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Unlock()
 	atomic.AddInt64(&wsCount, 1)
 	defer atomic.AddInt64(&wsCount, -1)
-	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
 
 	worker := customCFWorkerCached()
 	if worker != "" {
@@ -2748,6 +2747,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		logf("conn #%d CDN203 write init failed: %v", id, err)
 		return
 	}
+	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
 	logf("conn #%d %s -> CDN203 (91.105.192.100:443) via direct TCP pass-through", id, orig)
 	pipeTCPToTCP(c, remote, id, 203)
 }
