@@ -1093,8 +1093,32 @@ func installedApps() ([]App, []int) {
 	return append([]App(nil), appCache...), append([]int(nil), uidCache...)
 }
 
-// Telegram IPv4 ranges. They are limited to Telegram's published DC address space.
-var telegramV4 = []string{"149.154.160.0/20", "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22", "91.108.16.0/22", "91.108.20.0/22", "91.108.56.0/22", "185.76.151.0/24", "91.105.192.0/23"}
+// telegramSubnets is the single source of Telegram IPv4 aggregates: the
+// iptables REDIRECT list (telegramV4) and dcFor's prefix lookup are derived
+// from it. dc 0 marks the shared 149.154.160.0/20 pool, which dcFor resolves
+// by octet because it hosts several DCs.
+var telegramSubnets = []struct {
+	cidr string
+	dc   int
+}{
+	{"149.154.160.0/20", 0},
+	{"91.108.4.0/22", 1},
+	{"91.108.8.0/22", 2},
+	{"91.108.12.0/22", 3},
+	{"91.108.16.0/22", 4},
+	{"91.108.20.0/22", 5},
+	{"91.108.56.0/22", 5},
+	{"185.76.151.0/24", 2},
+	{"91.105.192.0/23", 2},
+}
+
+var telegramV4 = func() []string {
+	out := make([]string, len(telegramSubnets))
+	for i, sub := range telegramSubnets {
+		out[i] = sub.cidr
+	}
+	return out
+}()
 
 func runCmd(name string, args ...string) error {
 	var lastErr error
@@ -2411,11 +2435,16 @@ func serve() {
 	}
 }
 
-var knownTestDCMap = map[string]int{
-	"149.154.175.10":  1,
-	"149.154.167.40":  2,
-	"149.154.175.117": 3,
-}
+// knownTestDCMap is derived from dcSpecs so test endpoints are defined once.
+var knownTestDCMap = func() map[string]int {
+	out := make(map[string]int)
+	for dc, spec := range dcSpecs {
+		if spec.testIP != "" {
+			out[spec.testIP] = dc
+		}
+	}
+	return out
+}()
 
 var (
 	knownDCMap = map[string]int{
@@ -2426,19 +2455,26 @@ var (
 		"149.154.167.223": 2, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4,
 		"149.154.166.121": 4, "149.154.175.52": 1, "149.154.175.102": 3, "149.154.174.100": 1, "149.154.170.100": 5,
 		"149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.118": 5, "91.108.56.128": 5, "91.108.56.151": 5,
-		"91.105.192.100": 203,
+		cdn203IP: 203,
 	}
 
-	prefix149_160 = netip.MustParsePrefix("149.154.160.0/20")
-	prefix185_151 = netip.MustParsePrefix("185.76.151.0/24")
-	prefix91_192  = netip.MustParsePrefix("91.105.192.0/23")
-	prefix91_56   = netip.MustParsePrefix("91.108.56.0/22")
-	prefix91_4    = netip.MustParsePrefix("91.108.4.0/22")
-	prefix91_8    = netip.MustParsePrefix("91.108.8.0/22")
-	prefix91_12   = netip.MustParsePrefix("91.108.12.0/22")
-	prefix91_16   = netip.MustParsePrefix("91.108.16.0/22")
-	prefix91_20   = netip.MustParsePrefix("91.108.20.0/22")
+	// telegramParsedSubnets mirrors telegramSubnets with parsed prefixes; the
+	// octet-resolved 149.154.160.0/20 entry is skipped in dcFor's prefix loop.
+	telegramParsedSubnets = func() []telegramSubnet {
+		out := make([]telegramSubnet, len(telegramSubnets))
+		for i, sub := range telegramSubnets {
+			out[i] = telegramSubnet{prefix: netip.MustParsePrefix(sub.cidr), dc: sub.dc}
+		}
+		return out
+	}()
+
+	prefix149_160 = telegramParsedSubnets[0].prefix
 )
+
+type telegramSubnet struct {
+	prefix netip.Prefix
+	dc     int
+}
 
 func dcFor(ip netip.Addr) int {
 	// SO_ORIGINAL_DST may yield IPv4-mapped IPv6 addresses such as
@@ -2493,29 +2529,10 @@ func dcFor(ip netip.Addr) int {
 			return 1
 		}
 	}
-	if prefix185_151.Contains(ip) {
-		return 2
-	}
-	if prefix91_192.Contains(ip) {
-		return 2
-	}
-	if prefix91_56.Contains(ip) {
-		return 5
-	}
-	if prefix91_4.Contains(ip) {
-		return 1
-	}
-	if prefix91_8.Contains(ip) {
-		return 2
-	}
-	if prefix91_12.Contains(ip) {
-		return 3
-	}
-	if prefix91_16.Contains(ip) {
-		return 4
-	}
-	if prefix91_20.Contains(ip) {
-		return 5
+	for _, sub := range telegramParsedSubnets {
+		if sub.dc != 0 && sub.prefix.Contains(ip) {
+			return sub.dc
+		}
 	}
 	return 0
 }
@@ -2611,7 +2628,7 @@ func handleClient(c net.Conn) {
 		isMedia = mediaForIP(orig.Addr())
 		logf("conn #%d %s: DC not recognized in init, fallback by IP -> DC%d (test=%t) media=%t", id, orig, dc, isTestDC, isMedia)
 	}
-	if orig.Addr().String() == "91.105.192.100" || dc == 203 {
+	if orig.Addr().String() == cdn203IP || dc == 203 {
 		handleCDN203(c, orig, init, id)
 		return
 	}
@@ -2680,7 +2697,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	worker := customCFWorkerCached()
 	if worker != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		ws, err := dialCFWorker(ctx, 203, "91.105.192.100", worker, false)
+		ws, err := dialCFWorker(ctx, 203, cdn203IP, worker, false)
 		cancel()
 		if err == nil {
 			logf("conn #%d %s -> CDN203 via Cloudflare Worker %s", id, orig, worker)
@@ -2691,17 +2708,17 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		logf("conn #%d CDN203: Cloudflare Worker %s did not respond: %v; falling back to direct TCP", id, worker, err)
 	}
 
-	// Dedicated native TCP pass-through for CDN203 (91.105.192.100:443)
+	// Dedicated native TCP pass-through for CDN203 (cdn203IP:443)
 	if !dc203DirectTCPCached() {
 		logf("conn #%d CDN203 direct TCP disabled by configuration", id)
 		return
 	}
 	d := net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
-	remote, err := d.Dial("tcp4", "91.105.192.100:443")
+	remote, err := d.Dial("tcp4", net.JoinHostPort(cdn203IP, "443"))
 	if err != nil {
 		if !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
-			logf("conn #%d CDN203 (91.105.192.100:443) TCP dial failed: %v", id, err)
+			logf("conn #%d CDN203 (%s:443) TCP dial failed: %v", id, cdn203IP, err)
 		}
 		return
 	}
@@ -2713,7 +2730,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		return
 	}
 	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
-	logf("conn #%d %s -> CDN203 (91.105.192.100:443) via direct TCP pass-through", id, orig)
+	logf("conn #%d %s -> CDN203 (%s:443) via direct TCP pass-through", id, orig, cdn203IP)
 	pipeTCPToTCP(c, remote, id, 203)
 }
 
@@ -3114,6 +3131,10 @@ func wsHostsForDC(dc int, isMedia bool) []string {
 	return []string{primary, alternate}
 }
 
+// cdn203IP is the CDN203 endpoint, shared by the worker ?dst= target and the
+// native TCP pass-through.
+const cdn203IP = "91.105.192.100"
+
 // dcSpec is the single source of truth for per-DC endpoint tables: the
 // preferred ingress IP, the direct-dial candidate list, the Cloudflare Worker
 // ?dst= target and the test-DC endpoint (empty when Telegram defines none).
@@ -3154,7 +3175,7 @@ var dcSpecs = map[int]dcSpec{
 		workerDst:  "149.154.171.5",
 	},
 	203: {
-		workerDst: "91.105.192.100",
+		workerDst: cdn203IP,
 	},
 }
 
