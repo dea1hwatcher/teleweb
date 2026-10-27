@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,22 +24,8 @@ var (
 	h2Fails     = make(map[string]time.Time)
 )
 
-func readH2MediaEnabled() bool {
-	b, err := os.ReadFile(path("h2_media_enabled"))
-	if err != nil {
-		return false // optional experimental feature, off by default
-	}
-	return strings.TrimSpace(string(b)) == "1"
-}
-
-func writeH2MediaEnabled(v bool) error {
-	ensureDir()
-	val := "0"
-	if v {
-		val = "1"
-	}
-	return os.WriteFile(path("h2_media_enabled"), []byte(val), 0600)
-}
+func readH2MediaEnabled() bool         { return readFlag("h2_media_enabled", false) }
+func writeH2MediaEnabled(v bool) error { return writeFlag("h2_media_enabled", v) }
 
 func getH2Client(host string) *http.Client {
 	h2ClientsMu.RLock()

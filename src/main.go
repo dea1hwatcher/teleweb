@@ -509,39 +509,32 @@ func cfDomainsCached() []string {
 	return cachedFileRead("cf-domains", func() any { return cfDomains() }).([]string)
 }
 
-func readCFPriority() bool {
-	b, err := os.ReadFile(path("cf-priority"))
+func readFlag(name string, defaultValue bool) bool {
+	b, err := os.ReadFile(path(name))
 	if err != nil {
-		return false
+		return defaultValue
 	}
-	return strings.TrimSpace(string(b)) == "1"
+	value := strings.TrimSpace(string(b))
+	// Default-on flags require an explicit "0" to disable them.
+	if defaultValue {
+		return value != "0"
+	}
+	return value == "1"
 }
 
-func writeCFPriority(v bool) error {
+func writeFlag(name string, v bool) error {
 	ensureDir()
-	s := "0\n"
+	value := "0\n"
 	if v {
-		s = "1\n"
+		value = "1\n"
 	}
-	return os.WriteFile(path("cf-priority"), []byte(s), 0600)
+	return os.WriteFile(path(name), []byte(value), 0600)
 }
 
-func readCFBalance() bool {
-	b, err := os.ReadFile(path("cf-balance"))
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(b)) == "1"
-}
-
-func writeCFBalance(v bool) error {
-	ensureDir()
-	s := "0\n"
-	if v {
-		s = "1\n"
-	}
-	return os.WriteFile(path("cf-balance"), []byte(s), 0600)
-}
+func readCFPriority() bool         { return readFlag("cf-priority", false) }
+func writeCFPriority(v bool) error { return writeFlag("cf-priority", v) }
+func readCFBalance() bool          { return readFlag("cf-balance", false) }
+func writeCFBalance(v bool) error  { return writeFlag("cf-balance", v) }
 
 func readCustomCFDomain() string {
 	b, err := os.ReadFile(path("custom-cf-domain"))
@@ -616,22 +609,8 @@ func parseCFRayPoP(ray string) string {
 	return ""
 }
 
-func readForceTestDC() bool {
-	b, err := os.ReadFile(path("force_test_dc"))
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(b)) == "1"
-}
-
-func writeForceTestDC(v bool) error {
-	ensureDir()
-	val := "0"
-	if v {
-		val = "1"
-	}
-	return os.WriteFile(path("force_test_dc"), []byte(val), 0600)
-}
+func readForceTestDC() bool         { return readFlag("force_test_dc", false) }
+func writeForceTestDC(v bool) error { return writeFlag("force_test_dc", v) }
 
 func readDCOverridesRaw() string {
 	b, err := os.ReadFile(path("dc-override"))
@@ -2688,22 +2667,8 @@ func handleClient(c net.Conn) {
 	pipeWSTunnel(c, ws, init, id, dc, isMedia)
 }
 
-func readDC203DirectTCP() bool {
-	b, err := os.ReadFile(path("dc203_direct_tcp"))
-	if err != nil {
-		return true // enabled by default for maximum compatibility
-	}
-	return strings.TrimSpace(string(b)) != "0"
-}
-
-func writeDC203DirectTCP(v bool) error {
-	ensureDir()
-	val := "1"
-	if !v {
-		val = "0"
-	}
-	return os.WriteFile(path("dc203_direct_tcp"), []byte(val), 0600)
-}
+func readDC203DirectTCP() bool         { return readFlag("dc203_direct_tcp", true) }
+func writeDC203DirectTCP(v bool) error { return writeFlag("dc203_direct_tcp", v) }
 
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()

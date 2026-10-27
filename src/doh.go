@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -66,22 +65,8 @@ func getDoHClient() *http.Client {
 	return dohHTTPClient
 }
 
-func readDoHEnabled() bool {
-	b, err := os.ReadFile(path("doh_enabled"))
-	if err != nil {
-		return true // enabled by default for protection against DNS spoofing
-	}
-	return strings.TrimSpace(string(b)) != "0"
-}
-
-func writeDoHEnabled(v bool) error {
-	ensureDir()
-	val := "1"
-	if !v {
-		val = "0"
-	}
-	return os.WriteFile(path("doh_enabled"), []byte(val), 0600)
-}
+func readDoHEnabled() bool         { return readFlag("doh_enabled", true) }
+func writeDoHEnabled(v bool) error { return writeFlag("doh_enabled", v) }
 
 func storeDoHCache(host string, entry dohCacheEntry) {
 	var count int

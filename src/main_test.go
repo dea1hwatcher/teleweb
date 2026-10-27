@@ -1068,6 +1068,52 @@ func TestAppsCachePersistence(t *testing.T) {
 	}
 }
 
+func TestFlagStorageDefaultsAndValues(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() { baseDir = oldDir })
+	flags := []struct {
+		name         string
+		defaultValue bool
+		read         func() bool
+		write        func(bool) error
+	}{
+		{"cf-priority", false, readCFPriority, writeCFPriority},
+		{"cf-balance", false, readCFBalance, writeCFBalance},
+		{"force_test_dc", false, readForceTestDC, writeForceTestDC},
+		{"doh_enabled", true, readDoHEnabled, writeDoHEnabled},
+		{"h2_media_enabled", false, readH2MediaEnabled, writeH2MediaEnabled},
+		{"dc203_direct_tcp", true, readDC203DirectTCP, writeDC203DirectTCP},
+	}
+	for _, flag := range flags {
+		t.Run(flag.name, func(t *testing.T) {
+			if got := flag.read(); got != flag.defaultValue {
+				t.Fatalf("missing file: got %t, want %t", got, flag.defaultValue)
+			}
+			for _, raw := range []string{"", "garbage", "0", "1", " 1\r\n", " 0\n"} {
+				if err := os.WriteFile(path(flag.name), []byte(raw), 0600); err != nil {
+					t.Fatal(err)
+				}
+				want := strings.TrimSpace(raw) == "1"
+				if flag.defaultValue {
+					want = strings.TrimSpace(raw) != "0"
+				}
+				if got := flag.read(); got != want {
+					t.Errorf("value %q: got %t, want %t", raw, got, want)
+				}
+			}
+			for _, value := range []bool{false, true} {
+				if err := flag.write(value); err != nil {
+					t.Fatal(err)
+				}
+				if got := flag.read(); got != value {
+					t.Errorf("roundtrip: got %t, want %t", got, value)
+				}
+			}
+		})
+	}
+}
+
 func TestNormalizeWorkerAddress(t *testing.T) {
 	for _, prefix := range []string{"", "https://", "http://", "wss://", "ws://"} {
 		for _, address := range []string{"worker.example", "worker.example/apiws?token=a%2Fb%3D"} {
