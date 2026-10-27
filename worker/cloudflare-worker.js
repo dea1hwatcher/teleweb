@@ -17,6 +17,9 @@ const ALLOWED_DESTINATIONS = new Set([
   "149.154.171.5",   // DC5
   "149.154.175.50",  // DC1
   "149.154.175.100", // DC3
+  "149.154.175.10",  // DC1 Test
+  "149.154.167.40",  // DC2 Test
+  "149.154.175.117", // DC3 Test
 ]);
 
 const TELEGRAM_PORT = 443;
@@ -28,7 +31,7 @@ export default {
   async fetch(request, env = {}) {
     const url = new URL(request.url);
 
-    if (url.pathname !== "/apiws") {
+    if (url.pathname !== "/apiws" && url.pathname !== "/apiws_test") {
       return new Response("not found", { status: 404 });
     }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {

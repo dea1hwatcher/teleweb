@@ -114,6 +114,9 @@ func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
 		ttl int
 	}
 
+	raceCtx, raceCancel := context.WithCancel(ctx)
+	defer raceCancel()
+
 	results := make(chan raceResult, len(dohEndpoints))
 	var wg sync.WaitGroup
 
@@ -124,7 +127,7 @@ func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
 			defer wg.Done()
 
 			reqURL := fmt.Sprintf("%s?name=%s&type=A", endpoint, url.QueryEscape(host))
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+			req, err := http.NewRequestWithContext(raceCtx, http.MethodGet, reqURL, nil)
 			if err != nil {
 				return
 			}
