@@ -1822,6 +1822,24 @@ func waitForListener(timeout time.Duration) bool {
 	return true
 }
 
+// restoreDaemon replaces a dead or unresponsive daemon and reinstalls the
+// redirect rules: stopServer drops stale rules before the listener is
+// replaced, and rules return only once the new listener is up so traffic is
+// never pointed at a port nobody listens on.
+func restoreDaemon() error {
+	stopServer()
+	if err := ensureServer(); err != nil {
+		return fmt.Errorf("start tgws: %w", err)
+	}
+	if !waitForListener(4 * time.Second) {
+		return fmt.Errorf("tgws failed to listen on port %d", defaultPort)
+	}
+	if err := setupRules(); err != nil {
+		return fmt.Errorf("restore redirect rules: %w", err)
+	}
+	return nil
+}
+
 func rulesHealthy() bool {
 	bin := findBin("iptables")
 	if bin == "" {
@@ -1878,21 +1896,8 @@ func watchdog() {
 		lastDaemonOK, lastRulesOK = daemonOK, rulesOK
 		if !daemonOK {
 			logf("watchdog: tgws unresponsive, auto-restarting; %s; listener=%t", procSummary(readPIDFile("tgws.pid")), serverListening())
-			stopServer() // removes stale redirect rules before the listener is replaced
-			if err := ensureServer(); err != nil {
-				logf("watchdog: failed to start tgws: %v", err)
-				continue
-			}
-			deadline := time.Now().Add(3 * time.Second)
-			for !serverListening() && time.Now().Before(deadline) {
-				time.Sleep(100 * time.Millisecond)
-			}
-			if !serverListening() {
-				logf("watchdog: tgws failed to listen on port %d", defaultPort)
-				continue
-			}
-			if err := setupRules(); err != nil {
-				logf("watchdog: rules not restored after restart: %v", err)
+			if err := restoreDaemon(); err != nil {
+				logf("watchdog: auto-restart failed: %v", err)
 				continue
 			}
 		}
@@ -1918,18 +1923,7 @@ func ensureRuntime() error {
 	}
 	if !daemonHealthy() {
 		logf("supervisor: daemon/listener missing, restoring")
-		stopServer()
-		if err := ensureServer(); err != nil {
-			return err
-		}
-		deadline := time.Now().Add(4 * time.Second)
-		for !serverListening() && time.Now().Before(deadline) {
-			time.Sleep(100 * time.Millisecond)
-		}
-		if !serverListening() {
-			return fmt.Errorf("tgws failed to listen on port %d", defaultPort)
-		}
-		if err := setupRules(); err != nil {
+		if err := restoreDaemon(); err != nil {
 			return err
 		}
 	} else if !rulesHealthy() {
