@@ -1068,6 +1068,19 @@ func TestAppsCachePersistence(t *testing.T) {
 	}
 }
 
+func TestNormalizeWorkerAddress(t *testing.T) {
+	for _, prefix := range []string{"", "https://", "http://", "wss://", "ws://"} {
+		for _, address := range []string{"worker.example", "worker.example/apiws?token=a%2Fb%3D"} {
+			if got := normalizeWorkerAddress(" \n" + prefix + address + "/\r\n"); got != address {
+				t.Errorf("prefix %q: got %q, want %q", prefix, got, address)
+			}
+		}
+	}
+	if got := normalizeWorkerAddress(" \n"); got != "" {
+		t.Errorf("empty address: got %q", got)
+	}
+}
+
 func TestCustomCFWorkerConfig(t *testing.T) {
 	oldDir := baseDir
 	tmp := t.TempDir()

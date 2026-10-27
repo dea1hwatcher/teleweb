@@ -568,12 +568,8 @@ func writeCustomCFDomain(d string) error {
 	return os.WriteFile(path("custom-cf-domain"), []byte(d+"\n"), 0600)
 }
 
-func readCustomCFWorker() string {
-	b, err := os.ReadFile(path("custom-cf-worker"))
-	if err != nil {
-		return ""
-	}
-	w := strings.TrimSpace(string(b))
+func normalizeWorkerAddress(w string) string {
+	w = strings.TrimSpace(w)
 	w = strings.TrimPrefix(w, "https://")
 	w = strings.TrimPrefix(w, "wss://")
 	w = strings.TrimPrefix(w, "http://")
@@ -581,14 +577,17 @@ func readCustomCFWorker() string {
 	return strings.TrimRight(w, "/")
 }
 
+func readCustomCFWorker() string {
+	b, err := os.ReadFile(path("custom-cf-worker"))
+	if err != nil {
+		return ""
+	}
+	return normalizeWorkerAddress(string(b))
+}
+
 func writeCustomCFWorker(w string) error {
 	ensureDir()
-	w = strings.TrimSpace(w)
-	w = strings.TrimPrefix(w, "https://")
-	w = strings.TrimPrefix(w, "wss://")
-	w = strings.TrimPrefix(w, "http://")
-	w = strings.TrimPrefix(w, "ws://")
-	w = strings.TrimRight(w, "/")
+	w = normalizeWorkerAddress(w)
 	if w == "" {
 		_ = os.Remove(path("custom-cf-worker"))
 		return nil
@@ -4093,11 +4092,7 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 	if worker == "" {
 		return nil, errors.New("worker is not configured")
 	}
-	worker = strings.TrimPrefix(worker, "https://")
-	worker = strings.TrimPrefix(worker, "wss://")
-	worker = strings.TrimPrefix(worker, "http://")
-	worker = strings.TrimPrefix(worker, "ws://")
-	worker = strings.TrimRight(worker, "/")
+	worker = normalizeWorkerAddress(worker)
 
 	host := worker
 	query := ""
