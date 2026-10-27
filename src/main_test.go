@@ -970,7 +970,6 @@ func TestIsNeutralError(t *testing.T) {
 		errors.New("wsarecv: An existing connection was forcibly closed by the remote host."),
 		errors.New("write: broken pipe"),
 		errors.New("use of closed network connection"),
-		errors.New("client_eof"),
 	}
 	for _, err := range neutralErrors {
 		if !isNeutralError(err) {

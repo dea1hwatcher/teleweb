@@ -2519,8 +2519,6 @@ func dcFor(ip netip.Addr) int {
 			return 5
 		case b[2] >= 172 && b[2] <= 174:
 			return 1
-		default:
-			return 1
 		}
 	}
 	for _, sub := range telegramParsedSubnets {
@@ -2559,8 +2557,7 @@ func isNeutralError(err error) bool {
 		strings.Contains(msg, "forcibly closed by the remote host") ||
 		strings.Contains(msg, "use of closed network connection") ||
 		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "context canceled") ||
-		strings.Contains(msg, "client_eof")
+		strings.Contains(msg, "context canceled")
 }
 
 func handleClient(c net.Conn) {
@@ -2867,7 +2864,7 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 			}
 			lastActivity.Store(time.Now().UnixNano())
 			switch op {
-			case 2, 0:
+			case 2:
 				if len(payload) > 0 {
 					if readErr = writeFull(c, payload); readErr != nil {
 						logf("conn #%d DC%d write WSS->client finished: %v (up=%d down=%d)", id, dc, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
@@ -4324,7 +4321,6 @@ func runChecks() {
 			os.Exit(1)
 		}
 	}
-	// Exercise WebSocket framing with an in-memory fake server/client pair.
 	fmt.Println("DC mapping smoke test passed")
 }
 
