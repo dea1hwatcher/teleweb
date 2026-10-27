@@ -89,6 +89,7 @@ func storeDoHCache(host string, entry dohCacheEntry) {
 		count++
 		if e, ok := val.(dohCacheEntry); ok && time.Now().After(e.expires) {
 			dohCache.Delete(key)
+			count--
 		}
 		return true
 	})

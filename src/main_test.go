@@ -1097,6 +1097,35 @@ func TestCustomCFWorkerConfig(t *testing.T) {
 	}
 }
 
+func TestDoHCacheEvictionIgnoresExpiredEntries(t *testing.T) {
+	saved := map[any]any{}
+	dohCache.Range(func(k, v any) bool {
+		saved[k] = v
+		dohCache.Delete(k)
+		return true
+	})
+	t.Cleanup(func() {
+		dohCache.Range(func(k, _ any) bool { dohCache.Delete(k); return true })
+		for k, v := range saved {
+			dohCache.Store(k, v)
+		}
+	})
+	for i := 0; i < 300; i++ {
+		dohCache.Store(fmt.Sprint(i), dohCacheEntry{expires: time.Now().Add(-time.Hour)})
+	}
+	fresh := dohCacheEntry{expires: time.Now().Add(time.Hour)}
+	dohCache.Store("fresh", fresh)
+	storeDoHCache("new", fresh)
+	if _, ok := dohCache.Load("fresh"); !ok {
+		t.Fatal("fresh DNS entry evicted because expired entries inflated the count")
+	}
+	count := 0
+	dohCache.Range(func(_, _ any) bool { count++; return true })
+	if count != 2 {
+		t.Fatalf("got %d entries, want fresh and new only", count)
+	}
+}
+
 func TestRunCmdRetriesOnlyLockFailures(t *testing.T) {
 	if marker := os.Getenv("TELEWEB_TEST_COMMAND_MARKER"); marker != "" {
 		previous, _ := os.ReadFile(marker)
