@@ -3776,6 +3776,30 @@ func appendUniqueIP(dst []netip.Addr, ip netip.Addr) []netip.Addr {
 	return append(dst, ip)
 }
 
+const (
+	routeRejectNone = iota
+	routeRejectRateLimit
+	routeRejectForbidden
+	routeRejectServer
+)
+
+// routeHTTPRejection classifies a lower-cased dial failure message. These are
+// frontends rejecting the route itself (unlike timeouts or resets, which may be
+// transient), so callers either cool the host down or move to the next IP.
+func routeHTTPRejection(msg string) int {
+	switch {
+	case strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests"):
+		return routeRejectRateLimit
+	case strings.Contains(msg, "403") || strings.Contains(msg, "forbidden"):
+		return routeRejectForbidden
+	case strings.Contains(msg, "http 500") || strings.Contains(msg, "http 502") || strings.Contains(msg, "http 503") ||
+		strings.Contains(msg, "http 504") || strings.Contains(msg, "http 521") || strings.Contains(msg, "http 522") ||
+		strings.Contains(msg, "http 523") || strings.Contains(msg, "http 525"):
+		return routeRejectServer
+	}
+	return routeRejectNone
+}
+
 func noteRouteHTTPFailure(host string, err error) {
 	if host == "" || err == nil {
 		return
@@ -3784,23 +3808,22 @@ func noteRouteHTTPFailure(host string, err error) {
 	var cooldown time.Duration
 	var reason string
 
-	switch {
-	case strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests"):
+	switch routeHTTPRejection(msg) {
+	case routeRejectRateLimit:
 		cooldown = 3 * time.Minute
 		reason = "HTTP 429 (Rate Limit)"
-	case strings.Contains(msg, "403") || strings.Contains(msg, "forbidden"):
+	case routeRejectForbidden:
 		cooldown = 3 * time.Minute
 		reason = "HTTP 403 (Forbidden)"
-	case strings.Contains(msg, "http 500") || strings.Contains(msg, "http 502") || strings.Contains(msg, "http 503") ||
-		strings.Contains(msg, "http 504") || strings.Contains(msg, "http 521") || strings.Contains(msg, "http 522") ||
-		strings.Contains(msg, "http 523") || strings.Contains(msg, "http 525"):
+	case routeRejectServer:
 		cooldown = 3 * time.Minute
 		reason = "HTTP 5xx (Server Error)"
-	case isTimeout(err) || isTimeoutText(msg):
+	default:
+		if !isTimeout(err) && !isTimeoutText(msg) {
+			return
+		}
 		cooldown = 45 * time.Second
 		reason = "Timeout"
-	default:
-		return
 	}
 
 	now := time.Now()
@@ -3875,11 +3898,9 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 			}
 			noteRouteHTTPFailure(host, e)
 			_ = raw.Close()
-			msg := strings.ToLower(e.Error())
-			if strings.Contains(msg, "429") || strings.Contains(msg, "403") ||
-				strings.Contains(msg, "http 500") || strings.Contains(msg, "http 502") ||
-				strings.Contains(msg, "http 503") || strings.Contains(msg, "http 504") ||
-				strings.Contains(msg, "http 521") || strings.Contains(msg, "http 522") {
+			// A rejected route will reject the next IP the same way: stop
+			// trying this host instead of burning the dial budget on it.
+			if routeHTTPRejection(strings.ToLower(e.Error())) != routeRejectNone {
 				cancel()
 				return nil, e
 			}

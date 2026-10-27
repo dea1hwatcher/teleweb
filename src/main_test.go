@@ -651,6 +651,23 @@ func TestNoteRouteHTTPFailureCooldown(t *testing.T) {
 	}
 }
 
+func TestRouteHTTPRejectionClassification(t *testing.T) {
+	cases := map[string]int{
+		"http 429: too many requests": routeRejectRateLimit,
+		"rate limit exceeded":         routeRejectRateLimit,
+		"http 403: forbidden":         routeRejectForbidden,
+		"http 502: bad gateway":       routeRejectServer,
+		"http 525: ssl handshake":     routeRejectServer,
+		"http 404: not found":         routeRejectNone,
+		"connection reset by peer":    routeRejectNone,
+	}
+	for msg, want := range cases {
+		if got := routeHTTPRejection(msg); got != want {
+			t.Errorf("routeHTTPRejection(%q)=%d, want %d", msg, got, want)
+		}
+	}
+}
+
 func TestNoteRouteHTTPFailureDecayAfterQuietPeriod(t *testing.T) {
 	host := "backoff-decay.example"
 	clearRouteHealth(host)
