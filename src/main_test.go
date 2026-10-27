@@ -1097,6 +1097,37 @@ func TestCustomCFWorkerConfig(t *testing.T) {
 	}
 }
 
+func TestStatusRefreshesDC203Config(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	appCacheMu.Lock()
+	oldApps, oldUIDs := appCache, uidCache
+	appCache = []App{{Pkg: "org.telegram.messenger", UID: 10001}}
+	uidCache = []int{10001}
+	appCacheMu.Unlock()
+	t.Cleanup(func() {
+		baseDir = oldDir
+		appCacheMu.Lock()
+		appCache, uidCache = oldApps, oldUIDs
+		appCacheMu.Unlock()
+	})
+	for _, enabled := range []bool{true, false} {
+		saved, err := json.Marshal(Status{DC203DirectTCP: !enabled})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path("status.json"), saved, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeDC203DirectTCP(enabled); err != nil {
+			t.Fatal(err)
+		}
+		if got := status().DC203DirectTCP; got != enabled {
+			t.Fatalf("status returned stale CDN203 config: got %t, want %t", got, enabled)
+		}
+	}
+}
+
 func TestCDN203DisabledDoesNotCountInit(t *testing.T) {
 	oldDir := baseDir
 	baseDir = t.TempDir()

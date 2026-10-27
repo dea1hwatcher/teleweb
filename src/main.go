@@ -2062,6 +2062,7 @@ func status() Status {
 			s.DoHEnabled = readDoHEnabled()
 			s.ForceTestDC = readForceTestDC()
 			s.H2MediaEnabled = readH2MediaEnabled()
+			s.DC203DirectTCP = readDC203DirectTCP()
 			if p := lastCFPoP.Load(); p != nil {
 				s.LastCFPoP = *p
 			}
