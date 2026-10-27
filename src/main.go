@@ -1130,7 +1130,7 @@ func runCmd(name string, args ...string) error {
 		}
 		outStr := strings.TrimSpace(string(b))
 		lastErr = fmt.Errorf("%s %s: %v (%s)", name, strings.Join(args, " "), e, outStr)
-		if strings.Contains(outStr, "xtables.lock") || strings.Contains(outStr, "Can't lock") || strings.Contains(outStr, "exit status 4") {
+		if strings.Contains(outStr, "xtables.lock") || strings.Contains(outStr, "Can't lock") {
 			time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
 			continue
 		}

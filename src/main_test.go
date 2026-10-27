@@ -1097,6 +1097,44 @@ func TestCustomCFWorkerConfig(t *testing.T) {
 	}
 }
 
+func TestRunCmdRetriesOnlyLockFailures(t *testing.T) {
+	if marker := os.Getenv("TELEWEB_TEST_COMMAND_MARKER"); marker != "" {
+		previous, _ := os.ReadFile(marker)
+		if err := os.WriteFile(marker, append(previous, 'x'), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if len(previous) == 0 || os.Getenv("TELEWEB_TEST_COMMAND_ERROR") == "exit status 4" {
+			fmt.Fprintln(os.Stderr, os.Getenv("TELEWEB_TEST_COMMAND_ERROR"))
+			os.Exit(4)
+		}
+		return
+	}
+	for _, output := range []string{"exit status 4", "Can't lock xtables.lock"} {
+		t.Run(output, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "attempts")
+			t.Setenv("TELEWEB_TEST_COMMAND_MARKER", marker)
+			t.Setenv("TELEWEB_TEST_COMMAND_ERROR", output)
+			err := runCmd(os.Args[0], "-test.run=^TestRunCmdRetriesOnlyLockFailures$")
+			attempts, readErr := os.ReadFile(marker)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			want := 2
+			if output == "exit status 4" {
+				want = 1
+				if err == nil {
+					t.Fatal("expected non-lock command failure")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if len(attempts) != want {
+				t.Fatalf("got %d attempts, want %d", len(attempts), want)
+			}
+		})
+	}
+}
+
 func TestStatusRefreshesDC203Config(t *testing.T) {
 	oldDir := baseDir
 	baseDir = t.TempDir()
