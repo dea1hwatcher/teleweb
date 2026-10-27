@@ -629,6 +629,58 @@ func TestNoteRouteHTTPFailureCooldown(t *testing.T) {
 	}
 }
 
+func TestNoteRouteHTTPFailureDecayAfterQuietPeriod(t *testing.T) {
+	host := "backoff-decay.example"
+	clearRouteHealth(host)
+	defer clearRouteHealth(host)
+
+	// Build up an old failure series, then age it out past the decay window
+	// by backdating the last-failure timestamp.
+	for i := 0; i < 6; i++ {
+		noteRouteHTTPFailure(host, errors.New("HTTP 429: too many requests"))
+	}
+	routeHealthMu.Lock()
+	routeHealth[host] = routeHealthState{
+		failures: routeHealth[host].failures,
+		last:     time.Now().Add(-2 * time.Hour),
+		until:    time.Now().Add(-1 * time.Hour),
+	}
+	routeHealthMu.Unlock()
+
+	// A single 429 two hours later must not inherit the grown backoff: the
+	// strike counter decays and the host gets the base 30s cooldown.
+	noteRouteHTTPFailure(host, errors.New("HTTP 429: too many requests"))
+	routeHealthMu.Lock()
+	failures := routeHealth[host].failures
+	until := routeHealth[host].until
+	routeHealthMu.Unlock()
+	if failures != 1 {
+		t.Fatalf("expected failures decayed to 1 after quiet period, got %d", failures)
+	}
+	if cooldown := time.Until(until); cooldown > routeBackoff(1)+5*time.Second {
+		t.Fatalf("expected base backoff after decay, got %s", cooldown.Round(time.Second))
+	}
+}
+
+func TestNoteRouteHTTPFailureEscalatesWithinSeries(t *testing.T) {
+	host := "backoff-escalate.example"
+	clearRouteHealth(host)
+	defer clearRouteHealth(host)
+
+	// Failures in quick succession keep escalating within the series.
+	noteRouteHTTPFailure(host, errors.New("HTTP 429: too many requests"))
+	routeHealthMu.Lock()
+	first := routeHealth[host].until
+	routeHealthMu.Unlock()
+	noteRouteHTTPFailure(host, errors.New("HTTP 429: too many requests"))
+	routeHealthMu.Lock()
+	second := routeHealth[host].until
+	routeHealthMu.Unlock()
+	if !second.After(first) {
+		t.Fatalf("expected escalated backoff within a series: first=%s second=%s", first, second)
+	}
+}
+
 func TestRouteCachePersistence(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "teleweb-route-cache-test-*")
 	if err != nil {
@@ -1308,7 +1360,6 @@ func TestRaceCandidatesFastFailureRecoversSlot(t *testing.T) {
 		t.Fatalf("race took too long (%v > 150ms), slot recovery stalled", elapsed)
 	}
 }
-
 
 func TestScoreDensity(t *testing.T) {
 	if scoreDensity("res/mipmap-xxxhdpi/ic_launcher.png") <= scoreDensity("res/mipmap-mdpi/ic_launcher.png") {

@@ -76,6 +76,11 @@ else
 fi
 
 # 3.1 Protect Telegram voice and video calls (UDP STUN 3478, TURN 596-599) from DPI interception (Zapret / nfqws)
+# Locally generated traffic traverses OUTPUT only; PREROUTING covers forwarded traffic (hotspot).
+iptables -t mangle -C OUTPUT -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null || \
+iptables -t mangle -I OUTPUT 1 -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null
+ip6tables -t mangle -C OUTPUT -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null || \
+ip6tables -t mangle -I OUTPUT 1 -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null
 iptables -t mangle -C PREROUTING -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null || \
 iptables -t mangle -I PREROUTING 1 -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null
 ip6tables -t mangle -C PREROUTING -p udp -m multiport --dports 3478,596:599 -m comment --comment "teleweb-calls" -j RETURN 2>/dev/null || \

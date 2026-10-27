@@ -596,7 +596,6 @@ func writeCustomCFWorker(w string) error {
 	return os.WriteFile(path("custom-cf-worker"), []byte(w+"\n"), 0600)
 }
 
-
 var (
 	lastCFRay atomic.Pointer[string]
 	lastCFPoP atomic.Pointer[string]
@@ -1207,12 +1206,22 @@ func iptCleanup(bin string, uids []int, chain string) {
 	_ = runCmd(bin, "-t", "nat", "-X", chain)
 }
 
+// Locally generated packets traverse OUTPUT only (PREROUTING is skipped for
+// on-device flows), so the STUN/TURN bypass must live there; PREROUTING is
+// kept for forwarded traffic (e.g. hotspot) where DPI chains also attach.
+var callsBypassBody = []string{"-p", "udp", "-m", "multiport", "--dports", "3478,596:599", "-m", "comment", "--comment", "teleweb-calls", "-j", "RETURN"}
+
 func setupCallsBypass(bin string) {
 	if bin == "" {
 		return
 	}
-	if runCmd(bin, "-t", "mangle", "-C", "PREROUTING", "-p", "udp", "-m", "multiport", "--dports", "3478,596:599", "-m", "comment", "--comment", "teleweb-calls", "-j", "RETURN") != nil {
-		_ = runCmd(bin, "-t", "mangle", "-I", "PREROUTING", "1", "-p", "udp", "-m", "multiport", "--dports", "3478,596:599", "-m", "comment", "--comment", "teleweb-calls", "-j", "RETURN")
+	for _, chain := range []string{"OUTPUT", "PREROUTING"} {
+		check := append([]string{"-t", "mangle", "-C", chain}, callsBypassBody...)
+		if runCmd(bin, check...) == nil {
+			continue
+		}
+		insert := append([]string{"-t", "mangle", "-I", chain, "1"}, callsBypassBody...)
+		_ = runCmd(bin, insert...)
 	}
 }
 
@@ -1220,9 +1229,12 @@ func cleanupCallsBypass(bin string) {
 	if bin == "" {
 		return
 	}
-	for i := 0; i < 4; i++ {
-		if runCmd(bin, "-t", "mangle", "-D", "PREROUTING", "-p", "udp", "-m", "multiport", "--dports", "3478,596:599", "-m", "comment", "--comment", "teleweb-calls", "-j", "RETURN") != nil {
-			break
+	for _, chain := range []string{"OUTPUT", "PREROUTING"} {
+		del := append([]string{"-t", "mangle", "-D", chain}, callsBypassBody...)
+		for i := 0; i < 4; i++ {
+			if runCmd(bin, del...) != nil {
+				break
+			}
 		}
 	}
 }
@@ -1794,6 +1806,20 @@ func serverListening() bool {
 
 func daemonHealthy() bool { return pidAlive() && serverListening() }
 
+// waitForListener polls the kernel socket table until the daemon's listen
+// port appears. REDIRECT rules must only be installed after this returns
+// true: rules pointing at a not-yet-listening port blackhole Telegram traffic.
+func waitForListener(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for !serverListening() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return true
+}
+
 func rulesHealthy() bool {
 	bin := findBin("iptables")
 	if bin == "" {
@@ -1995,11 +2021,21 @@ func currentStatus() Status {
 		PoolMisses:        misses,
 		PoolIdle:          idle,
 		DoHEnabled:        readDoHEnabled(),
-		LastCFPoP:         func() string { if p := lastCFPoP.Load(); p != nil { return *p }; return "" }(),
-		LastCFRay:         func() string { if p := lastCFRay.Load(); p != nil { return *p }; return "" }(),
-		ForceTestDC:       readForceTestDC(),
-		H2MediaEnabled:    readH2MediaEnabled(),
-		DC203DirectTCP:    readDC203DirectTCP(),
+		LastCFPoP: func() string {
+			if p := lastCFPoP.Load(); p != nil {
+				return *p
+			}
+			return ""
+		}(),
+		LastCFRay: func() string {
+			if p := lastCFRay.Load(); p != nil {
+				return *p
+			}
+			return ""
+		}(),
+		ForceTestDC:    readForceTestDC(),
+		H2MediaEnabled: readH2MediaEnabled(),
+		DC203DirectTCP: readDC203DirectTCP(),
 	}
 }
 func status() Status {
@@ -2026,8 +2062,12 @@ func status() Status {
 			s.DoHEnabled = readDoHEnabled()
 			s.ForceTestDC = readForceTestDC()
 			s.H2MediaEnabled = readH2MediaEnabled()
-			if p := lastCFPoP.Load(); p != nil { s.LastCFPoP = *p }
-			if p := lastCFRay.Load(); p != nil { s.LastCFRay = *p }
+			if p := lastCFPoP.Load(); p != nil {
+				s.LastCFPoP = *p
+			}
+			if p := lastCFRay.Load(); p != nil {
+				s.LastCFRay = *p
+			}
 			if globalWsPool != nil {
 				s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
 			}
@@ -2055,8 +2095,18 @@ func status() Status {
 		ForceTestDC:    readForceTestDC(),
 		H2MediaEnabled: readH2MediaEnabled(),
 		DC203DirectTCP: readDC203DirectTCP(),
-		LastCFPoP:      func() string { if p := lastCFPoP.Load(); p != nil { return *p }; return "" }(),
-		LastCFRay:      func() string { if p := lastCFRay.Load(); p != nil { return *p }; return "" }(),
+		LastCFPoP: func() string {
+			if p := lastCFPoP.Load(); p != nil {
+				return *p
+			}
+			return ""
+		}(),
+		LastCFRay: func() string {
+			if p := lastCFRay.Load(); p != nil {
+				return *p
+			}
+			return ""
+		}(),
 	}
 }
 func writeStatus() {
@@ -2096,11 +2146,15 @@ func apiMain(arg string) {
 			emitOK(status())
 			return
 		}
-		if err := setupRules(); err != nil {
+		if err := ensureServer(); err != nil {
 			emitErr(err)
 			return
 		}
-		if err := ensureServer(); err != nil {
+		if !waitForListener(4 * time.Second) {
+			emitErr(fmt.Errorf("tgws failed to listen on port %d", defaultPort))
+			return
+		}
+		if err := setupRules(); err != nil {
 			emitErr(err)
 			return
 		}
@@ -2117,16 +2171,25 @@ func apiMain(arg string) {
 				return
 			}
 			if *q.Enabled {
-				if err := setupRules(); err != nil {
+				if err := ensureServer(); err != nil {
 					_ = writeEnabled(false)
-					updateModuleDescription("⚠️ Сбой правил перехвата")
+					updateModuleDescription("⚠️ Ошибка запуска tgws")
 					emitErr(err)
 					return
 				}
-				if err := ensureServer(); err != nil {
+				// REDIRECT rules go in only after the listener is up, otherwise
+				// a slow start would blackhole Telegram traffic into a dead port.
+				if !waitForListener(4 * time.Second) {
+					_ = writeEnabled(false)
+					stopServer()
+					updateModuleDescription("⚠️ Ошибка запуска tgws")
+					emitErr(fmt.Errorf("tgws failed to listen on port %d", defaultPort))
+					return
+				}
+				if err := setupRules(); err != nil {
 					_ = writeEnabled(false)
 					cleanupRules()
-					updateModuleDescription("⚠️ Ошибка запуска tgws")
+					updateModuleDescription("⚠️ Сбой правил перехвата")
 					emitErr(err)
 					return
 				}
@@ -2245,6 +2308,20 @@ func main() {
 				fmt.Println("TeleWEB disabled")
 				return
 			}
+			// Start the listener before installing REDIRECT rules: rules that
+			// point at a not-yet-listening port blackhole Telegram traffic.
+			if e := ensureServer(); e != nil {
+				logf("boot: failed to start server: %v", e)
+				fmt.Fprintln(os.Stderr, e)
+				updateModuleDescription("⚠️ Ошибка запуска tgws")
+				os.Exit(1)
+			}
+			if !waitForListener(4 * time.Second) {
+				logf("boot: tgws failed to listen on port %d in time", defaultPort)
+				fmt.Fprintln(os.Stderr, fmt.Sprintf("tgws failed to listen on port %d", defaultPort))
+				updateModuleDescription("⚠️ Ошибка запуска tgws")
+				os.Exit(1)
+			}
 			var lastErr error
 			for attempt := 1; attempt <= 5; attempt++ {
 				if lastErr = setupRules(); lastErr == nil {
@@ -2258,16 +2335,6 @@ func main() {
 				fmt.Fprintln(os.Stderr, lastErr)
 				updateModuleDescription("⚠️ Сбой правил перехвата")
 				os.Exit(1)
-			}
-			if e := ensureServer(); e != nil {
-				logf("boot: failed to start server: %v", e)
-				fmt.Fprintln(os.Stderr, e)
-				updateModuleDescription("⚠️ Ошибка запуска tgws")
-				os.Exit(1)
-			}
-			deadline := time.Now().Add(4 * time.Second)
-			for !serverListening() && time.Now().Before(deadline) {
-				time.Sleep(100 * time.Millisecond)
 			}
 			if e := ensureWatchdog(); e != nil {
 				logf("boot: failed to start watchdog: %v", e)
@@ -2364,7 +2431,6 @@ func serve() {
 		}(c)
 	}
 }
-
 
 var knownTestDCMap = map[string]int{
 	"149.154.175.10":  1,
@@ -2621,7 +2687,6 @@ func handleClient(c net.Conn) {
 	logf("conn #%d %s -> DC%d%s media=%t via WSS (%s)%s", id, orig, dc, testTag, isMedia, ws.host, rayInfo)
 	pipeWSTunnel(c, ws, init, id, dc, isMedia)
 }
-
 
 func readDC203DirectTCP() bool {
 	b, err := os.ReadFile(path("dc203_direct_tcp"))
@@ -3533,7 +3598,12 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 	}
 	key := routeKey(dc, isMedia)
 	if isTest {
-		key = fmt.Sprintf("dc%d_test_%s", dc, func() string { if isMedia { return "media" }; return "main" }())
+		key = fmt.Sprintf("dc%d_test_%s", dc, func() string {
+			if isMedia {
+				return "media"
+			}
+			return "main"
+		}())
 	}
 	resolver := androidDNSResolver()
 
@@ -3620,13 +3690,25 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 				directIPs = appendUniqueIP(directIPs, parsed)
 			}
 		}
-		// Always supplement candidate list with live DNS-resolved addresses
-		for _, h := range hosts {
-			if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
-				for _, ip := range ips {
-					if ip.Is4() {
-						directIPs = appendUniqueIP(directIPs, ip)
-					}
+		// Always supplement candidate list with live DNS-resolved addresses.
+		// Both hosts are resolved concurrently: two sequential lookups would
+		// stall the start of the dial race by two DNS round trips.
+		resolved := make([][]netip.Addr, len(hosts))
+		var dnsWG sync.WaitGroup
+		for i, h := range hosts {
+			dnsWG.Add(1)
+			go func(i int, h string) {
+				defer dnsWG.Done()
+				if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
+					resolved[i] = ips
+				}
+			}(i, h)
+		}
+		dnsWG.Wait()
+		for _, ips := range resolved {
+			for _, ip := range ips {
+				if ip.Is4() {
+					directIPs = appendUniqueIP(directIPs, ip)
 				}
 			}
 		}
@@ -3759,6 +3841,14 @@ func noteRouteHTTPFailure(host string, err error) {
 	now := time.Now()
 	routeHealthMu.Lock()
 	state := routeHealth[host]
+	// A failure long after the previous series must start a fresh escalation:
+	// without this decay a single 429 weeks later inherits the fully grown
+	// backoff accumulated by past incidents. 10 min exceeds any cooldown this
+	// loop can produce below the sweep threshold, so ongoing incidents keep
+	// escalating while a quiet host starts over at the base 30s.
+	if !state.last.IsZero() && now.Sub(state.last) > 10*time.Minute {
+		state.failures = 0
+	}
 	state.failures++
 	cooldown = routeBackoff(state.failures)
 	if reason == "Timeout" && cooldown > 3*time.Minute {

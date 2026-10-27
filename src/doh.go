@@ -83,7 +83,6 @@ func writeDoHEnabled(v bool) error {
 	return os.WriteFile(path("doh_enabled"), []byte(val), 0600)
 }
 
-
 func storeDoHCache(host string, entry dohCacheEntry) {
 	var count int
 	dohCache.Range(func(key, val any) bool {
