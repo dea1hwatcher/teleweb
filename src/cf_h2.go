@@ -69,9 +69,11 @@ func getH2Client(host string) *http.Client {
 
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			ServerName:         host,
-			RootCAs:            getSystemRootCAs(),
-			InsecureSkipVerify: true,
+			ServerName: host,
+			RootCAs:    getSystemRootCAs(),
+			// ServerName always equals the dialed host here (no fronting-SNI
+			// override in the H2 path), so certificate verification stays on.
+			InsecureSkipVerify: false,
 			NextProtos:         []string{"h2", "http/1.1"},
 		},
 		ForceAttemptHTTP2:   true,

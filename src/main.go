@@ -3943,6 +3943,15 @@ func configuredFrontingSNI() string {
 	return ""
 }
 
+// shouldSkipTLSVerify keeps certificate verification on for every route whose
+// TLS name matches the dialed host (kws relays, CF-fronted domains, workers.dev
+// endpoints all present valid certificates). Verification is disabled only for
+// an explicit fronting-sni override, which presents a name no public CA can
+// certify — the deliberate trade-off of that feature.
+func shouldSkipTLSVerify(host, sni string) bool {
+	return !strings.EqualFold(strings.TrimSpace(host), strings.TrimSpace(sni))
+}
+
 func prepareUTLSForHTTP1(conn *utls.UConn) error {
 	if err := conn.BuildHandshakeState(); err != nil {
 		return err
@@ -3985,7 +3994,7 @@ func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, h
 		ServerName:                  sni,
 		MinVersion:                  utls.VersionTLS12,
 		RootCAs:                     getSystemRootCAs(),
-		InsecureSkipVerify:          true,
+		InsecureSkipVerify:          shouldSkipTLSVerify(host, sni),
 		NextProtos:                  []string{"http/1.1"},
 		DynamicRecordSizingDisabled: true,
 	}

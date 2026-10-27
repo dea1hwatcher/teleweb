@@ -513,6 +513,28 @@ func TestFrontingSNIConfig(t *testing.T) {
 	}
 }
 
+func TestShouldSkipTLSVerify(t *testing.T) {
+	cases := []struct {
+		host, sni string
+		want      bool
+	}{
+		// SNI equal to the dialed host: verification must stay ON.
+		{"kws2.web.telegram.org", "kws2.web.telegram.org", false},
+		{"kws1.pclead.co.uk", "kws1.pclead.co.uk", false},
+		{"my-worker.example.workers.dev", "my-worker.example.workers.dev", false},
+		// Case/whitespace differences still mean the same name.
+		{"KWS2.Web.Telegram.Org", " kws2.web.telegram.org ", false},
+		// Fronting-SNI override: the presented name cannot be certified.
+		{"kws2.web.telegram.org", "sprinthost.ru", true},
+		{"", "sprinthost.ru", true},
+	}
+	for _, tc := range cases {
+		if got := shouldSkipTLSVerify(tc.host, tc.sni); got != tc.want {
+			t.Errorf("shouldSkipTLSVerify(%q, %q)=%t, want %t", tc.host, tc.sni, got, tc.want)
+		}
+	}
+}
+
 func TestPackageNamesValidity(t *testing.T) {
 	seen := map[string]bool{}
 	for _, p := range packageNames {
