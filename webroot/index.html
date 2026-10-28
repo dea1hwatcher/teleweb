@@ -15,34 +15,36 @@
 :root {
   color-scheme: dark light;
 
-  /* Typography scale */
+  /* Typography scale & Tracking (M3 & M3 Expressive) */
   --md-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --md-font-code: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  --ts-display-large: 57px;   --lh-display-large: 64px;
-  --ts-display-medium: 45px;  --lh-display-medium: 52px;
-  --ts-headline-large: 32px;  --lh-headline-large: 40px;
-  --ts-headline-medium: 28px; --lh-headline-medium: 36px;
-  --ts-headline-small: 24px;  --lh-headline-small: 32px;
-  --ts-title-large: 22px;     --lh-title-large: 28px;
-  --ts-title-medium: 16px;    --lh-title-medium: 24px;
-  --ts-title-small: 14px;     --lh-title-small: 20px;
-  --ts-body-large: 16px;      --lh-body-large: 24px;
-  --ts-body-medium: 14px;     --lh-body-medium: 20px;
-  --ts-body-small: 12px;      --lh-body-small: 16px;
-  --ts-label-large: 14px;     --lh-label-large: 20px;
-  --ts-label-medium: 12px;    --lh-label-medium: 16px;
-  --ts-label-small: 11px;     --lh-label-small: 16px;
+  --ts-display-large: 57px;   --lh-display-large: 64px;  --tracking-display-large: -0.25px;
+  --ts-display-medium: 45px;  --lh-display-medium: 52px; --tracking-display-medium: 0px;
+  --ts-display-small: 36px;   --lh-display-small: 44px;  --tracking-display-small: 0px;
+  --ts-headline-large: 32px;  --lh-headline-large: 40px; --tracking-headline-large: 0px;
+  --ts-headline-medium: 28px; --lh-headline-medium: 36px;--tracking-headline-medium: 0px;
+  --ts-headline-small: 24px;  --lh-headline-small: 32px; --tracking-headline-small: 0px;
+  --ts-title-large: 22px;     --lh-title-large: 28px;    --tracking-title-large: 0px;
+  --ts-title-medium: 16px;    --lh-title-medium: 24px;   --tracking-title-medium: 0.15px;
+  --ts-title-small: 14px;     --lh-title-small: 20px;    --tracking-title-small: 0.1px;
+  --ts-body-large: 16px;      --lh-body-large: 24px;     --tracking-body-large: 0.5px;
+  --ts-body-medium: 14px;     --lh-body-medium: 20px;    --tracking-body-medium: 0.25px;
+  --ts-body-small: 12px;      --lh-body-small: 16px;     --tracking-body-small: 0.4px;
+  --ts-label-large: 14px;     --lh-label-large: 20px;    --tracking-label-large: 0.1px;
+  --ts-label-medium: 12px;    --lh-label-medium: 16px;   --tracking-label-medium: 0.5px;
+  --ts-label-small: 11px;     --lh-label-small: 16px;    --tracking-label-small: 0.5px;
 
   /* Weights */
   --w-regular: 400; --w-medium: 500; --w-emph: 600; --w-bold: 700;
 
-  /* Shapes */
+  /* Shapes & M3 Expressive Radii */
   --shape-extra-small: 4px;
   --shape-small: 8px;
   --shape-medium: 12px;
   --shape-large: 16px;
+  --shape-large-increased: 24px;
   --shape-extra-large: 28px;
-  --shape-card: 16px;
+  --shape-card: 24px;
   --shape-full: 9999px;
 
   /* Motion: Expressive easing */
@@ -80,14 +82,26 @@
   --md-sys-color-on-primary: #00344f;
   --md-sys-color-primary-container: #004c70;
   --md-sys-color-on-primary-container: #c6e7ff;
+  --md-sys-color-primary-fixed: #c6e7ff;
+  --md-sys-color-primary-fixed-dim: #7ed0ff;
+  --md-sys-color-on-primary-fixed: #001e2f;
+  --md-sys-color-on-primary-fixed-variant: #004c70;
   --md-sys-color-secondary: #b6c9d8;
   --md-sys-color-on-secondary: #21323e;
   --md-sys-color-secondary-container: #374955;
   --md-sys-color-on-secondary-container: #d2e5f5;
+  --md-sys-color-secondary-fixed: #d2e5f5;
+  --md-sys-color-secondary-fixed-dim: #b6c9d8;
+  --md-sys-color-on-secondary-fixed: #0b1d29;
+  --md-sys-color-on-secondary-fixed-variant: #374955;
   --md-sys-color-tertiary: #cddffb;
   --md-sys-color-on-tertiary: #19324b;
   --md-sys-color-tertiary-container: #304963;
   --md-sys-color-on-tertiary-container: #d2e5f5;
+  --md-sys-color-tertiary-fixed: #d9e3f9;
+  --md-sys-color-tertiary-fixed-dim: #cddffb;
+  --md-sys-color-on-tertiary-fixed: #0d1c32;
+  --md-sys-color-on-tertiary-fixed-variant: #304963;
   --md-sys-color-surface: #101418;
   --md-sys-color-surface-dim: #101418;
   --md-sys-color-surface-bright: #363a3e;
@@ -119,14 +133,26 @@
     --md-sys-color-on-primary: #ffffff;
     --md-sys-color-primary-container: #c6e7ff;
     --md-sys-color-on-primary-container: #001e2f;
+    --md-sys-color-primary-fixed: #c6e7ff;
+    --md-sys-color-primary-fixed-dim: #7ed0ff;
+    --md-sys-color-on-primary-fixed: #001e2f;
+    --md-sys-color-on-primary-fixed-variant: #004c70;
     --md-sys-color-secondary: #4f606e;
     --md-sys-color-on-secondary: #ffffff;
     --md-sys-color-secondary-container: #d2e5f5;
     --md-sys-color-on-secondary-container: #0b1d29;
+    --md-sys-color-secondary-fixed: #d2e5f5;
+    --md-sys-color-secondary-fixed-dim: #b6c9d8;
+    --md-sys-color-on-secondary-fixed: #0b1d29;
+    --md-sys-color-on-secondary-fixed-variant: #374955;
     --md-sys-color-tertiary: #515f79;
     --md-sys-color-on-tertiary: #ffffff;
     --md-sys-color-tertiary-container: #d9e3f9;
     --md-sys-color-on-tertiary-container: #0d1c32;
+    --md-sys-color-tertiary-fixed: #d9e3f9;
+    --md-sys-color-tertiary-fixed-dim: #cddffb;
+    --md-sys-color-on-tertiary-fixed: #0d1c32;
+    --md-sys-color-on-tertiary-fixed-variant: #304963;
     --md-sys-color-surface: #f7f9ff;
     --md-sys-color-surface-dim: #d7dadf;
     --md-sys-color-surface-bright: #f7f9ff;
@@ -260,6 +286,7 @@ svg.icon.s40 { width: 40px; height: 40px; }
   min-width: 0;
   font-size: var(--ts-title-large);
   line-height: var(--lh-title-large);
+  letter-spacing: var(--tracking-title-large);
   font-weight: var(--w-regular);
   color: var(--md-sys-color-on-surface);
 }
@@ -398,7 +425,7 @@ html.no-anim *::after {
   font-size: var(--ts-label-medium);
   line-height: var(--lh-label-medium);
   font-weight: var(--w-medium);
-  letter-spacing: .5px;
+  letter-spacing: var(--tracking-label-medium);
   white-space: nowrap;
   transition: color var(--dur-short) var(--standard), font-weight var(--dur-short) var(--standard);
 }
@@ -456,9 +483,9 @@ body.swiping .state::after {
 .subhead {
   font-size: var(--ts-title-small);
   line-height: var(--lh-title-small);
+  letter-spacing: var(--tracking-title-small);
   font-weight: var(--w-bold);
   color: var(--md-sys-color-primary);
-  letter-spacing: .1px;
   padding: 12px 4px 4px;
 }
 .subhead:first-child { padding-top: 0; }
@@ -470,8 +497,8 @@ body.swiping .state::after {
 }
 .group {
   background: var(--md-sys-color-surface-container-low);
-  border-radius: var(--shape-large);
-  padding: 16px;
+  border-radius: var(--shape-card);
+  padding: 18px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -540,12 +567,13 @@ body.swiping .state::after {
 .hero-state {
   font-size: var(--ts-headline-small);
   line-height: var(--lh-headline-small);
+  letter-spacing: var(--tracking-headline-small);
   font-weight: var(--w-bold);
-  letter-spacing: -0.01em;
 }
 .hero-sub {
   font-size: var(--ts-body-medium);
   line-height: var(--lh-body-medium);
+  letter-spacing: var(--tracking-body-medium);
   opacity: .85;
   word-break: break-word;
 }
@@ -569,6 +597,7 @@ body.swiping .state::after {
   text-align: center;
   font-size: var(--ts-label-small);
   line-height: var(--lh-label-small);
+  letter-spacing: var(--tracking-label-small);
   font-weight: var(--w-medium);
   opacity: .75;
   white-space: nowrap;
@@ -580,6 +609,7 @@ body.swiping .state::after {
   text-align: center;
   font-size: var(--ts-title-medium);
   line-height: var(--lh-title-medium);
+  letter-spacing: var(--tracking-title-medium);
   font-weight: var(--w-bold);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -596,10 +626,10 @@ body.swiping .state::after {
   min-width: 0;
   padding: 0 24px;
   height: 48px;
-  font-size: var(--ts-title-medium);
-  line-height: var(--lh-title-medium);
+  font-size: var(--ts-title-small);
+  line-height: var(--lh-title-small);
   font-weight: var(--w-bold);
-  letter-spacing: .2px;
+  letter-spacing: var(--tracking-title-small);
   border-radius: var(--shape-full);
   justify-content: center;
   text-align: center;
@@ -618,7 +648,7 @@ body.swiping .state::after {
 .card {
   background: var(--md-sys-color-surface-container-low);
   border-radius: var(--shape-card);
-  padding: 16px;
+  padding: 18px 16px;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -793,19 +823,24 @@ body.swiping .state::after {
 .li-primary {
   font-size: var(--ts-body-large);
   line-height: var(--lh-body-large);
+  letter-spacing: var(--tracking-body-large);
   font-weight: var(--w-medium);
   color: var(--md-sys-color-on-surface);
 }
 .li-secondary {
   font-size: var(--ts-body-small);
   line-height: var(--lh-body-small);
+  letter-spacing: var(--tracking-body-small);
   color: var(--md-sys-color-on-surface-variant);
 }
 .li-trail {
   flex: none;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  min-height: 48px;
+  min-width: 48px;
 }
 
 /* M3 Component: Divider */
@@ -979,6 +1014,10 @@ body.swiping .state::after {
 .switch:active::before { width: 28px; height: 28px; left: 0; }
 .switch:checked:active::before { left: 20px; }
 .switch:checked:active::after { left: 20px; width: 28px; height: 28px; }
+.switch:focus-visible {
+  outline: 3px solid var(--md-sys-color-primary);
+  outline-offset: 4px;
+}
 @media (hover: hover) {
   .switch:hover { border-color: var(--md-sys-color-on-surface); }
 }
@@ -1117,12 +1156,19 @@ body.swiping .state::after {
   gap: 8px;
   font-size: var(--ts-label-large);
   line-height: var(--lh-label-large);
+  letter-spacing: var(--tracking-label-large);
   font-weight: var(--w-bold);
-  letter-spacing: .1px;
   white-space: nowrap;
   background: var(--md-sys-color-primary);
   color: var(--md-sys-color-on-primary);
   transition: background-color var(--dur-short) var(--standard), box-shadow var(--dur-short) var(--standard);
+}
+.btn.large {
+  height: 48px;
+  padding: 0 28px;
+  font-size: var(--ts-title-small);
+  line-height: var(--lh-title-small);
+  letter-spacing: var(--tracking-title-small);
 }
 .btn.with-icon { padding: 0 16px 0 12px; }
 .btn.tonal {
@@ -1440,6 +1486,17 @@ body.swiping .state::after {
 .amoled-row, .monochrome-row {
   border-radius: var(--shape-large);
   margin: 0;
+}
+
+/* AMOLED Deep Black Contrast & Border Invariants */
+[data-amoled="true"] .card,
+[data-amoled="true"] .group,
+[data-amoled="true"] .theme-preview,
+[data-amoled="true"] .picker {
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+[data-amoled="true"] .hero {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
 }
 .subhead {
   font-size: var(--ts-title-small);
@@ -1842,8 +1899,8 @@ body.swiping .state::after {
         </div>
 
         <div style="margin-top: 4px;">
-          <button class="btn primary with-icon state" id="saveConfigBtn" type="button" style="width: 100%;">
-            <svg class="icon s18"><use href="#i-check"/></svg>
+          <button class="btn primary large with-icon state" id="saveConfigBtn" type="button" style="width: 100%;">
+            <svg class="icon s20"><use href="#i-check"/></svg>
             <span>Сохранить настройки</span>
           </button>
         </div>
@@ -2283,16 +2340,37 @@ function roles(seedHex, dark, amoled, monochrome) {
       R.statusOk = '#166a33'; R.statusWarn = '#6b5000'; R.statusBad = '#a01811';
     }
   }
+  const fixed = {
+    primaryFixed: isMono ? '#e2e2e2' : p(90),
+    primaryFixedDim: isMono ? '#c6c6c6' : p(80),
+    onPrimaryFixed: isMono ? '#1b1b1b' : p(10),
+    onPrimaryFixedVariant: isMono ? '#393939' : p(30),
+    secondaryFixed: isMono ? '#e6e6e6' : p(90, 'secondary'),
+    secondaryFixedDim: isMono ? '#c6c6c6' : p(80, 'secondary'),
+    onSecondaryFixed: isMono ? '#1b1b1b' : p(10, 'secondary'),
+    onSecondaryFixedVariant: isMono ? '#424242' : p(30, 'secondary'),
+    tertiaryFixed: isMono ? '#e8e8e8' : p(90, 'tertiary', TERTIARY_HUE),
+    tertiaryFixedDim: isMono ? '#d0d0d0' : p(80, 'tertiary', TERTIARY_HUE),
+    onTertiaryFixed: isMono ? '#1b1b1b' : p(10, 'tertiary', TERTIARY_HUE),
+    onTertiaryFixedVariant: isMono ? '#3a3a3a' : p(30, 'tertiary', TERTIARY_HUE)
+  };
+  Object.assign(R, fixed);
   return R;
 }
 
 const ROLE_VAR = {
   primary: '--md-sys-color-primary', onPrimary: '--md-sys-color-on-primary',
   primaryContainer: '--md-sys-color-primary-container', onPrimaryContainer: '--md-sys-color-on-primary-container',
+  primaryFixed: '--md-sys-color-primary-fixed', primaryFixedDim: '--md-sys-color-primary-fixed-dim',
+  onPrimaryFixed: '--md-sys-color-on-primary-fixed', onPrimaryFixedVariant: '--md-sys-color-on-primary-fixed-variant',
   secondary: '--md-sys-color-secondary', onSecondary: '--md-sys-color-on-secondary',
   secondaryContainer: '--md-sys-color-secondary-container', onSecondaryContainer: '--md-sys-color-on-secondary-container',
+  secondaryFixed: '--md-sys-color-secondary-fixed', secondaryFixedDim: '--md-sys-color-secondary-fixed-dim',
+  onSecondaryFixed: '--md-sys-color-on-secondary-fixed', onSecondaryFixedVariant: '--md-sys-color-on-secondary-fixed-variant',
   tertiary: '--md-sys-color-tertiary', onTertiary: '--md-sys-color-on-tertiary',
   tertiaryContainer: '--md-sys-color-tertiary-container', onTertiaryContainer: '--md-sys-color-on-tertiary-container',
+  tertiaryFixed: '--md-sys-color-tertiary-fixed', tertiaryFixedDim: '--md-sys-color-tertiary-fixed-dim',
+  onTertiaryFixed: '--md-sys-color-on-tertiary-fixed', onTertiaryFixedVariant: '--md-sys-color-on-tertiary-fixed-variant',
   error: '--md-sys-color-error', onError: '--md-sys-color-on-error',
   errorContainer: '--md-sys-color-error-container', onErrorContainer: '--md-sys-color-on-error-container',
   background: '--md-sys-color-background', onBackground: '--md-sys-color-on-background',
