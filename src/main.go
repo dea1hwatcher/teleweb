@@ -3910,12 +3910,6 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 		}
 	}
 
-	candidates = append(candidates, deferCandidates...)
-
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no available routes for DC%d media=%t", dc, isMedia)
-	}
-
 	if cfBalance && len(candidates) > 1 {
 		offset := int(atomic.AddUint64(&cfBalanceSeq, 1) % uint64(len(candidates)))
 		rotated := make([]dialCandidate, len(candidates))
@@ -3923,6 +3917,12 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 			rotated[i] = candidates[(offset+i)%len(candidates)]
 		}
 		candidates = rotated
+	}
+
+	candidates = append(candidates, deferCandidates...)
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no available routes for DC%d media=%t", dc, isMedia)
 	}
 
 	// Parallel Happy Eyeballs v2 connection racing with 250ms stagger

@@ -875,6 +875,37 @@ func TestCFPriorityAndBalanceStorage(t *testing.T) {
 	}
 }
 
+func TestCFBalancePreservesDeferredCandidates(t *testing.T) {
+	primary := []dialCandidate{
+		{name: "cf-1"},
+		{name: "cf-2"},
+		{name: "cf-3"},
+	}
+	deferred := []dialCandidate{
+		{name: "direct-1"},
+		{name: "direct-2"},
+	}
+
+	// Balance only primary
+	offset := 2
+	rotated := make([]dialCandidate, len(primary))
+	for i := range primary {
+		rotated[i] = primary[(offset+i)%len(primary)]
+	}
+	all := append(rotated, deferred...)
+
+	for i := 0; i < len(primary); i++ {
+		if !strings.HasPrefix(all[i].name, "cf-") {
+			t.Fatalf("expected primary candidate at index %d, got %s", i, all[i].name)
+		}
+	}
+	for i := len(primary); i < len(all); i++ {
+		if !strings.HasPrefix(all[i].name, "direct-") {
+			t.Fatalf("expected deferred candidate at index %d, got %s", i, all[i].name)
+		}
+	}
+}
+
 func TestApiMainSetConfig(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "teleweb-api-*")
 	if err != nil {

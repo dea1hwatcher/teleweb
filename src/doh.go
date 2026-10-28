@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -48,6 +49,10 @@ var dohEndpoints = []string{
 func getDoHClient() *http.Client {
 	dohClientOnce.Do(func() {
 		tr := &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				d := net.Dialer{Resolver: androidDNSResolver(), Timeout: 3 * time.Second}
+				return d.DialContext(ctx, network, addr)
+			},
 			TLSClientConfig: &tls.Config{
 				RootCAs: getSystemRootCAs(),
 				// Certificate verification stays ON: DoH exists precisely to

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -134,6 +135,10 @@ func fetchCFDomainsFromURL(ctx context.Context, client *http.Client, targetURL s
 
 func refreshCFDomains(ctx context.Context) error {
 	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := net.Dialer{Resolver: androidDNSResolver(), Timeout: 5 * time.Second}
+			return d.DialContext(ctx, network, addr)
+		},
 		TLSClientConfig: &tls.Config{
 			RootCAs: getSystemRootCAs(),
 			// GitHub raw endpoints use their real hostname: verify certificates.
