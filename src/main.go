@@ -228,7 +228,7 @@ func envOr(k, d string) string {
 func path(name string) string { return filepath.Join(baseDir, name) }
 func ensureDir()              { _ = os.MkdirAll(baseDir, 0700) }
 
-const defaultDescBase = "TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)"
+const defaultDescBase = "Прозрачный WSS-транспорт для Telegram (DC1-DC5)"
 
 var (
 	descMu          sync.Mutex
@@ -240,9 +240,6 @@ func getModulePropPath() string {
 		os.Getenv("TELEWEB_MOD"),
 		"/data/adb/modules/teleweb",
 		"/data/adb/modules_update/teleweb",
-	}
-	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Dir(filepath.Dir(exe)))
 	}
 	for _, c := range candidates {
 		if c == "" {
@@ -258,18 +255,18 @@ func getModulePropPath() string {
 
 func currentStatusDesc() string {
 	if !readEnabled() {
-		return "⛔ Остановлено"
+		return "status: disabled ❌"
 	}
 	running := daemonHealthy()
 	rules := rulesHealthy()
 	if !running || !rules {
-		return "⚠️ Сбой службы"
+		return "status: failed ⚠️"
 	}
 	mode := "WSS"
 	if readCFPriority() {
 		mode = "WSS (CF Priority)"
 	}
-	return "✅ Работает · " + mode
+	return "status: active ✅ | " + mode + " · DC1-DC5"
 }
 
 func updateModuleDescription(statusText string) {
@@ -286,8 +283,8 @@ func updateModuleDescription(statusText string) {
 		return
 	}
 
-	fullDesc := statusText + " | " + defaultDescBase
-	if statusText == "" {
+	fullDesc := statusText
+	if fullDesc == "" {
 		fullDesc = defaultDescBase
 	}
 
@@ -1922,7 +1919,7 @@ func ensureRuntime() error {
 	if !readEnabled() {
 		stopWatchdog()
 		stopServer()
-		updateModuleDescription("⛔ Остановлено")
+		updateModuleDescription("status: disabled ❌")
 		return nil
 	}
 	if !daemonHealthy() {
@@ -2174,7 +2171,7 @@ func apiMain(arg string) {
 			if *q.Enabled {
 				if err := ensureServer(); err != nil {
 					_ = writeEnabled(false)
-					updateModuleDescription("⚠️ Ошибка запуска tgws")
+					updateModuleDescription("status: failed ⚠️")
 					emitErr(err)
 					return
 				}
@@ -2183,14 +2180,14 @@ func apiMain(arg string) {
 				if !waitForListener(4 * time.Second) {
 					_ = writeEnabled(false)
 					stopServer()
-					updateModuleDescription("⚠️ Ошибка запуска tgws")
+					updateModuleDescription("status: failed ⚠️")
 					emitErr(fmt.Errorf("tgws failed to listen on port %d", defaultPort))
 					return
 				}
 				if err := setupRules(); err != nil {
 					_ = writeEnabled(false)
 					cleanupRules()
-					updateModuleDescription("⚠️ Сбой правил перехвата")
+					updateModuleDescription("status: failed ⚠️")
 					emitErr(err)
 					return
 				}
@@ -2202,7 +2199,7 @@ func apiMain(arg string) {
 			} else {
 				stopWatchdog()
 				stopServer()
-				updateModuleDescription("⛔ Остановлено")
+				updateModuleDescription("status: disabled ❌")
 			}
 		}
 		if q.CFPriority != nil {
@@ -2305,7 +2302,7 @@ func main() {
 			stopWatchdog()
 			stopServer()
 			if !readEnabled() {
-				updateModuleDescription("⛔ Остановлено")
+				updateModuleDescription("status: disabled ❌")
 				fmt.Println("TeleWEB disabled")
 				return
 			}
@@ -2314,13 +2311,13 @@ func main() {
 			if e := ensureServer(); e != nil {
 				logf("boot: failed to start server: %v", e)
 				fmt.Fprintln(os.Stderr, e)
-				updateModuleDescription("⚠️ Ошибка запуска tgws")
+				updateModuleDescription("status: failed ⚠️")
 				os.Exit(1)
 			}
 			if !waitForListener(4 * time.Second) {
 				logf("boot: tgws failed to listen on port %d in time", defaultPort)
 				fmt.Fprintln(os.Stderr, fmt.Sprintf("tgws failed to listen on port %d", defaultPort))
-				updateModuleDescription("⚠️ Ошибка запуска tgws")
+				updateModuleDescription("status: failed ⚠️")
 				os.Exit(1)
 			}
 			var lastErr error
@@ -2334,7 +2331,7 @@ func main() {
 			if lastErr != nil {
 				logf("boot: failed to setup redirection rules: %v", lastErr)
 				fmt.Fprintln(os.Stderr, lastErr)
-				updateModuleDescription("⚠️ Сбой правил перехвата")
+				updateModuleDescription("status: failed ⚠️")
 				os.Exit(1)
 			}
 			if e := ensureWatchdog(); e != nil {
@@ -2346,7 +2343,7 @@ func main() {
 		case "stop":
 			stopWatchdog()
 			stopServer()
-			updateModuleDescription("⛔ Остановлено")
+			updateModuleDescription("status: disabled ❌")
 			fmt.Println("TeleWEB stopped")
 			return
 		case "watchdog":
@@ -2356,7 +2353,7 @@ func main() {
 			if err := ensureRuntime(); err != nil {
 				logf("supervisor: %v", err)
 				fmt.Fprintln(os.Stderr, err)
-				updateModuleDescription("⚠️ Сбой службы")
+				updateModuleDescription("status: failed ⚠️")
 				os.Exit(1)
 			}
 			updateModuleDescription(currentStatusDesc())

@@ -1657,29 +1657,29 @@ func TestUpdateModuleDescription(t *testing.T) {
 	t.Setenv("TELEWEB_MOD", tmpDir)
 
 	// Test updating to running
-	updateModuleDescription("✅ Работает · WSS")
+	updateModuleDescription("status: active ✅ | WSS · DC1-DC5")
 	content, err := os.ReadFile(propFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedRunning := "description=✅ Работает · WSS | " + defaultDescBase
+	expectedRunning := "description=status: active ✅ | WSS · DC1-DC5"
 	if !strings.Contains(string(content), expectedRunning) {
 		t.Errorf("expected %q in module.prop, got:\n%s", expectedRunning, string(content))
 	}
 
 	// Test updating to stopped
-	updateModuleDescription("⛔ Остановлено")
+	updateModuleDescription("status: disabled ❌")
 	content, err = os.ReadFile(propFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedStopped := "description=⛔ Остановлено | " + defaultDescBase
+	expectedStopped := "description=status: disabled ❌"
 	if !strings.Contains(string(content), expectedStopped) {
 		t.Errorf("expected %q in module.prop, got:\n%s", expectedStopped, string(content))
 	}
 
 	// Verify idempotence (calling again doesn't alter content or duplicate)
-	updateModuleDescription("⛔ Остановлено")
+	updateModuleDescription("status: disabled ❌")
 	content2, _ := os.ReadFile(propFile)
 	if string(content2) != string(content) {
 		t.Errorf("idempotent call altered file content")
@@ -1689,8 +1689,8 @@ func TestUpdateModuleDescription(t *testing.T) {
 	t.Setenv("TELEWEB_DIR", tmpDir)
 	_ = writeEnabled(false)
 	desc := currentStatusDesc()
-	if desc != "⛔ Остановлено" {
-		t.Errorf("expected ⛔ Остановлено when disabled, got %s", desc)
+	if desc != "status: disabled ❌" {
+		t.Errorf("expected 'status: disabled ❌' when disabled, got %s", desc)
 	}
 }
 

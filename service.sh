@@ -15,22 +15,33 @@ case "$MODDIR" in
     ;;
 esac
 
-DESC_BASE="TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)"
+DESC_BASE="Прозрачный WSS-транспорт для Telegram (DC1-DC5)"
 update_description() { # running | stopped | error
-  local prop="$MODDIR/module.prop" d tmp
-  if [ ! -f "$prop" ] || [ ! -w "$prop" ]; then return 0; fi
+  local prop=""
+  if [ -d "/data/adb/modules/teleweb" ]; then
+    prop="/data/adb/modules/teleweb/module.prop"
+  elif [ -d "$MODDIR" ]; then
+    prop="$MODDIR/module.prop"
+  fi
+  [ -f "$prop" ] && [ -w "$prop" ] || return 0
+
+  local d=""
   case "$1" in
-    running)
-      d="✅ Работает · WSS" ;;
-    error)
-      d="⚠️ Сбой службы" ;;
+    running|active)
+      d="status: active ✅ | WSS · DC1-DC5" ;;
+    error|failed)
+      d="status: failed ⚠️" ;;
     *)
-      d="⛔ Остановлено" ;;
+      d="status: disabled ❌" ;;
   esac
-  d=$(printf '%s' "$d | $DESC_BASE" | tr -d '\n\r')
-  tmp="/data/adb/teleweb/module.prop.$$"
-  # Atomic rename instead of in-place truncate: the Go supervisor updates the
-  # same file concurrently, and a mid-write cat could clobber its content.
+
+  local desc_current
+  desc_current=$(grep "^description=" "$prop" 2>/dev/null)
+  if [ "$desc_current" = "description=$d" ]; then
+    return 0
+  fi
+
+  local tmp="/data/adb/teleweb/module.prop.$$"
   if awk -v d="$d" 'BEGIN { done = 0 } /^description=/ { print "description=" d; done = 1; next } { print }
     END { if (!done) print "description=" d }' "$prop" > "$tmp" 2>/dev/null; then
     chmod 0644 "$tmp" 2>/dev/null

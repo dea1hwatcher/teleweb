@@ -163,6 +163,18 @@ def make_zip():
             with open(full_path, "rb") as f:
                 data = f.read()
 
+            if arcname == "module.prop":
+                # Ensure the packaged module.prop contains the pristine base description,
+                # never contaminated with dynamic runtime status (matching bindhosts standard).
+                lines = data.decode("utf-8").splitlines(keepends=True)
+                clean_lines = []
+                for line in lines:
+                    if line.startswith("description="):
+                        clean_lines.append("description=Прозрачный WSS-транспорт для Telegram (DC1-DC5)\n")
+                    else:
+                        clean_lines.append(line)
+                data = "".join(clean_lines).encode("utf-8")
+
             zinfo = zipfile.ZipInfo(arcname)
             zinfo.compress_type = zipfile.ZIP_DEFLATED
 

@@ -71,10 +71,14 @@ else
   ui_print "- Создан каталог настроек: /data/adb/teleweb"
 fi
 
-# Остановка предыдущего процесса tgws перед обновлением/запуском
+# Остановка запущенной службы предыдущей версии модуля перед обновлением
 export TELEWEB_DIR=/data/adb/teleweb
-export TELEWEB_MOD="$MODPATH"
-[ -x "$MODPATH/bin/tgws" ] && "$MODPATH/bin/tgws" stop >/dev/null 2>&1
+if [ -x "/data/adb/modules/teleweb/bin/tgws" ]; then
+  /data/adb/modules/teleweb/bin/tgws stop >/dev/null 2>&1 || true
+fi
+
+# Гарантируем чистое базовое описание в module.prop при установке (как в bindhosts)
+sed -i "s|^description=.*|description=Прозрачный WSS-транспорт для Telegram (DC1-DC5)|g" "$MODPATH/module.prop" 2>/dev/null || true
 
 ui_print "TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)"
 ui_print "Успешно установлен бинарник для архитектуры $ABI"
