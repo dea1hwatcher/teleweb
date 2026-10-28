@@ -5,14 +5,61 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 )
+
+var androidDetection = struct {
+	once sync.Once
+	val  bool
+}{}
+
+// isAndroidRuntime separates the Android module from the Linux desktop port:
+// both build with GOOS=linux, so the distinction must be made at runtime.
+func isAndroidRuntime() bool {
+	androidDetection.once.Do(func() {
+		if _, err := os.Stat("/system/build.prop"); err == nil {
+			androidDetection.val = true
+			return
+		}
+		if _, err := os.Stat("/system/bin/app_process"); err == nil {
+			androidDetection.val = true
+		}
+	})
+	return androidDetection.val
+}
+
+func defaultBaseDir() string {
+	if isAndroidRuntime() {
+		return "/data/adb/teleweb"
+	}
+	return "/var/lib/teleweb"
+}
+
+func serverListening() bool {
+	// Inspect the kernel socket table instead of opening a probe connection:
+	// a probe would be accepted as a fake MTProto client and pollute the log.
+	b, err := os.ReadFile("/proc/net/tcp")
+	if err != nil {
+		return false
+	}
+	want := fmt.Sprintf(":%04X", defaultPort)
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && strings.HasSuffix(strings.ToUpper(fields[1]), want) && fields[3] == "0A" {
+			return true // TCP_LISTEN
+		}
+	}
+	return false
+}
 
 func setDaemonProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

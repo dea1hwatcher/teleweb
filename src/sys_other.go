@@ -1,16 +1,28 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package main
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 )
+
+func defaultBaseDir() string {
+	if d, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(d, "teleweb")
+	}
+	return "teleweb-data"
+}
+
+func isAndroidRuntime() bool { return false }
 
 func setDaemonProcAttr(cmd *exec.Cmd) {
 	// setsid is not supported on non-linux OS
@@ -47,4 +59,13 @@ func notifySignals(ch chan<- os.Signal) {
 
 func originalDestination(c net.Conn) (netip.AddrPort, error) {
 	return netip.AddrPort{}, errors.New("SO_ORIGINAL_DST is only supported on Linux")
+}
+
+func serverListening() bool {
+	c, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort), 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
 }
