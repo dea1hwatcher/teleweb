@@ -151,7 +151,10 @@ func TestMemoryLeak_WsPool_Churn(t *testing.T) {
 		}
 	}
 
-	pool.Close()
+	// The daemon never tears the pool down; mirror a shutdown the way the
+	// runtime would: stop the rotation goroutine and drain queued sockets.
+	pool.cancel()
+	pool.drainAll()
 	time.Sleep(50 * time.Millisecond)
 	runtime.GC()
 

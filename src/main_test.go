@@ -1709,7 +1709,10 @@ func TestWsPool_Lifecycle(t *testing.T) {
 	defer cancel()
 
 	pool := newWsPool(ctx, 3)
-	defer pool.Close()
+	defer func() {
+		pool.cancel()
+		pool.drainAll()
+	}()
 
 	// 1. Initial Get on empty pool should miss
 	ws := pool.Get(2, false, false)
@@ -2072,7 +2075,10 @@ func TestWsPool_BufferedDataCheck(t *testing.T) {
 	defer cancel()
 
 	pool := newWsPool(ctx, 2)
-	defer pool.Close()
+	defer func() {
+		pool.cancel()
+		pool.drainAll()
+	}()
 
 	c1, c2 := net.Pipe()
 	defer c2.Close()
