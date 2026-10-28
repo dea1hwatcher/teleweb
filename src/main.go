@@ -64,6 +64,7 @@ var (
 	routeHealthMu    sync.Mutex
 	routeHealth      = map[string]routeHealthState{} // host -> repeated early remote-close state
 	cfBalanceSeq     uint64
+	cfFrontSeq       uint64
 	ioBufPool        = sync.Pool{
 		New: func() any {
 			b := make([]byte, 32*1024)
@@ -144,6 +145,9 @@ type routeHealthState struct {
 	failures int
 	last     time.Time
 	until    time.Time
+	// busyAt is the last time the 5xx busy notice was logged for this host. It
+	// only throttles logging; it never feeds the escalation counters.
+	busyAt time.Time
 }
 
 func routeBackoff(failures int) time.Duration {
@@ -3401,6 +3405,163 @@ func clearRouteHealth(host string) {
 	routeHealthMu.Unlock()
 }
 
+// backgroundDialCtxKey marks dials that are not driven by a client connection
+// (currently WsPool refills). Their failures say nothing about what a client
+// would experience, and letting them write to the shared route-health table let
+// the background refill loop quarantine every front on its own.
+type backgroundDialCtxKey struct{}
+
+func withBackgroundDial(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundDialCtxKey{}, true)
+}
+
+func isBackgroundDial(ctx context.Context) bool {
+	v, _ := ctx.Value(backgroundDialCtxKey{}).(bool)
+	return v
+}
+
+const (
+	// serverBusyRetry is how long a front is parked after answering 5xx. The
+	// public fronting fleet shares one upstream worker: when it is overloaded
+	// every domain answers 503 at once, and the very same host serves the next
+	// request fine. The 2026-10-28 log shows exactly that on
+	// kws2.pyatdesyatodin.co.uk: 503 -> success -> 503 within three seconds.
+	// A per-host 30s..30min quarantine therefore said nothing about the host,
+	// but it did remove every cf candidate and left direct-only dials, which
+	// are blocked on censored networks.
+	serverBusyRetry = 1500 * time.Millisecond
+	// frontTimeoutPark is how long a front is parked after a dial/read timeout.
+	// Every front is an anycast Cloudflare edge IP, and the ISP drops those in
+	// waves: in the 11:58 log forty different hosts timed out within eight
+	// seconds while neighbouring IPs kept answering. That is a shared outage,
+	// not a per-host verdict, so the park stays short and never escalates --
+	// with the old 30s..2m cooldown a single wave parked the whole pool and the
+	// module fell back to direct-only dials for minutes.
+	frontTimeoutPark = 5 * time.Second
+	// serverBusyLogInterval throttles the park notice: with short parks an
+	// unthrottled line would fire for every host every other second.
+	serverBusyLogInterval = 30 * time.Second
+	// frontRetryWaitLimit bounds the pause when every front for a DC is parked.
+	frontRetryWaitLimit = 2 * time.Second
+	// maxFrontsPerRace caps how many fronts a single dial attempt races. Every
+	// front costs up to ~2s (DoH + DNS + dial), so an uncapped pool of twenty
+	// could not finish inside the client's 12s budget: attempts ended in
+	// "context deadline exceeded" instead of a verdict. A rotating slice keeps
+	// each attempt bounded while successive attempts still cover the pool.
+	maxFrontsPerRace = 6
+)
+
+// parkFront records a short retry window for a front without touching the
+// escalation counters. Those counters belong to failures that really are
+// host-specific (429/403), and a park must never shorten a longer cooldown
+// already recorded for the host.
+func parkFront(host string, park time.Duration, reason string, err error) {
+	now := time.Now()
+	routeHealthMu.Lock()
+	state := routeHealth[host]
+	if until := now.Add(park); until.After(state.until) {
+		state.until = until
+	}
+	logNow := state.busyAt.IsZero() || now.Sub(state.busyAt) >= serverBusyLogInterval
+	if logNow {
+		state.busyAt = now
+	}
+	routeHealth[host] = state
+	routeHealthMu.Unlock()
+	if logNow {
+		logf("WSS route %s parked for %s (%s): %v", host, park, reason, err)
+	}
+}
+
+// noteServerBusy handles a 5xx from the shared upstream behind every front.
+func noteServerBusy(host string, err error) {
+	parkFront(host, serverBusyRetry, "shared front busy", err)
+}
+
+// noteFrontUnreachable handles a dial or read timeout towards a front.
+func noteFrontUnreachable(host string, err error) {
+	parkFront(host, frontTimeoutPark, "front unreachable", err)
+}
+
+// shouldPenalizeRoute reports whether a dial failure may be written to the
+// shared route-health table. It must not be when the failure is our own
+// bookkeeping: a race that ran out of budget or was cancelled by a winning
+// sibling says nothing about the route, and the pool dials speculatively.
+func shouldPenalizeRoute(ctx context.Context) bool {
+	return ctx.Err() == nil && !isBackgroundDial(ctx)
+}
+
+// nearestRetryFor reports the shortest remaining park time across hosts. It
+// returns false as soon as one host is usable, because then the caller has a
+// real candidate and must not wait at all.
+func nearestRetryFor(hosts []string) (time.Duration, bool) {
+	if len(hosts) == 0 {
+		return 0, false
+	}
+	now := time.Now()
+	routeHealthMu.Lock()
+	defer routeHealthMu.Unlock()
+	nearest := time.Duration(0)
+	for _, host := range hosts {
+		state, ok := routeHealth[host]
+		if !ok || !now.Before(state.until) {
+			return 0, false
+		}
+		if wait := state.until.Sub(now); nearest == 0 || wait < nearest {
+			nearest = wait
+		}
+	}
+	return nearest, nearest > 0
+}
+
+// frontsForDC expands the Cloudflare domain pool into the per-DC front hosts.
+func frontsForDC(dc int) []string {
+	domains := cfDomainsCached()
+	hosts := make([]string, 0, len(domains))
+	for _, d := range domains {
+		hosts = append(hosts, frontHost(dc, d))
+	}
+	return hosts
+}
+
+// frontCandidatesForRace returns up to max usable fronts for the DC, starting at
+// a rotating offset so successive attempts still cover the whole pool while each
+// individual attempt stays inside the client's dial budget.
+func frontCandidatesForRace(dc int, domains []string, start, max int) []string {
+	if len(domains) == 0 || max <= 0 {
+		return nil
+	}
+	if start < 0 {
+		start = 0
+	}
+	hosts := make([]string, 0, max)
+	for i := 0; i < len(domains) && len(hosts) < max; i++ {
+		host := frontHost(dc, domains[(start+i)%len(domains)])
+		if routeCoolingDown(host) {
+			continue
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts
+}
+
+// frontHost is the single source of the Cloudflare front naming scheme, shared
+// by candidate building and by the parked-front check.
+func frontHost(dc int, domain string) string {
+	return fmt.Sprintf("kws%d.%s", dc, domain)
+}
+
+// allFrontsParked reports whether every Cloudflare front for this DC is inside
+// a retry window and, if so, how long until the first one frees up.
+func allFrontsParked(dc int, isMedia bool) (time.Duration, bool) {
+	if host, ok := cfHostCache.Load(routeKey(dc, isMedia)); ok {
+		if h, ok := host.(string); ok && h != "" && !routeCoolingDown(h) {
+			return 0, false
+		}
+	}
+	return nearestRetryFor(frontsForDC(dc))
+}
+
 // sweepRouteCaches bounds the host-keyed health maps. Keys accumulate as the
 // hourly-updated Cloudflare domain list drifts, so stale entries must be
 // evicted or the maps grow without bound for the lifetime of the daemon.
@@ -3588,6 +3749,21 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 	cfBalance := cfBalanceCached()
 	worker := customCFWorkerCached()
 
+	// When every Cloudflare front for this DC is parked, the candidate list
+	// below collapses to direct-only dials, which are blocked on censored
+	// networks, so the client gets an instant close. Park windows are short
+	// (serverBusyRetry), so waiting for the nearest one is cheap and beats
+	// handing the client a guaranteed failure.
+	if !isTest && worker == "" {
+		if wait, parked := allFrontsParked(dc, isMedia); parked && wait > 0 && wait <= frontRetryWaitLimit {
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+
 	var candidates []dialCandidate
 	var deferCandidates []dialCandidate
 
@@ -3715,11 +3891,14 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 	}
 
 	if !isTest {
-		// 6. Cloudflare Fronting Domains
-		for _, dom := range cfDomainsCached() {
-			d := dom
-			host := fmt.Sprintf("kws%d.%s", dc, d)
-			if !routeCoolingDown(host) {
+		// 6. Cloudflare Fronting Domains, capped and rotating (see
+		// maxFrontsPerRace): an uncapped list cannot be raced within the
+		// client's dial budget, and every attempt would end in a ctx expiry
+		// instead of a verdict.
+		domains := cfDomainsCached()
+		if len(domains) > 0 {
+			start := int(atomic.AddUint64(&cfFrontSeq, 1) % uint64(len(domains)))
+			for _, host := range frontCandidatesForRace(dc, domains, start, maxFrontsPerRace) {
 				candDomain := dialCandidate{
 					name: fmt.Sprintf("cf-domain (%s)", host),
 					dial: func(c context.Context) (*wsConn, error) {
@@ -3821,21 +4000,24 @@ func noteRouteHTTPFailure(host string, err error) {
 	var reason string
 
 	switch routeHTTPRejection(msg) {
+	case routeRejectServer:
+		// 5xx comes from the shared upstream behind every front, not from the
+		// host itself: park it briefly and never escalate (see noteServerBusy).
+		noteServerBusy(host, err)
+		return
 	case routeRejectRateLimit:
-		cooldown = 3 * time.Minute
 		reason = "HTTP 429 (Rate Limit)"
 	case routeRejectForbidden:
-		cooldown = 3 * time.Minute
 		reason = "HTTP 403 (Forbidden)"
-	case routeRejectServer:
-		cooldown = 3 * time.Minute
-		reason = "HTTP 5xx (Server Error)"
 	default:
 		if !isTimeout(err) && !isTimeoutText(msg) {
 			return
 		}
-		cooldown = 45 * time.Second
-		reason = "Timeout"
+		// Every front is an anycast Cloudflare edge IP and the ISP drops those
+		// in waves, so a timeout is a shared-outage signal as well: park
+		// briefly, never escalate (see frontTimeoutPark).
+		noteFrontUnreachable(host, err)
+		return
 	}
 
 	now := time.Now()
@@ -3851,9 +4033,6 @@ func noteRouteHTTPFailure(host string, err error) {
 	}
 	state.failures++
 	cooldown = routeBackoff(state.failures)
-	if reason == "Timeout" && cooldown > 3*time.Minute {
-		cooldown = 3 * time.Minute
-	}
 	wasCooling := now.Before(state.until)
 	state.until = now.Add(cooldown)
 	state.last = now
@@ -3908,7 +4087,9 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 				clearRouteHealth(host)
 				return ws, nil
 			}
-			noteRouteHTTPFailure(host, e)
+			if shouldPenalizeRoute(ctx) {
+				noteRouteHTTPFailure(host, e)
+			}
 			_ = raw.Close()
 			// A rejected route will reject the next IP the same way: stop
 			// trying this host instead of burning the dial budget on it.
@@ -3917,7 +4098,7 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 				return nil, e
 			}
 		} else {
-			if isTimeout(e) || isTimeoutText(e.Error()) {
+			if (isTimeout(e) || isTimeoutText(e.Error())) && shouldPenalizeRoute(ctx) {
 				noteRouteHTTPFailure(host, e)
 			}
 		}

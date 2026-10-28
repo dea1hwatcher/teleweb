@@ -150,7 +150,10 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 			}
 
 			dialCtx, dialCancel := context.WithTimeout(p.ctx, 8*time.Second)
-			ws, err := dialTelegramWS(dialCtx, dc, isMedia, isTest)
+			// Background refills must not feed the shared route-health table:
+			// they dial speculatively, and a parked front from a refill would
+			// also disappear from the client path.
+			ws, err := dialTelegramWS(withBackgroundDial(dialCtx), dc, isMedia, isTest)
 			dialCancel()
 
 			if err == nil && ws != nil {

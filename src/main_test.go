@@ -2131,8 +2131,10 @@ func TestRouteHealthResetOnSuccess(t *testing.T) {
 	clearRouteHealth(host)
 	defer clearRouteHealth(host)
 
+	// 429 is a host-specific rejection, so it still escalates across a series.
+	// 5xx deliberately does not (see TestServerBusyDoesNotQuarantineFronts).
 	for i := 0; i < 10; i++ {
-		noteRouteHTTPFailure(host, errors.New("HTTP 500: boom"))
+		noteRouteHTTPFailure(host, errors.New("HTTP 429: too many requests"))
 	}
 	routeHealthMu.Lock()
 	failuresBefore := routeHealth[host].failures
@@ -2141,7 +2143,7 @@ func TestRouteHealthResetOnSuccess(t *testing.T) {
 		t.Fatalf("expected accumulated failures, got %d", failuresBefore)
 	}
 	if !routeCoolingDown(host) {
-		t.Fatal("host must be cooling down after repeated 500s")
+		t.Fatal("host must be cooling down after repeated 429s")
 	}
 
 	// A successful dial resets the history: the next single failure must
@@ -2150,7 +2152,7 @@ func TestRouteHealthResetOnSuccess(t *testing.T) {
 	if routeCoolingDown(host) {
 		t.Fatal("host must be immediately usable after health reset")
 	}
-	noteRouteHTTPFailure(host, errors.New("HTTP 500: boom"))
+	noteRouteHTTPFailure(host, errors.New("HTTP 429: too many requests"))
 	routeHealthMu.Lock()
 	state := routeHealth[host]
 	routeHealthMu.Unlock()
@@ -2159,6 +2161,173 @@ func TestRouteHealthResetOnSuccess(t *testing.T) {
 	}
 	if backoff := time.Until(state.until); backoff > routeBackoff(1)+5*time.Second {
 		t.Fatalf("expected base backoff after reset, got %s", backoff.Round(time.Second))
+	}
+}
+
+func TestServerBusyDoesNotQuarantineFronts(t *testing.T) {
+	host := "busy-front.example"
+	clearRouteHealth(host)
+	defer clearRouteHealth(host)
+
+	// The public fronting fleet shares one upstream worker, so a 503 says
+	// nothing about this host: the same front serves the next request fine.
+	// Repeated 5xx must never build the 30s..30min quarantine that used to
+	// leave the module with direct-only candidates.
+	for i := 0; i < 20; i++ {
+		noteRouteHTTPFailure(host, errors.New("HTTP 503 Service Unavailable"))
+	}
+	if !routeCoolingDown(host) {
+		t.Fatal("host must be parked briefly after 5xx")
+	}
+	routeHealthMu.Lock()
+	state := routeHealth[host]
+	routeHealthMu.Unlock()
+	if state.failures != 0 {
+		t.Fatalf("5xx must not accumulate host-specific failures, got %d", state.failures)
+	}
+	if park := time.Until(state.until); park > serverBusyRetry+time.Second {
+		t.Fatalf("5xx park must stay at %s, got %s", serverBusyRetry, park.Round(time.Millisecond))
+	}
+}
+
+func TestServerBusyNeverShortensForbiddenCooldown(t *testing.T) {
+	host := "busy-keeps-403.example"
+	clearRouteHealth(host)
+	defer clearRouteHealth(host)
+
+	noteRouteHTTPFailure(host, errors.New("HTTP 403: forbidden"))
+	routeHealthMu.Lock()
+	forbiddenUntil := routeHealth[host].until
+	routeHealthMu.Unlock()
+
+	noteRouteHTTPFailure(host, errors.New("HTTP 503: unavailable"))
+	routeHealthMu.Lock()
+	after := routeHealth[host].until
+	routeHealthMu.Unlock()
+	if !after.Equal(forbiddenUntil) {
+		t.Fatalf("5xx must not shorten a 403 cooldown: before=%s after=%s", forbiddenUntil, after)
+	}
+}
+
+func TestBackgroundDialMarker(t *testing.T) {
+	if isBackgroundDial(context.Background()) {
+		t.Fatal("plain context must not be marked as a background dial")
+	}
+	if !isBackgroundDial(withBackgroundDial(context.Background())) {
+		t.Fatal("withBackgroundDial must mark the context")
+	}
+}
+
+func TestNearestRetryFor(t *testing.T) {
+	if _, parked := nearestRetryFor(nil); parked {
+		t.Fatal("empty host list must not report a parked front")
+	}
+
+	live := "retry-live.example"
+	parkedA := "retry-a.example"
+	parkedB := "retry-b.example"
+	for _, h := range []string{live, parkedA, parkedB} {
+		clearRouteHealth(h)
+		defer clearRouteHealth(h)
+	}
+	noteServerBusy(parkedA, errors.New("HTTP 503: busy"))
+	noteServerBusy(parkedB, errors.New("HTTP 503: busy"))
+
+	// One usable front means there is a real candidate: no waiting.
+	if _, parked := nearestRetryFor([]string{parkedA, live}); parked {
+		t.Fatal("one usable host must disable waiting")
+	}
+	wait, parked := nearestRetryFor([]string{parkedA, parkedB})
+	if !parked {
+		t.Fatal("all hosts parked must report a wait")
+	}
+	if wait <= 0 || wait > serverBusyRetry+time.Second {
+		t.Fatalf("unexpected wait %s", wait.Round(time.Millisecond))
+	}
+}
+
+func TestFrontTimeoutParksBriefly(t *testing.T) {
+	host := "front-timeout.example"
+	clearRouteHealth(host)
+	defer clearRouteHealth(host)
+
+	// Every front is an anycast Cloudflare edge IP that the ISP drops in waves,
+	// so repeated timeouts must park the host briefly instead of building the
+	// 30s..30min quarantine that used to park the whole pool at once.
+	for i := 0; i < 20; i++ {
+		noteRouteHTTPFailure(host, errors.New("dial tcp4 172.67.156.145:443: i/o timeout"))
+	}
+	if !routeCoolingDown(host) {
+		t.Fatal("front must be parked after a timeout")
+	}
+	routeHealthMu.Lock()
+	state := routeHealth[host]
+	routeHealthMu.Unlock()
+	if state.failures != 0 {
+		t.Fatalf("front timeouts must not accumulate host-specific failures, got %d", state.failures)
+	}
+	if park := time.Until(state.until); park > frontTimeoutPark+time.Second {
+		t.Fatalf("timeout park must stay at %s, got %s", frontTimeoutPark, park.Round(time.Millisecond))
+	}
+}
+
+func TestShouldPenalizeRoute(t *testing.T) {
+	if !shouldPenalizeRoute(context.Background()) {
+		t.Fatal("a live client dial must be allowed to record the failure")
+	}
+	if shouldPenalizeRoute(withBackgroundDial(context.Background())) {
+		t.Fatal("pool refills must not record failures")
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if shouldPenalizeRoute(cancelled) {
+		t.Fatal("a race cancelled by a winning sibling must not record failures")
+	}
+
+	expired, cancelExpired := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancelExpired()
+	time.Sleep(2 * time.Millisecond)
+	if shouldPenalizeRoute(expired) {
+		t.Fatal("a dial that ran out of budget must not record failures")
+	}
+}
+
+func TestFrontCandidatesForRace(t *testing.T) {
+	domains := []string{"a.example", "b.example", "c.example", "d.example", "e.example"}
+	for _, d := range domains {
+		clearRouteHealth(frontHost(2, d))
+		defer clearRouteHealth(frontHost(2, d))
+	}
+
+	if got := frontCandidatesForRace(2, nil, 0, 3); got != nil {
+		t.Fatalf("empty pool must yield no candidates, got %v", got)
+	}
+
+	capped := frontCandidatesForRace(2, domains, 0, 3)
+	if len(capped) != 3 {
+		t.Fatalf("cap must be applied, got %v", capped)
+	}
+	if capped[0] != "kws2.a.example" {
+		t.Fatalf("unexpected first candidate: %v", capped)
+	}
+
+	// Rotation: the next attempt starts further along the pool and wraps around.
+	rotated := frontCandidatesForRace(2, domains, 4, 3)
+	if len(rotated) != 3 || rotated[0] != "kws2.e.example" || rotated[1] != "kws2.a.example" || rotated[2] != "kws2.b.example" {
+		t.Fatalf("rotation must wrap around the pool, got %v", rotated)
+	}
+
+	// A parked front is skipped, not counted against the cap.
+	noteServerBusy(frontHost(2, "a.example"), errors.New("HTTP 503: busy"))
+	parked := frontCandidatesForRace(2, domains, 0, 3)
+	if len(parked) != 3 {
+		t.Fatalf("cap must be filled from the remaining fronts, got %v", parked)
+	}
+	for _, h := range parked {
+		if h == "kws2.a.example" {
+			t.Fatalf("parked front must be skipped, got %v", parked)
+		}
 	}
 }
 
