@@ -2488,3 +2488,50 @@ func TestCachedFileReadInvalidation(t *testing.T) {
 		t.Fatalf("expected load() to re-run after change, ran %d times", calls)
 	}
 }
+
+func TestTailLog_BoundedTail(t *testing.T) {
+	origBase := baseDir
+	tmpDir := t.TempDir()
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	// 1. Non-existent log file
+	if got := tailLog(10); got != "" {
+		t.Fatalf("expected empty string for non-existent log, got %q", got)
+	}
+
+	// 2. Small log file (< 32KB)
+	var smallLines []string
+	for i := 1; i <= 20; i++ {
+		smallLines = append(smallLines, fmt.Sprintf("line %02d: log entry", i))
+	}
+	logPath := path("tgws.log")
+	if err := os.WriteFile(logPath, []byte(strings.Join(smallLines, "\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailLog(5)
+	expected := strings.Join(smallLines[len(smallLines)-5:], "\n")
+	if got != expected {
+		t.Fatalf("tailLog(5) small mismatch:\nwant:\n%s\ngot:\n%s", expected, got)
+	}
+
+	// 3. Large log file (> 64KB)
+	var largeLines []string
+	for i := 1; i <= 2000; i++ {
+		largeLines = append(largeLines, fmt.Sprintf("line %04d: extended log entry with extra filler data 1234567890", i))
+	}
+	if err := os.WriteFile(logPath, []byte(strings.Join(largeLines, "\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	gotLarge := tailLog(10)
+	expectedLarge := strings.Join(largeLines[len(largeLines)-10:], "\n")
+	if gotLarge != expectedLarge {
+		t.Fatalf("tailLog(10) large mismatch:\nwant:\n%s\ngot:\n%s", expectedLarge, gotLarge)
+	}
+}
+
+func TestInitMemoryTuning(t *testing.T) {
+	initMemoryTuning()
+}

@@ -696,11 +696,33 @@ func pidAlive() bool {
 	return true
 }
 func tailLog(n int) string {
-	b, e := os.ReadFile(path("tgws.log"))
-	if e != nil {
+	f, err := os.Open(path("tgws.log"))
+	if err != nil {
 		return ""
 	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return ""
+	}
+
+	const maxTailBytes = 32 * 1024
+	offset := int64(0)
+	readLen := fi.Size()
+	if readLen > maxTailBytes {
+		offset = readLen - maxTailBytes
+		readLen = maxTailBytes
+	}
+	buf := make([]byte, readLen)
+	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(buf)), "\n")
+	if offset > 0 && len(lines) > 0 {
+		lines = lines[1:]
+	}
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -2277,6 +2299,15 @@ func emitErr(e error) {
 	fmt.Println(string(b))
 }
 
+func initMemoryTuning() {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(48 * 1024 * 1024)
+	}
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
+}
+
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2284,6 +2315,7 @@ func main() {
 			os.Exit(2)
 		}
 	}()
+	initMemoryTuning()
 	ensureDir()
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -2410,6 +2442,17 @@ func serve() {
 		defer t.Stop()
 		for range t.C {
 			writeStatus()
+		}
+	}()
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			// When there are no active flows, return unused heap pages to OS.
+			// This prevents RSS from lingering at peak watermarks on legacy Android kernels.
+			if atomic.LoadInt64(&active) == 0 {
+				debug.FreeOSMemory()
+			}
 		}
 	}()
 	for {

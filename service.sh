@@ -61,6 +61,8 @@ mkdir -p /data/adb/teleweb
 chmod 700 /data/adb/teleweb 2>/dev/null
 export TELEWEB_DIR=/data/adb/teleweb
 export TELEWEB_MOD="$MODDIR"
+export GOMEMLIMIT=48MiB
+export GOGC=50
 
 chmod 0755 "$MODDIR/bin/tgws" 2>/dev/null
 
