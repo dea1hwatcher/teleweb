@@ -428,6 +428,17 @@ func TestRepeatedEarlyEOFTemporarilyCoolsRoute(t *testing.T) {
 	}
 }
 
+func TestIsPidAlive(t *testing.T) {
+	if !isPidAlive(os.Getpid()) {
+		t.Fatal("own process must be reported alive")
+	}
+	// An impossible pid must be dead on every supported platform: on Windows
+	// os.FindProcess alone reported every pid as alive.
+	if isPidAlive(1 << 30) {
+		t.Fatal("impossible pid reported alive")
+	}
+}
+
 func TestAppProcessMatches(t *testing.T) {
 	cases := []struct {
 		cmd, pkg string
