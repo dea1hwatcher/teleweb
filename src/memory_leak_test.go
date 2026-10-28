@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -419,5 +421,166 @@ func TestMemoryLeak_WsPool_DisabledDrain(t *testing.T) {
 			t.Errorf("peer %d: expected read error after drain, got data", i)
 		}
 		p.conn.Close()
+	}
+}
+
+// TestPipeWSTunnelRoundTrip drives the production WSS relay loop end to end
+// against an in-process fake relay: the 64-byte init must ride the first frame,
+// subsequent MTProto packets must be framed one per message, the downlink must
+// be relayed verbatim, server pings must be answered, and a server close must
+// tear both directions down without leaking goroutines.
+func TestPipeWSTunnelRoundTrip(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() {
+		baseDir = oldDir
+		logMu.Lock()
+		if logFile != nil {
+			_ = logFile.Close()
+			logFile = nil
+		}
+		logMu.Unlock()
+	})
+
+	runtime.GC()
+	initialGoroutines := runtime.NumGoroutine()
+
+	init := make([]byte, 64)
+	for i := 0; i < 56; i++ {
+		init[i] = byte(i + 1)
+	}
+	block, err := aes.NewCipher(init[8:40])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctr := cipher.NewCTR(block, init[40:56])
+	ctr.XORKeyStream(make([]byte, 56), make([]byte, 56))
+	plainTail := make([]byte, 8)
+	binary.LittleEndian.PutUint32(plainTail[:4], 0xEFEFEFEF)
+	plainTail[4], plainTail[5] = 0x01, 0x00
+	ctr.XORKeyStream(init[56:], plainTail)
+
+	clientConn, clientPeer := net.Pipe()
+	defer clientPeer.Close()
+	serverConn, serverPeer := net.Pipe()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		defer close(serverErr)
+		defer serverPeer.Close()
+		sr := bufio.NewReader(serverPeer)
+		req, err := http.ReadRequest(sr)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if req.URL.Path != "/apiws" || req.Header.Get("Sec-WebSocket-Protocol") != "binary" {
+			serverErr <- fmt.Errorf("bad upgrade request: path=%q", req.URL.Path)
+			return
+		}
+		accept := base64.StdEncoding.EncodeToString(sha1Sum([]byte(req.Header.Get("Sec-WebSocket-Key") + wsGUID)))
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\nSec-WebSocket-Protocol: binary\r\n\r\n"
+		if _, err := serverPeer.Write([]byte(resp)); err != nil {
+			serverErr <- err
+			return
+		}
+
+		serverWS := &wsConn{conn: serverPeer, r: sr}
+		op, payload, err := serverWS.readFrame()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if op != 2 || len(payload) != 69 || string(payload[:64]) != string(init) {
+			serverErr <- fmt.Errorf("first frame: op=%d len=%d (want 2/69 with init prefix)", op, len(payload))
+			return
+		}
+		op, payload, err = serverWS.readFrame()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if op != 2 || len(payload) != 9 {
+			serverErr <- fmt.Errorf("second frame: op=%d len=%d (want 2/9)", op, len(payload))
+			return
+		}
+
+		reply := []byte("relay-downlink-bytes!!")
+		if err := serverWS.writeFrame(2, reply); err != nil {
+			serverErr <- err
+			return
+		}
+		if err := serverWS.writeFrame(9, []byte("ping")); err != nil {
+			serverErr <- err
+			return
+		}
+		op, payload, err = serverWS.readFrame()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if op != 10 || string(payload) != "ping" {
+			serverErr <- fmt.Errorf("expected pong 'ping', got op=%d payload=%q", op, payload)
+			return
+		}
+		_ = serverWS.writeFrame(8, nil)
+	}()
+
+	ws, err := websocketUpgradePath(serverConn, "fake-relay.test", "/apiws")
+	if err != nil {
+		t.Fatalf("upgrade failed: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeWSTunnel(clientConn, ws, init, 1, 1, false)
+	}()
+
+	// Emulate the Telegram client: two abridged packets back to back. The
+	// first rides the init frame, the second arrives as its own message.
+	clientCTR := cipher.NewCTR(block, init[40:56])
+	skip := make([]byte, 64)
+	clientCTR.XORKeyStream(skip, skip)
+	encrypt := func(words int) []byte {
+		pkt := make([]byte, 1+words*4)
+		pkt[0] = byte(words)
+		out := make([]byte, len(pkt))
+		clientCTR.XORKeyStream(out, pkt)
+		return out
+	}
+	uplink := append(encrypt(1), encrypt(2)...)
+	if _, err := clientPeer.Write(uplink); err != nil {
+		t.Fatalf("client uplink write: %v", err)
+	}
+
+	down := make([]byte, len("relay-downlink-bytes!!"))
+	if _, err := io.ReadFull(clientPeer, down); err != nil {
+		t.Fatalf("client downlink read: %v", err)
+	}
+	if string(down) != "relay-downlink-bytes!!" {
+		t.Fatalf("downlink payload %q", down)
+	}
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("fake relay: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the fake relay")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeWSTunnel did not shut down after server close")
+	}
+	clientPeer.Close()
+
+	time.Sleep(100 * time.Millisecond)
+	runtime.GC()
+	if final := runtime.NumGoroutine(); final > initialGoroutines+3 {
+		t.Errorf("goroutine leak after tunnel teardown: initial=%d final=%d", initialGoroutines, final)
 	}
 }
