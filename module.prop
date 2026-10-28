@@ -1,7 +1,7 @@
 id=teleweb
 name=TeleWEB
-version=v0.1.3
-versionCode=103
+version=v0.1.4
+versionCode=104
 author=deathwatcher
 description=⛔ Остановлено | TeleWEB: прозрачный WSS-транспорт для Telegram (DC1-DC5)
 updateJson=https://raw.githubusercontent.com/dea1hwatcher/teleweb/master/update.json

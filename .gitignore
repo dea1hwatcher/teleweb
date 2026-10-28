@@ -5,3 +5,11 @@
 src/teleweb
 src/teleweb.exe
 bin/
+
+# Device logs exported from the WebUI contain real IPs and client traffic
+# metadata, so they must never be committed.
+logs_extracted/
+logs_new/
+
+# Local assistant workspace (memory, session state)
+.workbuddy-ai/
