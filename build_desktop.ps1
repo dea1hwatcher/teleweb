@@ -19,7 +19,11 @@ function Build-Target([string]$goos, [string]$goarch, [string]$outFile, [string]
     $env:CGO_ENABLED = "0"
     $env:GOOS = $goos
     $env:GOARCH = $goarch
-    $buildArgs = @("build", "-trimpath", "-ldflags", "-s -w")
+    $ldflags = "-s -w"
+    if ($goos -eq "windows" -and $tags -match "nativegui") {
+        $ldflags += " -H=windowsgui"
+    }
+    $buildArgs = @("build", "-trimpath", "-ldflags", $ldflags)
     if ($tags -ne "") { $buildArgs += @("-tags", $tags) }
     $buildArgs += @("-o", $outFile, ".")
     Push-Location $SrcDir

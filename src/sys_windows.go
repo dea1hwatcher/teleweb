@@ -34,9 +34,48 @@ func defaultBaseDir() string {
 
 func isAndroidRuntime() bool { return false }
 
+var (
+	kernel32          = windows.NewLazySystemDLL("kernel32.dll")
+	procAttachConsole = kernel32.NewProc("AttachConsole")
+)
+
+// attachParentConsole attaches standard I/O to the parent console if tgws was
+// executed from Command Prompt or PowerShell, so CLI commands print their
+// output even when compiled with -H=windowsgui. If launched by double-clicking
+// in Explorer, this is a silent no-op and never allocates a console window.
+func attachParentConsole() {
+	if len(os.Args) > 1 {
+		// If stdout/stderr was already redirected to a pipe or file by the caller,
+		// preserve that stream so CLI piping and automation work seamlessly.
+		h, _ := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+		ft, _ := windows.GetFileType(h)
+		if ft == windows.FILE_TYPE_PIPE || ft == windows.FILE_TYPE_DISK {
+			return
+		}
+		const attachParentProcess = ^uintptr(0) // DWORD -1
+		r, _, _ := procAttachConsole.Call(attachParentProcess)
+		if r != 0 {
+			if f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
+				os.Stdout = f
+				os.Stderr = f
+			}
+		}
+	}
+}
+
+func setCmdNoWindow(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NO_WINDOW,
+	}
+}
+
 func setDaemonProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
+		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
 		HideWindow:    true,
 	}
 }
