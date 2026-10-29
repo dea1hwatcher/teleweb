@@ -54,8 +54,7 @@ func getH2Client(host string) *http.Client {
 
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			d := net.Dialer{Resolver: androidDNSResolver(), Timeout: 5 * time.Second}
-			return d.DialContext(ctx, network, addr)
+			return trackedDial(ctx, network, addr, 5*time.Second)
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName: host,
