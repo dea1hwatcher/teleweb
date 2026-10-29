@@ -13,6 +13,8 @@ func ensureRedirector() error      { return nil }
 func redirectorHealthy() bool      { return false }
 func localRedirectorHealthy() bool { return false }
 
+func redirectorUnsupportedReason() error { return nil }
+
 var errWindowsOnly = errors.New("this command is only supported on Windows")
 
 func svcInstall() error   { return errWindowsOnly }

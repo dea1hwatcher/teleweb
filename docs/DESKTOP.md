@@ -17,17 +17,26 @@
 
 ## Windows
 
-Требования: Windows 10/11 x64, права администратора, `WinDivert.dll` + `WinDivert64.sys` рядом с `tgws.exe` (входят в пакет).
+Требования: Windows 10/11, права администратора для прозрачного режима.
+
+Пакеты собираются под **x64 (amd64)**, **x86 (386)** и **ARM64**:
+
+| Сборка | Прозрачный режим | SOCKS-режим |
+| :--- | :--- | :--- |
+| `tgws-windows-amd64.exe` | да (WinDivert) | да |
+| `tgws-windows-386.exe` | да (WinDivert; работает и на x64 Windows) | да |
+| `tgws-windows-arm64.exe` | нет — WinDivert без ARM64-драйвера | да |
+
+**Один файл — весь билд.** `tgws-windows-<arch>.exe` — самодостаточный: WebUI и драйвер WinDivert встроены внутрь бинаря. При первом запуске прозрачного режима драйвер извлекается в `%ProgramData%\teleweb\driver\` (или `%LOCALAPPDATA%\teleweb` без прав администратора). Рядом с exe ничего докладывать не нужно; если же `WinDivert.dll` лежит рядом с exe, используется она (совместимость с zip-пакетом).
 
 ```powershell
 # установка (служба + автозапуск), из распакованного пакета:
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 
-# проверка
-& "$env:ProgramData\teleweb\tgws.exe" status
-
-# WebUI
-& "$env:ProgramData\teleweb\tgws.exe" webui 127.0.0.1:17842
+# или portable-сценарий без распаковки:
+.\tgws-windows-amd64.exe boot      # запустить перехват вручную
+.\tgws-windows-amd64.exe webui 127.0.0.1:17842
+.\tgws-windows-amd64.exe stop
 ```
 
 Как это работает: редиректор на WinDivert перехватывает исходящие TCP-пакеты к подсетям Telegram DC, подменяет адреса на `127.0.0.1` с уникальным NAT-портом, демон находит по этому порту исходный DC и туннелирует поток в WSS. Обратные пакеты переписываются так, что клиент видит исходный адрес Telegram. Собственные WSS-подключения демона исключены из перехвата (порты регистрируются до отправки SYN).
@@ -41,7 +50,7 @@ tgws.exe socks 127.0.0.1:17845
 
 Ограничения:
 - только IPv4 (как и в Android-версии);
-- Windows ARM64: WinDivert не имеет ARM64-драйвера — доступен только SOCKS-режим;
+- Windows ARM64: WinDivert не имеет ARM64-драйвера — доступен только SOCKS-режим (см. таблицу выше);
 - UDP/звонки не перехватываются (как и в Android-версии, где UDP пропускается для STUN/TURN).
 
 Антивирусы иногда настороженно относятся к WinDivert (на нём работают GoodbyeDPI, Netch и др.); драйвер подписан мейнтейнером WinDivert.

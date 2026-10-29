@@ -35,7 +35,9 @@ jobs:
         with:
           name: teleweb-windows
           path: |
+            dist/tgws-windows-*.exe
             dist/teleweb-windows-amd64.zip
+            dist/teleweb-windows-386.zip
             dist/teleweb-windows-arm64.zip
           if-no-files-found: error
 

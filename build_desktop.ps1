@@ -1,11 +1,15 @@
-# TeleWEB desktop build script: Windows (amd64/arm64) and Linux (amd64/arm64).
-# Produces self-contained packages under dist/.
+# TeleWEB desktop build script.
+# Windows: amd64/386/arm64 — standalone tgws.exe (WebUI + WinDivert driver are
+# embedded, so a single exe works without any accompanying files).
+# Linux: amd64/arm64 — tgws + webroot + installers.
+# Produces packages under dist/.
 $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SrcDir = Join-Path $RootDir "src"
 $DistDir = Join-Path $RootDir "dist"
 $Webroot = Join-Path $RootDir "webroot"
+$WebuiFallback = Join-Path $SrcDir "webui_fallback"
 
 $GoPath = "go"
 if (Test-Path "C:\Program Files\Go\bin\go.exe") { $GoPath = "C:\Program Files\Go\bin\go.exe" }
@@ -26,23 +30,35 @@ function Copy-Common([string]$dest) {
     Copy-Item $Webroot (Join-Path $dest "webroot") -Recurse -Force
 }
 
+# The embedded WebUI copy is generated from webroot/ (single source of truth).
+New-Item -ItemType Directory -Force -Path $WebuiFallback | Out-Null
+Get-ChildItem $WebuiFallback -File | Where-Object { $_.Name -ne "placeholder.txt" } | Remove-Item -Force
+Copy-Item "$Webroot\*" $WebuiFallback -Recurse -Force
+
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+Get-ChildItem $DistDir -File -Filter "tgws-windows-*.exe" | Remove-Item -Force
 
-# ---- Windows amd64 (transparent mode via WinDivert) ----
-$win64 = Join-Path $DistDir "teleweb-windows-amd64"
-if (Test-Path $win64) { Remove-Item $win64 -Recurse -Force }
-Copy-Common $win64
-Build-Target "windows" "amd64" (Join-Path $win64 "tgws.exe")
-Copy-Item (Join-Path $RootDir "desktop\windows\windivert\WinDivert.dll") $win64 -Force
-Copy-Item (Join-Path $RootDir "desktop\windows\windivert\WinDivert64.sys") $win64 -Force
-Copy-Item (Join-Path $RootDir "desktop\windows\windivert\LICENSE") (Join-Path $win64 "WinDivert-LICENSE.txt") -Force
-Copy-Item (Join-Path $RootDir "desktop\windows\install.ps1") $win64 -Force
-
-# ---- Windows arm64 (SOCKS mode only; WinDivert has no arm64 driver) ----
-$winArm = Join-Path $DistDir "teleweb-windows-arm64"
-if (Test-Path $winArm) { Remove-Item $winArm -Recurse -Force }
-Copy-Common $winArm
-Build-Target "windows" "arm64" (Join-Path $winArm "tgws.exe")
+# ---- Windows (standalone exe per architecture) ----
+# amd64/386 get transparent mode (embedded WinDivert); arm64 is SOCKS-only.
+$winTargets = @(
+    @{ Arch = "amd64"; Driver = $true },
+    @{ Arch = "386";   Driver = $true },
+    @{ Arch = "arm64"; Driver = $false }
+)
+foreach ($t in $winTargets) {
+    $arch = $t.Arch
+    $dir = Join-Path $DistDir "teleweb-windows-$arch"
+    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+    Copy-Common $dir
+    Build-Target "windows" $arch (Join-Path $dir "tgws.exe")
+    if ($t.Driver) {
+        Copy-Item (Join-Path $SrcDir "drivers\$arch\*") $dir -Force
+        Copy-Item (Join-Path $SrcDir "drivers\LICENSE") (Join-Path $dir "WinDivert-LICENSE.txt") -Force
+    }
+    Copy-Item (Join-Path $RootDir "desktop\windows\install.ps1") $dir -Force
+    # Single-file exe asset: driver and WebUI are embedded in the binary.
+    Copy-Item (Join-Path $dir "tgws.exe") (Join-Path $DistDir "tgws-windows-$arch.exe") -Force
+}
 
 # ---- Linux amd64 / arm64 (transparent mode via iptables) ----
 foreach ($arch in @("amd64", "arm64")) {

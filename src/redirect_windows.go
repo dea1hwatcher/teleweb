@@ -3,12 +3,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,23 +28,78 @@ import (
 // ------------------------------ WinDivert FFI ------------------------------
 //
 // The library is called through LazyDLL so the binary stays pure Go (no cgo)
-// and cross-compiles from any host. WinDivert.dll and WinDivert64.sys must be
-// placed next to tgws.exe; opening a handle as administrator installs and
-// starts the signed driver service automatically.
+// and cross-compiles from any host. The DLL is looked up next to tgws.exe
+// first; a single-file build falls back to the copy embedded at build time,
+// extracted into the state directory. WinDivert64.sys / WinDivert32.sys must
+// sit next to the DLL — WinDivert loads them from its own directory.
 
 var (
-	wdDLL     = syscall.NewLazyDLL("WinDivert.dll")
-	wdOpen    = wdDLL.NewProc("WinDivertOpen")
-	wdRecv    = wdDLL.NewProc("WinDivertRecv")
-	wdSend    = wdDLL.NewProc("WinDivertSend")
-	wdClose   = wdDLL.NewProc("WinDivertClose")
-	wdCalcSum = wdDLL.NewProc("WinDivertHelperCalcChecksums")
+	wdDLL     *syscall.LazyDLL
+	wdOpen    *syscall.LazyProc
+	wdRecv    *syscall.LazyProc
+	wdSend    *syscall.LazyProc
+	wdClose   *syscall.LazyProc
+	wdCalcSum *syscall.LazyProc
 )
 
 const (
 	wdLayerNetwork = 0
 	wdInvalid      = ^uintptr(0)
 )
+
+func loadWinDivert(dir string) error {
+	wdDLL = syscall.NewLazyDLL(filepath.Join(dir, "WinDivert.dll"))
+	if err := wdDLL.Load(); err != nil {
+		return fmt.Errorf("WinDivert.dll not loadable from %s: %w", dir, err)
+	}
+	wdOpen = wdDLL.NewProc("WinDivertOpen")
+	wdRecv = wdDLL.NewProc("WinDivertRecv")
+	wdSend = wdDLL.NewProc("WinDivertSend")
+	wdClose = wdDLL.NewProc("WinDivertClose")
+	wdCalcSum = wdDLL.NewProc("WinDivertHelperCalcChecksums")
+	return nil
+}
+
+// resolveDriverDir returns a directory containing WinDivert.dll and the
+// matching .sys driver: the exe directory when the files ship alongside, or a
+// per-user state directory populated from the embedded driver assets.
+func resolveDriverDir() (string, error) {
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		if _, err := os.Stat(filepath.Join(dir, "WinDivert.dll")); err == nil {
+			return dir, nil
+		}
+	}
+	fsys := embeddedDriverFS()
+	if fsys == nil {
+		return "", fmt.Errorf("WinDivert.dll not found next to tgws.exe and no embedded driver for windows/%s", runtime.GOARCH)
+	}
+	dir := filepath.Join(baseDir, "driver")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	entries, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		want, err := fs.ReadFile(fsys, e.Name())
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, want) {
+			continue
+		}
+		if err := os.WriteFile(path, want, 0700); err != nil {
+			return "", fmt.Errorf("extract %s: %w", e.Name(), err)
+		}
+	}
+	return dir, nil
+}
 
 // wdAddr mirrors WINDIVERT_ADDRESS (64 bytes). Byte 10 holds the flag bits:
 // 0 Sniffed, 1 Outbound, 2 Loopback, 3 Impostor, 4 IPv6, 5-7 checksum-valid.
@@ -53,7 +112,17 @@ func wdOpenHandle(filter string) (uintptr, error) {
 	if err != nil {
 		return 0, err
 	}
-	h, _, callErr := wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0)
+	// WinDivertOpen(filter, layer, INT16 priority, UINT64 flags): on 386 the
+	// trailing UINT64 occupies two 32-bit stdcall slots; passing a single
+	// uintptr leaves garbage in the high half and WinDivertOpen rejects it
+	// with ERROR_INVALID_PARAMETER.
+	var h uintptr
+	var callErr error
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0, 0)
+	} else {
+		h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0)
+	}
 	if h == wdInvalid || h == 0 {
 		return 0, fmt.Errorf("WinDivertOpen failed: %v (administrator rights and WinDivert.dll/.sys required)", callErr)
 	}
@@ -84,6 +153,12 @@ func wdSendPacket(h uintptr, pkt []byte, addr *wdAddr) error {
 }
 
 func wdCalcChecksums(pkt []byte, addr *wdAddr) {
+	// WinDivertHelperCalcChecksums(packet, len, addr, UINT64 flags): same
+	// two-slot UINT64 rule on 386 as WinDivertOpen.
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		_, _, _ = wdCalcSum.Call(uintptr(unsafe.Pointer(&pkt[0])), uintptr(len(pkt)), uintptr(unsafe.Pointer(addr)), 0, 0)
+		return
+	}
 	_, _, _ = wdCalcSum.Call(uintptr(unsafe.Pointer(&pkt[0])), uintptr(len(pkt)), uintptr(unsafe.Pointer(addr)), 0)
 }
 
@@ -241,7 +316,16 @@ var (
 	activeRedirector *wdRedirector
 )
 
-func redirectorSupported() bool { return true }
+func redirectorSupported() bool { return runtime.GOARCH == "amd64" || runtime.GOARCH == "386" }
+
+// redirectorUnsupportedReason explains why transparent mode is unavailable on
+// this architecture (ARM64 has no WinDivert driver build).
+func redirectorUnsupportedReason() error {
+	if runtime.GOARCH == "arm64" {
+		return errors.New("WinDivert ships no ARM64 driver: transparent mode is unavailable on Windows ARM64; use `tgws socks <addr>` instead")
+	}
+	return nil
+}
 
 func localRedirectorHealthy() bool {
 	redirectorMu.Lock()
@@ -258,8 +342,12 @@ func startRedirector() error {
 	if !isElevated() {
 		return errAdminRequired
 	}
-	if err := wdDLL.Load(); err != nil {
-		return fmt.Errorf("WinDivert.dll not loadable (place WinDivert.dll and WinDivert64.sys next to tgws.exe): %w", err)
+	driverDir, err := resolveDriverDir()
+	if err != nil {
+		return err
+	}
+	if err := loadWinDivert(driverDir); err != nil {
+		return err
 	}
 	hOut, err := wdOpenHandle(buildOutboundFilter())
 	if err != nil {

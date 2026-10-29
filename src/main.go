@@ -25,6 +25,7 @@ import (
 	stdpath "path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -1427,6 +1428,11 @@ func lookupLearnedDC(ip string) (int, bool, bool) {
 func setupRules() error {
 	if redirectorSupported() {
 		return ensureRedirector()
+	}
+	if runtime.GOOS == "windows" {
+		if err := redirectorUnsupportedReason(); err != nil {
+			return err
+		}
 	}
 	apps, uids := installedApps()
 	if len(uids) == 0 && isAndroidRuntime() {

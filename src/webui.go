@@ -18,8 +18,15 @@ func cmdWebUI(addr string) {
 		addr = "127.0.0.1:17842"
 	}
 	root := findWebroot()
-	if root == "" {
-		fmt.Fprintln(os.Stderr, "webui: webroot/index.html not found (set TELEWEB_WEBROOT)")
+	var static http.Handler
+	source := root
+	if root != "" {
+		static = http.FileServer(http.Dir(root))
+	} else if fsys := embeddedWebrootFS(); fsys != nil {
+		static = http.FileServer(http.FS(fsys))
+		source = "embedded"
+	} else {
+		fmt.Fprintln(os.Stderr, "webui: webroot/index.html not found and nothing embedded (set TELEWEB_WEBROOT)")
 		os.Exit(1)
 	}
 	mux := http.NewServeMux()
@@ -51,8 +58,8 @@ func cmdWebUI(addr string) {
 		}
 		_, _ = w.Write(out)
 	})
-	mux.Handle("/", http.FileServer(http.Dir(root)))
-	logf("WebUI listening on http://%s (root: %s)", addr, root)
+	mux.Handle("/", static)
+	logf("WebUI listening on http://%s (root: %s)", addr, source)
 	fmt.Printf("TeleWEB WebUI: http://%s\n", addr)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	if err := srv.ListenAndServe(); err != nil {

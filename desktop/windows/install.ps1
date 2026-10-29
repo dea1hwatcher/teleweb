@@ -31,16 +31,19 @@ if ($Uninstall) {
 }
 
 $Src = $PSScriptRoot
-foreach ($f in @("tgws.exe", "WinDivert.dll", "WinDivert64.sys")) {
-    if (-not (Test-Path (Join-Path $Src $f))) {
-        throw "Missing $f next to install.ps1"
-    }
+if (-not (Test-Path (Join-Path $Src "tgws.exe"))) {
+    throw "Missing tgws.exe next to install.ps1"
 }
+$hasDriver = (Test-Path (Join-Path $Src "WinDivert.dll")) -and (Test-Path (Join-Path $Src "WinDivert64.sys"))
 
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Copy-Item (Join-Path $Src "tgws.exe") $Dest -Force
-Copy-Item (Join-Path $Src "WinDivert.dll") $Dest -Force
-Copy-Item (Join-Path $Src "WinDivert64.sys") $Dest -Force
+if ($hasDriver) {
+    Copy-Item (Join-Path $Src "WinDivert.dll") $Dest -Force
+    Copy-Item (Join-Path $Src "WinDivert64.sys") $Dest -Force
+} else {
+    Write-Host "WinDivert driver not bundled (Windows ARM64): only SOCKS mode is available." -ForegroundColor Yellow
+}
 if (Test-Path (Join-Path $Src "webroot")) {
     Copy-Item (Join-Path $Src "webroot") $Dest -Recurse -Force
 }

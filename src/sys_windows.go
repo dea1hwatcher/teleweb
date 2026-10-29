@@ -19,9 +19,17 @@ import (
 
 func defaultBaseDir() string {
 	if d := os.Getenv("ProgramData"); d != "" {
+		dir := filepath.Join(d, "teleweb")
+		// Portable single-file exe run without admin rights cannot write to
+		// ProgramData; fall back to the per-user app data directory.
+		if err := os.MkdirAll(dir, 0700); err == nil {
+			return dir
+		}
+	}
+	if d := os.Getenv("LocalAppData"); d != "" {
 		return filepath.Join(d, "teleweb")
 	}
-	return `C:\ProgramData\teleweb`
+	return "teleweb-data"
 }
 
 func isAndroidRuntime() bool { return false }
