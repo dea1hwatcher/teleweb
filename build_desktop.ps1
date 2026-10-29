@@ -55,17 +55,22 @@ foreach ($arch in @("amd64", "arm64")) {
 }
 
 # ---- Archives ----
-$tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
+$tarExe = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\tar.exe" } else { "tar" }
+$hasTar = [bool](Get-Command $tarExe -ErrorAction SilentlyContinue)
 foreach ($dir in Get-ChildItem $DistDir -Directory) {
+    if (-not $env:SystemRoot) {
+        # Shell scripts must stay executable inside the Linux packages.
+        Get-ChildItem $dir.FullName -Filter "*.sh" | ForEach-Object { chmod +x $_.FullName }
+    }
     $zip = "$($dir.FullName).zip"
     if (Test-Path $zip) { Remove-Item $zip -Force }
     Compress-Archive -Path "$($dir.FullName)\*" -DestinationPath $zip
     $tgz = "$($dir.FullName).tar.gz"
     if (Test-Path $tgz) { Remove-Item $tgz -Force }
-    if (Test-Path $tarExe) {
+    if ($hasTar) {
         & $tarExe -czf $tgz -C $DistDir $dir.Name
     } else {
-        Write-Warning "tar.exe not found; skipping $($dir.Name).tar.gz"
+        Write-Warning "tar not found; skipping $($dir.Name).tar.gz"
     }
     Write-Host "packed $($dir.Name)" -ForegroundColor Green
 }

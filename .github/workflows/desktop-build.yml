@@ -1,0 +1,51 @@
+name: desktop-build
+
+# Builds Windows/Linux desktop packages as downloadable CI artifacts on every
+# change to the engine, WebUI or packaging inputs. Tag releases attach the
+# same packages via release.yml.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "src/**"
+      - "webroot/**"
+      - "desktop/**"
+      - "build_desktop.ps1"
+      - ".github/workflows/desktop-build.yml"
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
+
+      - name: Build desktop packages
+        shell: pwsh
+        run: ./build_desktop.ps1
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: teleweb-windows
+          path: |
+            dist/teleweb-windows-amd64.zip
+            dist/teleweb-windows-arm64.zip
+          if-no-files-found: error
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: teleweb-linux
+          path: |
+            dist/teleweb-linux-amd64.tar.gz
+            dist/teleweb-linux-amd64.zip
+            dist/teleweb-linux-arm64.tar.gz
+            dist/teleweb-linux-arm64.zip
+          if-no-files-found: error
