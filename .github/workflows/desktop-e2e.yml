@@ -1,11 +1,18 @@
 name: desktop-e2e
 
-# Manually triggered Linux end-to-end run in a privileged container:
-# Go build + unit tests + iptables redirect -> tgws -> WSS -> Telegram DC2.
+# Linux end-to-end run in a privileged container on PRs touching the engine,
+# WebUI or desktop packaging: Go build + unit tests + iptables redirect ->
+# tgws -> WSS -> Telegram DC2.
 on:
   workflow_dispatch:
-  push:
-    branches: [desktop-e2e]
+  pull_request:
+    branches: [master]
+    paths:
+      - "src/**"
+      - "webroot/**"
+      - "desktop/**"
+      - "build_desktop.ps1"
+      - ".github/workflows/desktop-e2e.yml"
 
 jobs:
   linux-e2e:
