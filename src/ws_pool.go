@@ -293,11 +293,20 @@ func (p *WsPool) Stats() (hits, misses int64, idle int) {
 func readPoolSize() int {
 	b, err := os.ReadFile(path("pool_size"))
 	if err != nil {
-		return 2 // default 2 pre-warmed connections per DC
+		if isAndroidRuntime() {
+			return 2 // default 2 pre-warmed connections per DC
+		}
+		// Desktop: no radio to pre-warm for, and the per-slot pool multiplies
+		// the client's own connections (slots x size). Keep sessions 1:1 with
+		// what the client opens; enable via the pool_size file if wanted.
+		return 0
 	}
 	v, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil || v < 0 {
-		return 2
+		if isAndroidRuntime() {
+			return 2
+		}
+		return 0
 	}
 	if v > 4 {
 		return 4 // limit max 4 to protect mobile RAM and radio

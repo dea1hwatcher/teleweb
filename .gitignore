@@ -13,3 +13,9 @@ logs_new/
 
 # Local assistant workspace (memory, session state)
 .workbuddy-ai/
+
+# Desktop build outputs (assembled by build_desktop.ps1)
+dist/
+desktop/linux/docker-e2e/out/
+src/webui_fallback/*
+!src/webui_fallback/placeholder.txt

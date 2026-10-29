@@ -2911,10 +2911,36 @@ function hasBridge() {
   return typeof window.ksu !== "undefined" && typeof ksu.exec === "function";
 }
 
+// Desktop (Windows/Linux) serves this UI over loopback and bridges commands to
+// the tgws binary through the local /api endpoint instead of ksu.exec.
+function hasDesktopBridge() {
+  return !hasBridge() && (location.protocol === "http:" || location.protocol === "https:");
+}
+
+async function desktopExec(cmd) {
+  const apiCall = / api '([A-Za-z0-9+/=]+)'/.exec(cmd || "");
+  if (apiCall) {
+    const r = await fetch("/api", { method: "POST", body: apiCall[1] });
+    const t = await r.text();
+    return { errno: r.ok ? 0 : 1, stdout: t, stderr: "" };
+  }
+  if ((cmd || "").indexOf(".log") >= 0 && (cmd || "").indexOf(">") >= 0) {
+    const r = await fetch("/api", { method: "POST", body: b64(JSON.stringify({ cmd: "clearlogs" })) });
+    const t = await r.text();
+    return { errno: r.ok ? 0 : 1, stdout: t, stderr: "" };
+  }
+  // Android-only helpers (dumpsys, am start, ...) are no-ops on desktop.
+  return { errno: 0, stdout: "", stderr: "" };
+}
+
 // Native Bridge Command Executor
 function kexec(cmd) {
   return new Promise((resolve, reject) => {
     if (!hasBridge()) {
+      if (hasDesktopBridge()) {
+        desktopExec(cmd).then(resolve).catch(reject);
+        return;
+      }
       reject(new Error("Откройте панель из Magisk, KernelSU или APatch"));
       return;
     }

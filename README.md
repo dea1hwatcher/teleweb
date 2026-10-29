@@ -38,6 +38,10 @@
 - [WebUI-X](https://github.com/MMRLApp/WebUI-X-Portable)
 - [MMRL](https://github.com/MMRLApp/MMRL)
 
+## Windows и Linux
+
+Десктопные порты: прозрачный перехват через WinDivert (Windows) и iptables (Linux), режим SOCKS5 без драйверов, служба Windows / systemd, локальный WebUI. Подробности и ограничения — [`docs/DESKTOP.md`](docs/DESKTOP.md). Сборка пакетов: `build_desktop.ps1`.
+
 ## Установка
 
 1. Скачайте актуальный архив `teleweb-v...-multiarch.zip` из раздела [Releases](https://github.com/dea1hwatcher/teleweb/releases/latest).

@@ -70,6 +70,15 @@ jobs:
             gh release create "$TAG" "$zip_file" --title "$TAG" --notes-file release-notes.md --target "$GITHUB_SHA"
           fi
 
+      - name: Build desktop packages (Windows/Linux)
+        shell: pwsh
+        run: ./build_desktop.ps1
+
+      - name: Attach desktop packages to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/tgws-windows-*.exe dist/*.zip dist/*.tar.gz --clobber
+
       - name: Update update.json on master
         run: |
           set -eu

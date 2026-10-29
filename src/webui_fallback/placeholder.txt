@@ -1,0 +1,2 @@
+Build-time placeholder: build_desktop.ps1 fills this directory from webroot/.
+Delete-safe; embedded WebUI falls back to the on-disk webroot dir.

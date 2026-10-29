@@ -25,6 +25,7 @@ import (
 	stdpath "path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -42,7 +43,7 @@ const (
 )
 
 var (
-	baseDir          = envOr("TELEWEB_DIR", "/data/adb/teleweb")
+	baseDir          = envOr("TELEWEB_DIR", defaultBaseDir())
 	startAt          = time.Now()
 	active           int64
 	wsCount          int64
@@ -202,6 +203,7 @@ type Status struct {
 	ForceTestDC       bool           `json:"forceTestDc"`
 	H2MediaEnabled    bool           `json:"h2MediaEnabled"`
 	DC203DirectTCP    bool           `json:"dc203DirectTcp"`
+	Redirector        bool           `json:"redirector"`
 }
 
 type apiRequest struct {
@@ -1178,9 +1180,15 @@ func iptSetup(bin string, uids []int, cidrs []string, chain string, family strin
 	if bin == "" {
 		return fmt.Errorf("%s is missing", family)
 	}
-	// Remove both previous global and UID-scoped jumps before selecting a mode.
+	// Remove both previous global, root-excluding and UID-scoped jumps before
+	// selecting a mode.
 	for i := 0; i < 16; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
+			break
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
 			break
 		}
 	}
@@ -1203,6 +1211,13 @@ func iptSetup(bin string, uids []int, cidrs []string, chain string, family strin
 			logf("rule %s skipped: %v", cidr, e)
 		}
 	}
+	// Desktop Linux has no per-app UID scoping: every local TCP flow to a
+	// Telegram DC aggregate is redirected (the chain itself already matches
+	// only Telegram destinations). Root is excluded so the daemon's own WSS
+	// dials to Telegram are never redirected back into its listener.
+	if len(uids) == 0 {
+		return runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "!", "--uid-owner", "0", "-j", chain)
+	}
 	for _, uid := range uids {
 		if err := runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain); err != nil {
 			return err
@@ -1214,9 +1229,15 @@ func iptCleanup(bin string, uids []int, chain string) {
 	if bin == "" {
 		return
 	}
-	// Remove the previous v1.2 global jump as well as this version's UID-scoped jumps.
+	// Remove the previous v1.2 global jump as well as this version's UID-scoped
+	// and desktop (root-excluding) jumps.
 	for i := 0; i < 16; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
+			break
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
 			break
 		}
 	}
@@ -1427,8 +1448,16 @@ func lookupLearnedDC(ip string) (int, bool, bool) {
 }
 
 func setupRules() error {
+	if redirectorSupported() {
+		return ensureRedirector()
+	}
+	if runtime.GOOS == "windows" {
+		if err := redirectorUnsupportedReason(); err != nil {
+			return err
+		}
+	}
 	apps, uids := installedApps()
-	if len(uids) == 0 {
+	if len(uids) == 0 && isAndroidRuntime() {
 		return errors.New("no installed Telegram app found (e.g., org.telegram.messenger)")
 	}
 	if err := iptSetup(findBin("iptables"), uids, telegramV4, "TELEWEB", "IPv4"); err != nil {
@@ -1436,7 +1465,11 @@ func setupRules() error {
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
-	logf("redirection enabled; apps: %s", appNames(apps))
+	if len(apps) > 0 {
+		logf("redirection enabled; apps: %s", appNames(apps))
+	} else {
+		logf("redirection enabled; desktop scope=all local TCP to Telegram DC ranges")
+	}
 	return nil
 }
 func appNames(a []App) string {
@@ -1447,6 +1480,9 @@ func appNames(a []App) string {
 	return strings.Join(x, ", ")
 }
 func cleanupRules() {
+	if redirectorSupported() {
+		return
+	}
 	_, uids := installedApps()
 	iptCleanup(findBin("iptables"), uids, "TELEWEB")
 	// Clean up the previous release's IPv6 redirect chain even though this
@@ -1542,6 +1578,11 @@ func processFrozen(pid int, entry procCgroupEntry) bool {
 // not prevent freezing. Some ROMs reject cgroup migration; report that once.
 func protectProcess(pid int) {
 	if pid <= 1 {
+		return
+	}
+	if !isAndroidRuntime() {
+		// Desktop systemd/service managers already handle restarts and OOM
+		// policy; Android cgroup/oom plumbing would only add log noise.
 		return
 	}
 	if err := os.WriteFile(fmt.Sprintf("/proc/%d/oom_score_adj", pid), []byte("-1000\n"), 0644); err != nil {
@@ -1740,7 +1781,9 @@ func processHasArg(pid int, want string) bool {
 	}
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil {
-		return false
+		// Platforms without procfs (Windows): fall back to a liveness check so
+		// watchdogAlive/stopWatchdog keep working with just the PID file.
+		return isPidAlive(pid)
 	}
 	for _, arg := range strings.Split(string(b), "\x00") {
 		if arg == want {
@@ -1812,23 +1855,6 @@ func stopWatchdog() {
 	_ = os.Remove(path("watchdog.pid"))
 }
 
-func serverListening() bool {
-	// Inspect the kernel socket table instead of opening a probe connection:
-	// a probe would be accepted as a fake MTProto client and pollute the log.
-	b, err := os.ReadFile("/proc/net/tcp")
-	if err != nil {
-		return false
-	}
-	want := fmt.Sprintf(":%04X", defaultPort)
-	for _, line := range strings.Split(string(b), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 4 && strings.HasSuffix(strings.ToUpper(fields[1]), want) && fields[3] == "0A" {
-			return true // TCP_LISTEN
-		}
-	}
-	return false
-}
-
 func daemonHealthy() bool { return pidAlive() && serverListening() }
 
 // waitForListener polls the kernel socket table until the daemon's listen
@@ -1864,12 +1890,25 @@ func restoreDaemon() error {
 }
 
 func rulesHealthy() bool {
+	if redirectorSupported() {
+		return redirectorHealthy()
+	}
 	bin := findBin("iptables")
 	if bin == "" {
 		return false
 	}
 	_, uids := installedApps()
 	if len(uids) == 0 {
+		// Desktop mode: a single root-excluding global jump scopes the whole
+		// OUTPUT chain to the Telegram-only REDIRECT chain.
+		if !isAndroidRuntime() && runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil {
+			for _, cidr := range telegramV4 {
+				if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
+					return false
+				}
+			}
+			return true
+		}
 		return false
 	}
 	for _, uid := range uids {
@@ -2055,6 +2094,7 @@ func currentStatus() Status {
 		ForceTestDC:    readForceTestDC(),
 		H2MediaEnabled: readH2MediaEnabled(),
 		DC203DirectTCP: readDC203DirectTCP(),
+		Redirector:     localRedirectorHealthy(),
 	}
 }
 func status() Status {
@@ -2115,6 +2155,7 @@ func status() Status {
 		ForceTestDC:    readForceTestDC(),
 		H2MediaEnabled: readH2MediaEnabled(),
 		DC203DirectTCP: readDC203DirectTCP(),
+		Redirector:     localRedirectorHealthy(),
 		LastCFPoP: func() string {
 			if p := lastCFPoP.Load(); p != nil {
 				return *p
@@ -2286,6 +2327,11 @@ func apiMain(arg string) {
 			}
 		}
 		emitOK(status())
+	case "clearlogs":
+		for _, name := range []string{"tgws.log", "daemon.log", "supervisor.log", "watchdog.log"} {
+			_ = os.Truncate(path(name), 0)
+		}
+		emitOK(map[string]any{"cleared": true})
 	default:
 		emitErr(fmt.Errorf("unknown command: %s", q.Cmd))
 	}
@@ -2396,9 +2442,56 @@ func main() {
 		case "check":
 			runChecks()
 			return
+		case "run":
+			cmdRun()
+			return
+		case "socks":
+			addr := ""
+			if len(os.Args) > 2 {
+				addr = os.Args[2]
+			}
+			cmdSocks(addr)
+			return
+		case "webui":
+			addr := ""
+			if len(os.Args) > 2 {
+				addr = os.Args[2]
+			}
+			cmdWebUI(addr)
+			return
+		case "gui":
+			addr := ""
+			if len(os.Args) > 2 {
+				addr = os.Args[2]
+			}
+			cmdGui(addr)
+			return
+		case "svc-install":
+			if err := svcInstall(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		case "svc-uninstall":
+			if err := svcUninstall(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		case "svc-run":
+			if err := svcRun(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
-	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | api BASE64_JSON | check")
+	if !isAndroidRuntime() {
+		// Desktop double-click: launch the WebUI instead of printing usage.
+		cmdGui("")
+		return
+	}
+	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | webui [addr] | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
 }
 
 func serve() {
@@ -2436,7 +2529,16 @@ func serve() {
 		return
 	}
 	defer ln.Close()
+	go selfDialJanitor()
+	if redirectorSupported() {
+		if err := startRedirector(); err != nil {
+			logf("redirector: failed to start: %v", err)
+		} else {
+			defer stopRedirector()
+		}
+	}
 	logf("local proxy listening on 127.0.0.1:%d; %s; go=%s", defaultPort, procSummary(os.Getpid()), runtimeVersion())
+	writeStatus()
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
@@ -2589,11 +2691,13 @@ func setConnSockOpts(conn net.Conn) {
 	}
 }
 
+var errNoOriginalDst = errors.New("no intercepted flow mapping for this socket")
+
 func isNeutralError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) || errors.Is(err, errNoOriginalDst) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
@@ -2606,25 +2710,33 @@ func isNeutralError(err error) bool {
 
 func handleClient(c net.Conn) {
 	setConnSockOpts(c)
-	id := atomic.AddInt64(&connSeq, 1)
-	atomic.AddInt64(&active, 1)
-	defer atomic.AddInt64(&active, -1)
-	defer c.Close()
 	orig, err := originalDestination(c)
 	if err != nil {
 		if !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
 			logf("failed to determine original destination: %v", err)
 		}
+		_ = c.Close()
 		return
 	}
+	serveConn(c, orig)
+}
+
+// serveConn runs the MTProto-over-WSS pipeline for an established client
+// socket with a known original destination (transparent redirect or SOCKS5).
+func serveConn(c net.Conn, orig netip.AddrPort) {
+	id := atomic.AddInt64(&connSeq, 1)
+	atomic.AddInt64(&active, 1)
+	defer atomic.AddInt64(&active, -1)
+	defer c.Close()
+	setConnSockOpts(c)
 
 	// Read the obfuscated MTProto init before selecting the WSS frontend. Its
 	// decrypted DC index is signed: negative values identify media-only DC
 	// connections. This avoids guessing DC/media from overlapping IP pools.
 	init := make([]byte, 64)
 	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, err = io.ReadFull(c, init)
+	_, err := io.ReadFull(c, init)
 	_ = c.SetReadDeadline(time.Time{})
 	if err != nil {
 		if !isNeutralError(err) {
@@ -2654,6 +2766,14 @@ func handleClient(c net.Conn) {
 			learnDC(orig.Addr().String(), dc, isMedia)
 		}
 	} else {
+		if isCDN203IP(orig.Addr()) {
+			// Unknown/unparseable transport to a CDN203 address: pass it
+			// through verbatim instead of guessing a DC from the IP (the
+			// 91.105.192.0/23 aggregate maps to DC2 in dcFor, which would
+			// feed non-MTProto garbage into the WSS path).
+			handleCDN203(c, orig, init, id)
+			return
+		}
 		if testDC, ok := knownTestDCMap[orig.Addr().String()]; ok {
 			dc = testDC
 			isTestDC = true
@@ -2722,6 +2842,55 @@ func handleClient(c net.Conn) {
 func readDC203DirectTCP() bool         { return readFlag("dc203_direct_tcp", true) }
 func writeDC203DirectTCP(v bool) error { return writeFlag("dc203_direct_tcp", v) }
 
+// cdn203Prefix is the CDN203 aggregate from telegramSubnets (91.105.192.0/23).
+var cdn203Prefix = netip.MustParsePrefix("91.105.192.0/23")
+
+func isCDN203IP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.Is4() && (cdn203Prefix.Contains(ip) || ip.String() == cdn203IP)
+}
+
+// cdn203Fails is a negative cache of CDN endpoints whose direct dial recently
+// failed. When an endpoint is known-unreachable (e.g. the ISP blocks the CDN
+// range), client connections are closed immediately instead of piling up one
+// 5-second dial attempt per retry — a churning client otherwise opens dozens
+// of half-open sessions per second.
+var (
+	cdn203FailMu     sync.Mutex
+	cdn203Fails      = map[string]time.Time{}
+	cdn203FailLogAt  time.Time
+	cdn203FailLogged int
+)
+
+const cdn203FailBackoff = 30 * time.Second
+
+func cdn203BlockedRecently(dst string) bool {
+	cdn203FailMu.Lock()
+	defer cdn203FailMu.Unlock()
+	t, ok := cdn203Fails[dst]
+	return ok && time.Now().Before(t)
+}
+
+func cdn203MarkFail(dst string) {
+	cdn203FailMu.Lock()
+	defer cdn203FailMu.Unlock()
+	cdn203Fails[dst] = time.Now().Add(cdn203FailBackoff)
+	now := time.Now()
+	if now.Sub(cdn203FailLogAt) >= 10*time.Second {
+		logf("CDN203 %s unreachable on the direct path (%d failed dials in 10s); failing client connections fast for %s", dst, cdn203FailLogged+1, cdn203Fails[dst].Format("15:04:05"))
+		cdn203FailLogAt = now
+		cdn203FailLogged = 0
+		return
+	}
+	cdn203FailLogged++
+}
+
+func cdn203MarkReachable(dst string) {
+	cdn203FailMu.Lock()
+	defer cdn203FailMu.Unlock()
+	delete(cdn203Fails, dst)
+}
+
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
@@ -2743,20 +2912,26 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		logf("conn #%d CDN203: Cloudflare Worker %s did not respond: %v; falling back to direct TCP", id, worker, err)
 	}
 
-	// Dedicated native TCP pass-through for CDN203 (cdn203IP:443)
+	// Dedicated native TCP pass-through to the client's original CDN
+	// destination (IP and port as dialed by the client — CDN203 serves both
+	// :443 and :80).
 	if !dc203DirectTCPCached() {
 		logf("conn #%d CDN203 direct TCP disabled by configuration", id)
 		return
 	}
-	d := net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
-	remote, err := d.Dial("tcp4", net.JoinHostPort(cdn203IP, "443"))
+	dst := net.JoinHostPort(orig.Addr().String(), strconv.Itoa(int(orig.Port())))
+	if cdn203BlockedRecently(dst) {
+		return
+	}
+	remote, err := trackedDial(context.Background(), "tcp4", dst, 5*time.Second)
 	if err != nil {
 		if !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
-			logf("conn #%d CDN203 (%s:443) TCP dial failed: %v", id, cdn203IP, err)
+			cdn203MarkFail(dst)
 		}
 		return
 	}
+	cdn203MarkReachable(dst)
 	defer remote.Close()
 	setConnSockOpts(remote)
 
@@ -2765,7 +2940,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		return
 	}
 	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
-	logf("conn #%d %s -> CDN203 (%s:443) via direct TCP pass-through", id, orig, cdn203IP)
+	logf("conn #%d %s -> CDN203 (%s) via direct TCP pass-through", id, orig, dst)
 	pipeTCPToTCP(c, remote, id, 203)
 }
 
@@ -3914,8 +4089,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 			dial: func(c context.Context) (*wsConn, error) {
 				attemptCtx, cancel := context.WithTimeout(c, 2500*time.Millisecond)
 				defer cancel()
-				d := net.Dialer{Timeout: 1200 * time.Millisecond, KeepAlive: 30 * time.Second}
-				raw, err := d.DialContext(attemptCtx, "tcp4", net.JoinHostPort(ipAddr.String(), "443"))
+				raw, err := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ipAddr.String(), "443"), 1200*time.Millisecond)
 				if err != nil {
 					return nil, err
 				}
@@ -4116,8 +4290,7 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 			continue
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 2000*time.Millisecond)
-		d := net.Dialer{Timeout: 1200 * time.Millisecond, KeepAlive: 30 * time.Second}
-		raw, e := d.DialContext(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"))
+		raw, e := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"), 1200*time.Millisecond)
 		if e == nil {
 			setConnSockOpts(raw)
 			var ws *wsConn
@@ -4348,8 +4521,7 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 			continue
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 3000*time.Millisecond)
-		d := net.Dialer{Timeout: 1500 * time.Millisecond, KeepAlive: 30 * time.Second}
-		raw, e := d.DialContext(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"))
+		raw, e := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"), 1500*time.Millisecond)
 		if e != nil {
 			cancel()
 			lastErr = e
