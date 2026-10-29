@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
 	"sync"
 	"time"
@@ -115,4 +116,37 @@ func cmdRun() {
 	stopWatchdog()
 	stopServer()
 	fmt.Println("TeleWEB stopped")
+}
+
+// cmdGui serves the embedded WebUI on loopback and opens it in the default
+// browser. This is what a bare double-click on tgws.exe runs on desktop.
+func cmdGui(addr string) {
+	if addr == "" {
+		addr = "127.0.0.1:17842"
+	}
+	ensureDir()
+	startSignalLogger()
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		openInBrowser("http://" + addr + "/")
+	}()
+	cmdWebUI(addr)
+}
+
+func openInBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		logf("gui: cannot open browser: %v", err)
+		fmt.Printf("TeleWEB GUI: open %s manually\n", url)
+		return
+	}
+	_ = cmd.Process.Release()
 }

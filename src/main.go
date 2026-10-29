@@ -2427,6 +2427,13 @@ func main() {
 			}
 			cmdWebUI(addr)
 			return
+		case "gui":
+			addr := ""
+			if len(os.Args) > 2 {
+				addr = os.Args[2]
+			}
+			cmdGui(addr)
+			return
 		case "svc-install":
 			if err := svcInstall(); err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -2447,7 +2454,12 @@ func main() {
 			return
 		}
 	}
-	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | webui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
+	if !isAndroidRuntime() {
+		// Desktop double-click: launch the WebUI instead of printing usage.
+		cmdGui("")
+		return
+	}
+	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | webui [addr] | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
 }
 
 func serve() {
