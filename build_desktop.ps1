@@ -55,6 +55,7 @@ foreach ($arch in @("amd64", "arm64")) {
 }
 
 # ---- Archives ----
+Add-Type -AssemblyName System.IO.Compression
 $tarExe = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\tar.exe" } else { "tar" }
 $hasTar = [bool](Get-Command $tarExe -ErrorAction SilentlyContinue)
 foreach ($dir in Get-ChildItem $DistDir -Directory) {
@@ -64,7 +65,23 @@ foreach ($dir in Get-ChildItem $DistDir -Directory) {
     }
     $zip = "$($dir.FullName).zip"
     if (Test-Path $zip) { Remove-Item $zip -Force }
-    Compress-Archive -Path "$($dir.FullName)\*" -DestinationPath $zip
+    # Both Compress-Archive and ZipFile.CreateFromDirectory emit backslash
+    # separators on Windows, which breaks extraction on Linux/macOS. Write the
+    # entries explicitly with forward slashes.
+    $zipStream = [System.IO.File]::Create($zip)
+    $archive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($f in Get-ChildItem $dir.FullName -Recurse -File) {
+            $rel = $f.FullName.Substring($dir.FullName.Length + 1).Replace('\', '/')
+            $entry = $archive.CreateEntry($rel, [System.IO.Compression.CompressionLevel]::Optimal)
+            $es = $entry.Open()
+            $fs = [System.IO.File]::OpenRead($f.FullName)
+            try { $fs.CopyTo($es) } finally { $fs.Dispose(); $es.Dispose() }
+        }
+    } finally {
+        $archive.Dispose()
+        $zipStream.Dispose()
+    }
     $tgz = "$($dir.FullName).tar.gz"
     if (Test-Path $tgz) { Remove-Item $tgz -Force }
     if ($hasTar) {
