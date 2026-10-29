@@ -16,3 +16,4 @@ logs_new/
 
 # Desktop build outputs (assembled by build_desktop.ps1)
 dist/
+desktop/linux/docker-e2e/out/

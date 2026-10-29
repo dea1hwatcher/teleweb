@@ -82,6 +82,20 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o tgws.exe .
 
 Проверка парсеров и инвариантов движка — `tgws check`; юнит-тесты — `go test ./...` в `src/`.
 
+## Проверка Linux-порта в Docker
+
+В репозитории есть готовый харнесс `desktop/linux/docker-e2e/`: внутри образа собирается `tgws`, гоняются `go vet`/`go test`, затем в привилегированном контейнере запускается `tgws run`, устанавливаются iptables-правила и не-root клиент подключается к `149.154.167.220:443` — успех фиксируется по строке `-> DC2 ... via WSS` в логе демона.
+
+```bash
+# локально (нужен запущенный Docker с поддержкой --privileged)
+sh desktop/linux/docker-e2e/run.sh
+# либо вручную
+docker build -t teleweb-e2e -f desktop/linux/docker-e2e/Dockerfile .
+docker run --rm --privileged teleweb-e2e
+```
+
+Либо через GitHub Actions: workflow `desktop-e2e` (workflow_dispatch), логи выкладываются артефактом.
+
 ## Управление
 
 | Команда | Назначение |
