@@ -63,16 +63,6 @@ foreach ($t in $winTargets) {
     Copy-Item (Join-Path $dir "tgws.exe") (Join-Path $DistDir "tgws-windows-$arch.exe") -Force
 }
 
-# ---- Linux amd64 / arm64 (transparent mode via iptables) ----
-foreach ($arch in @("amd64", "arm64")) {
-    $dir = Join-Path $DistDir "teleweb-linux-$arch"
-    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-    Copy-Common $dir
-    Build-Target "linux" $arch (Join-Path $dir "tgws")
-    Copy-Item (Join-Path $RootDir "desktop\linux\install.sh") $dir -Force
-    Copy-Item (Join-Path $RootDir "desktop\linux\uninstall.sh") $dir -Force
-}
-
 # ---- Archives ----
 Add-Type -AssemblyName System.IO.Compression
 $tarExe = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\tar.exe" } else { "tar" }
