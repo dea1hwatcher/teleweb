@@ -5,8 +5,10 @@ name: desktop-e2e
 # tgws -> WSS -> Telegram DC2.
 on:
   workflow_dispatch:
+  push:
+    branches: [linux]
   pull_request:
-    branches: [master]
+    branches: [linux]
     paths:
       - "src/**"
       - "webroot/**"

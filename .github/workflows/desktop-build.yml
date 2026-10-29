@@ -1,12 +1,11 @@
 name: desktop-build
 
-# Builds Windows/Linux desktop packages as downloadable CI artifacts on every
-# change to the engine, WebUI or packaging inputs. Tag releases attach the
-# same packages via release.yml.
+# Builds Linux packages as downloadable CI artifacts on every
+# change to the engine, WebUI or packaging inputs.
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    branches: [linux]
     paths:
       - "src/**"
       - "webroot/**"
@@ -26,20 +25,9 @@ jobs:
           go-version: "1.24"
           cache: false
 
-      - name: Build desktop packages
+      - name: Build Linux packages
         shell: pwsh
         run: ./build_desktop.ps1
-
-      - name: Upload Windows packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: teleweb-windows
-          path: |
-            dist/tgws-windows-*.exe
-            dist/teleweb-windows-amd64.zip
-            dist/teleweb-windows-386.zip
-            dist/teleweb-windows-arm64.zip
-          if-no-files-found: error
 
       - name: Upload Linux packages
         uses: actions/upload-artifact@v4

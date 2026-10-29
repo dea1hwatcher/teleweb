@@ -1,6 +1,4 @@
-# TeleWEB desktop build script.
-# Windows: amd64/386/arm64 — standalone tgws.exe (WebUI + WinDivert driver are
-# embedded, so a single exe works without any accompanying files).
+# TeleWEB Linux build script.
 # Linux: amd64/arm64 — tgws + webroot + installers.
 # Produces packages under dist/.
 $ErrorActionPreference = "Stop"
@@ -9,7 +7,6 @@ $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SrcDir = Join-Path $RootDir "src"
 $DistDir = Join-Path $RootDir "dist"
 $Webroot = Join-Path $RootDir "webroot"
-$WebuiFallback = Join-Path $SrcDir "webui_fallback"
 
 $GoPath = "go"
 if (Test-Path "C:\Program Files\Go\bin\go.exe") { $GoPath = "C:\Program Files\Go\bin\go.exe" }
@@ -33,35 +30,7 @@ function Copy-Common([string]$dest) {
     Copy-Item $Webroot (Join-Path $dest "webroot") -Recurse -Force
 }
 
-# The embedded WebUI copy is generated from webroot/ (single source of truth).
-New-Item -ItemType Directory -Force -Path $WebuiFallback | Out-Null
-Get-ChildItem $WebuiFallback -File | Where-Object { $_.Name -ne "placeholder.txt" } | Remove-Item -Force
-Copy-Item "$Webroot\*" $WebuiFallback -Recurse -Force
-
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-Get-ChildItem $DistDir -File -Filter "tgws-windows-*.exe" | Remove-Item -Force
-
-# ---- Windows (standalone exe per architecture) ----
-# amd64/386 get transparent mode (embedded WinDivert); arm64 is SOCKS-only.
-$winTargets = @(
-    @{ Arch = "amd64"; Driver = $true },
-    @{ Arch = "386";   Driver = $true },
-    @{ Arch = "arm64"; Driver = $false }
-)
-foreach ($t in $winTargets) {
-    $arch = $t.Arch
-    $dir = Join-Path $DistDir "teleweb-windows-$arch"
-    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-    Copy-Common $dir
-    Build-Target "windows" $arch (Join-Path $dir "tgws.exe") "nativegui"
-    if ($t.Driver) {
-        Copy-Item (Join-Path $SrcDir "drivers\$arch\*") $dir -Force
-        Copy-Item (Join-Path $SrcDir "drivers\LICENSE") (Join-Path $dir "WinDivert-LICENSE.txt") -Force
-    }
-    Copy-Item (Join-Path $RootDir "desktop\windows\install.ps1") $dir -Force
-    # Single-file exe asset: driver and WebUI are embedded in the binary.
-    Copy-Item (Join-Path $dir "tgws.exe") (Join-Path $DistDir "tgws-windows-$arch.exe") -Force
-}
 
 # ---- Linux amd64 / arm64 (transparent mode via iptables) ----
 foreach ($arch in @("amd64", "arm64")) {
