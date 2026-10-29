@@ -14,7 +14,50 @@ import (
 // selfDialPorts tracks local ports of connections opened by the daemon itself
 // towards Telegram. On Windows the WinDivert redirector must not re-capture
 // those flows, otherwise every WSS dial would loop back into our own listener.
-var selfDialPorts sync.Map // uint16 -> struct{}
+//
+// Entries are kept for a grace period after the socket closes: a blocked
+// destination makes the kernel retransmit the SYN for tens of seconds, and a
+// retransmit landing after unregistration would be intercepted as client
+// traffic, creating a self-connecting cascade.
+var (
+	selfDialMu    sync.RWMutex
+	selfDialPorts = map[uint16]time.Time{}
+)
+
+const selfDialGrace = 4 * time.Minute
+
+func selfDialRegister(port uint16) {
+	selfDialMu.Lock()
+	selfDialPorts[port] = time.Now().Add(selfDialGrace)
+	selfDialMu.Unlock()
+}
+
+func selfDialExpire(port uint16) {
+	selfDialMu.Lock()
+	selfDialPorts[port] = time.Now().Add(selfDialGrace)
+	selfDialMu.Unlock()
+}
+
+func isSelfDialPort(port uint16) bool {
+	selfDialMu.RLock()
+	exp, ok := selfDialPorts[port]
+	selfDialMu.RUnlock()
+	return ok && time.Now().Before(exp)
+}
+
+func selfDialJanitor() {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for now := range t.C {
+		selfDialMu.Lock()
+		for p, exp := range selfDialPorts {
+			if now.After(exp) {
+				delete(selfDialPorts, p)
+			}
+		}
+		selfDialMu.Unlock()
+	}
+}
 
 type selfPortConn struct {
 	net.Conn
@@ -22,7 +65,7 @@ type selfPortConn struct {
 }
 
 func (s *selfPortConn) Close() error {
-	selfDialPorts.Delete(s.port)
+	selfDialExpire(s.port)
 	return s.Conn.Close()
 }
 
@@ -32,22 +75,21 @@ func trackSelfDial(c net.Conn) net.Conn {
 	}
 	if ta, ok := c.LocalAddr().(*net.TCPAddr); ok && ta.Port > 0 {
 		port := uint16(ta.Port)
-		selfDialPorts.Store(port, struct{}{})
+		selfDialRegister(port)
 		return &selfPortConn{Conn: c, port: port}
 	}
 	return c
 }
 
-func isSelfDialPort(port uint16) bool {
-	_, ok := selfDialPorts.Load(port)
-	return ok
-}
-
 // trackedDial reserves and registers the local port before the SYN leaves, so
 // the Windows redirector never mistakes our own outbound connection for
-// client traffic even in the first packet.
+// client traffic even in the first packet. The timeout budgets the WHOLE
+// call (all retry attempts included): an unreachable destination must fail
+// within the caller's deadline, not quadruple it.
 func trackedDial(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
-	d := net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	overall, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	d := net.Dialer{KeepAlive: 30 * time.Second}
 	for attempt := 0; attempt < 3; attempt++ {
 		l, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
@@ -55,18 +97,18 @@ func trackedDial(ctx context.Context, network, addr string, timeout time.Duratio
 		}
 		port := uint16(l.Addr().(*net.TCPAddr).Port)
 		_ = l.Close()
-		selfDialPorts.Store(port, struct{}{})
+		selfDialRegister(port)
 		d.LocalAddr = &net.TCPAddr{Port: int(port)}
-		c, err := d.DialContext(ctx, network, addr)
+		c, err := d.DialContext(overall, network, addr)
 		if err == nil {
 			return &selfPortConn{Conn: c, port: port}, nil
 		}
-		selfDialPorts.Delete(port)
-		if ctx.Err() != nil {
-			return nil, err
+		selfDialExpire(port)
+		if overall.Err() != nil {
+			break
 		}
 	}
-	c, err := d.DialContext(ctx, network, addr)
+	c, err := d.DialContext(overall, network, addr)
 	if err != nil {
 		return nil, err
 	}

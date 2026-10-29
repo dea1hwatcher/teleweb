@@ -2497,6 +2497,7 @@ func serve() {
 		return
 	}
 	defer ln.Close()
+	go selfDialJanitor()
 	if redirectorSupported() {
 		if err := startRedirector(); err != nil {
 			logf("redirector: failed to start: %v", err)
@@ -2722,6 +2723,14 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 			learnDC(orig.Addr().String(), dc, isMedia)
 		}
 	} else {
+		if isCDN203IP(orig.Addr()) {
+			// Unknown/unparseable transport to a CDN203 address: pass it
+			// through verbatim instead of guessing a DC from the IP (the
+			// 91.105.192.0/23 aggregate maps to DC2 in dcFor, which would
+			// feed non-MTProto garbage into the WSS path).
+			handleCDN203(c, orig, init, id)
+			return
+		}
 		if testDC, ok := knownTestDCMap[orig.Addr().String()]; ok {
 			dc = testDC
 			isTestDC = true
@@ -2790,6 +2799,55 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 func readDC203DirectTCP() bool         { return readFlag("dc203_direct_tcp", true) }
 func writeDC203DirectTCP(v bool) error { return writeFlag("dc203_direct_tcp", v) }
 
+// cdn203Prefix is the CDN203 aggregate from telegramSubnets (91.105.192.0/23).
+var cdn203Prefix = netip.MustParsePrefix("91.105.192.0/23")
+
+func isCDN203IP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.Is4() && (cdn203Prefix.Contains(ip) || ip.String() == cdn203IP)
+}
+
+// cdn203Fails is a negative cache of CDN endpoints whose direct dial recently
+// failed. When an endpoint is known-unreachable (e.g. the ISP blocks the CDN
+// range), client connections are closed immediately instead of piling up one
+// 5-second dial attempt per retry — a churning client otherwise opens dozens
+// of half-open sessions per second.
+var (
+	cdn203FailMu     sync.Mutex
+	cdn203Fails      = map[string]time.Time{}
+	cdn203FailLogAt  time.Time
+	cdn203FailLogged int
+)
+
+const cdn203FailBackoff = 30 * time.Second
+
+func cdn203BlockedRecently(dst string) bool {
+	cdn203FailMu.Lock()
+	defer cdn203FailMu.Unlock()
+	t, ok := cdn203Fails[dst]
+	return ok && time.Now().Before(t)
+}
+
+func cdn203MarkFail(dst string) {
+	cdn203FailMu.Lock()
+	defer cdn203FailMu.Unlock()
+	cdn203Fails[dst] = time.Now().Add(cdn203FailBackoff)
+	now := time.Now()
+	if now.Sub(cdn203FailLogAt) >= 10*time.Second {
+		logf("CDN203 %s unreachable on the direct path (%d failed dials in 10s); failing client connections fast for %s", dst, cdn203FailLogged+1, cdn203Fails[dst].Format("15:04:05"))
+		cdn203FailLogAt = now
+		cdn203FailLogged = 0
+		return
+	}
+	cdn203FailLogged++
+}
+
+func cdn203MarkReachable(dst string) {
+	cdn203FailMu.Lock()
+	defer cdn203FailMu.Unlock()
+	delete(cdn203Fails, dst)
+}
+
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
@@ -2811,19 +2869,26 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		logf("conn #%d CDN203: Cloudflare Worker %s did not respond: %v; falling back to direct TCP", id, worker, err)
 	}
 
-	// Dedicated native TCP pass-through for CDN203 (cdn203IP:443)
+	// Dedicated native TCP pass-through to the client's original CDN
+	// destination (IP and port as dialed by the client — CDN203 serves both
+	// :443 and :80).
 	if !dc203DirectTCPCached() {
 		logf("conn #%d CDN203 direct TCP disabled by configuration", id)
 		return
 	}
-	remote, err := trackedDial(context.Background(), "tcp4", net.JoinHostPort(cdn203IP, "443"), 5*time.Second)
+	dst := net.JoinHostPort(orig.Addr().String(), strconv.Itoa(int(orig.Port())))
+	if cdn203BlockedRecently(dst) {
+		return
+	}
+	remote, err := trackedDial(context.Background(), "tcp4", dst, 5*time.Second)
 	if err != nil {
 		if !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
-			logf("conn #%d CDN203 (%s:443) TCP dial failed: %v", id, cdn203IP, err)
+			cdn203MarkFail(dst)
 		}
 		return
 	}
+	cdn203MarkReachable(dst)
 	defer remote.Close()
 	setConnSockOpts(remote)
 
@@ -2832,7 +2897,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		return
 	}
 	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
-	logf("conn #%d %s -> CDN203 (%s:443) via direct TCP pass-through", id, orig, cdn203IP)
+	logf("conn #%d %s -> CDN203 (%s) via direct TCP pass-through", id, orig, dst)
 	pipeTCPToTCP(c, remote, id, 203)
 }
 
