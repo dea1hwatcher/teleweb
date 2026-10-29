@@ -80,15 +80,7 @@ func notifySignals(ch chan<- os.Signal) {
 	signal.Notify(ch, os.Interrupt)
 }
 
-// originalDestination is resolved through the NAT table published by the
-// WinDivert redirector: clients are rewritten to 127.0.0.1:<natPort>, and the
-// original Telegram endpoint is recovered from the accepted socket's port.
 func originalDestination(c net.Conn) (netip.AddrPort, error) {
-	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok && ta.Port > 0 {
-		if ap, ok := natLookup(uint16(ta.Port)); ok {
-			return ap, nil
-		}
-	}
 	return netip.AddrPort{}, errNoOriginalDst
 }
 
