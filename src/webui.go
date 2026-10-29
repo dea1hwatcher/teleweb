@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -45,12 +44,7 @@ func cmdWebUI(addr string) {
 			http.Error(w, "empty payload", http.StatusBadRequest)
 			return
 		}
-		self, err := os.Executable()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		out, err := exec.Command(self, "api", payload).Output()
+		out, err := apiDispatchJson(body)
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil && len(out) == 0 {
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error())))

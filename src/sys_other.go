@@ -24,6 +24,10 @@ func defaultBaseDir() string {
 
 func isAndroidRuntime() bool { return false }
 
+func attachParentConsole() {}
+
+func setCmdNoWindow(cmd *exec.Cmd) {}
+
 func setDaemonProcAttr(cmd *exec.Cmd) {
 	// setsid is not supported on non-linux OS
 }
