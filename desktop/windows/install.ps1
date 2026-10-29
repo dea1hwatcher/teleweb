@@ -8,6 +8,7 @@ param([switch]$Uninstall)
 $ErrorActionPreference = "Stop"
 $Dest = Join-Path $env:ProgramData "teleweb"
 $ServiceName = "TeleWEB"
+$RegKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TeleWEB"
 
 function Assert-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -26,7 +27,8 @@ if ($Uninstall) {
     }
     sc.exe stop $ServiceName 2>$null | Out-Null
     sc.exe delete $ServiceName 2>$null | Out-Null
-    Write-Host "TeleWEB service removed. Files kept in $Dest (delete manually if not needed)."
+    Remove-Item -Path $RegKey -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "TeleWEB service and Windows registration removed. Files kept in $Dest (delete manually if not needed)."
     exit 0
 }
 
@@ -52,8 +54,26 @@ if (Test-Path (Join-Path $Src "webroot")) {
 & (Join-Path $Dest "tgws.exe") stop 2>$null | Out-Null
 
 & (Join-Path $Dest "tgws.exe") svc-install
+sc.exe failure $ServiceName reset= 86400 actions= restart/5000 2>$null | Out-Null
+sc.exe config $ServiceName start= delayed-auto 2>$null | Out-Null
 sc.exe start $ServiceName | Out-Null
 Start-Sleep -Seconds 3
+
+# Register in Windows Settings / Apps & Features (Uninstall Registry Key)
+try {
+    New-Item -Path $RegKey -Force | Out-Null
+    Set-ItemProperty -Path $RegKey -Name "DisplayName" -Value "TeleWEB Transparent WSS Transport" -Force
+    Set-ItemProperty -Path $RegKey -Name "DisplayVersion" -Value "0.1.4" -Force
+    Set-ItemProperty -Path $RegKey -Name "Publisher" -Value "TeleWEB Open Source" -Force
+    Set-ItemProperty -Path $RegKey -Name "InstallLocation" -Value $Dest -Force
+    Set-ItemProperty -Path $RegKey -Name "DisplayIcon" -Value "$Dest\tgws.exe,0" -Force
+    Set-ItemProperty -Path $RegKey -Name "UninstallString" -Value "powershell.exe -ExecutionPolicy Bypass -File `"$Dest\install.ps1`" -Uninstall" -Force
+    Set-ItemProperty -Path $RegKey -Name "QuietUninstallString" -Value "powershell.exe -ExecutionPolicy Bypass -File `"$Dest\install.ps1`" -Uninstall" -Force
+    Set-ItemProperty -Path $RegKey -Name "NoModify" -Value 1 -Type DWord -Force
+    Set-ItemProperty -Path $RegKey -Name "NoRepair" -Value 1 -Type DWord -Force
+} catch {
+    Write-Warning "Could not register TeleWEB in Windows Programs & Features: $_"
+}
 
 Write-Host ""
 Write-Host "TeleWEB installed."

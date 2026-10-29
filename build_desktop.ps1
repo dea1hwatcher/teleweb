@@ -46,6 +46,21 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 Get-ChildItem $DistDir -File -Filter "tgws-windows-*.exe" | Remove-Item -Force
 
 # ---- Windows (standalone exe per architecture) ----
+# Compile Windows resources (High-DPI PerMonitorV2 manifest, multi-res icon, VERSIONINFO)
+$windres = Get-Command windres.exe -ErrorAction SilentlyContinue
+if ($windres) {
+    if (Test-Path "$RootDir\icon.png") {
+        python -c "from PIL import Image; Image.open(r'$RootDir\icon.png').save(r'$SrcDir\icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])" 2>$null
+    }
+    if (Test-Path "$SrcDir\teleweb.rc") {
+        Push-Location $SrcDir
+        & $windres.Source -i teleweb.rc -O coff -o teleweb_windows_amd64.syso -F pe-x86-64
+        & $windres.Source -i teleweb.rc -O coff -o teleweb_windows_386.syso -F pe-i386
+        Pop-Location
+        Write-Host "Compiled Windows PE resources (.syso) with windres" -ForegroundColor Green
+    }
+}
+
 # amd64/386 get transparent mode (embedded WinDivert); arm64 is SOCKS-only.
 $winTargets = @(
     @{ Arch = "amd64"; Driver = $true },

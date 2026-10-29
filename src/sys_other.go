@@ -1,4 +1,4 @@
-//go:build !linux && !windows
+//go:build !windows
 
 package main
 
@@ -75,4 +75,23 @@ func serverListening() bool {
 }
 
 func setDialSockOpts(c syscall.RawConn) error { return nil }
+
+func acquireSingleInstance() (func(), bool) {
+	return func() {}, true
+}
+
+func applyWindowsDarkTheme(title string) {}
+
+func showMainWindow(restore bool) {}
+
+func hideMainWindow() {}
+
+func restartElevated() error { return nil }
+
+func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit func()) func() {
+	return func() {}
+}
+
+func updateSystemTray(active bool, tip string) {}
+
 
