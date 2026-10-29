@@ -7,7 +7,7 @@
 FROM golang:1.24-bookworm
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends iptables iproute2 ca-certificates \
+ && apt-get install -y --no-install-recommends iptables iproute2 ca-certificates passwd util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
