@@ -186,11 +186,19 @@ var natTable = struct {
 	next  uint16
 }{flows: map[natFlowKey]*natEntry{}, ports: map[uint16]*natEntry{}, next: 20000}
 
-func natGetOrCreate(flow natFlowKey, orig netip.AddrPort) *natEntry {
+func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry {
 	natTable.mu.Lock()
 	defer natTable.mu.Unlock()
-	if e := natTable.flows[flow]; e != nil {
-		return e
+	if !isSYN {
+		if e := natTable.flows[flow]; e != nil {
+			return e
+		}
+	} else if old := natTable.flows[flow]; old != nil {
+		// New TCP connection initiated with SYN: purge the stale mapping so
+		// this connection receives a fresh local port and does not collide
+		// with a previous socket in TIME_WAIT.
+		delete(natTable.ports, old.natPort)
+		delete(natTable.flows, flow)
 	}
 	for i := 0; i < 12000; i++ {
 		p := natTable.next
@@ -233,7 +241,7 @@ func natJanitor() {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	for range t.C {
-		cutoff := time.Now().Add(-180 * time.Second).UnixNano()
+		cutoff := time.Now().Add(-60 * time.Second).UnixNano()
 		natTable.mu.Lock()
 		for k, e := range natTable.flows {
 			if e.lastSeen.Load() < cutoff {
@@ -286,6 +294,7 @@ type tcpMeta struct {
 	ihl          int
 	srcIP, dstIP [4]byte
 	sport, dport uint16
+	flags        byte
 }
 
 func parseTCPv4(pkt []byte) (tcpMeta, bool) {
@@ -301,6 +310,7 @@ func parseTCPv4(pkt []byte) (tcpMeta, bool) {
 	copy(m.dstIP[:], pkt[16:20])
 	m.sport = binary.BigEndian.Uint16(pkt[m.ihl:])
 	m.dport = binary.BigEndian.Uint16(pkt[m.ihl+2:])
+	m.flags = pkt[m.ihl+13]
 	return m, true
 }
 
@@ -397,8 +407,9 @@ func (r *wdRedirector) outLoop() {
 			_ = wdSendPacket(r.hOut, p, &addr)
 			continue
 		}
+		isSYN := (m.flags & 0x12) == 0x02 // SYN set, ACK clear
 		flow := natFlowKey{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
-		e := natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport))
+		e := natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
 		if e == nil {
 			_ = wdSendPacket(r.hOut, p, &addr)
 			continue

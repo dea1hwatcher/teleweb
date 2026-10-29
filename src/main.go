@@ -1855,7 +1855,22 @@ func stopWatchdog() {
 	_ = os.Remove(path("watchdog.pid"))
 }
 
-func daemonHealthy() bool { return pidAlive() && serverListening() }
+func daemonHealthy() bool {
+	if !pidAlive() {
+		return false
+	}
+	if b, e := os.ReadFile(path("tgws.pid")); e == nil {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid == os.Getpid() {
+			return true
+		}
+	}
+	// If the daemon wrote a fresh status snapshot within the last 5s, it is
+	// actively executing its loop; avoid an unnecessary TCP probe.
+	if st, err := os.Stat(path("status.json")); err == nil && time.Since(st.ModTime()) < 5*time.Second {
+		return true
+	}
+	return serverListening()
+}
 
 // waitForListener polls the kernel socket table until the daemon's listen
 // port appears. REDIRECT rules must only be installed after this returns
@@ -2891,6 +2906,36 @@ func cdn203MarkReachable(dst string) {
 	delete(cdn203Fails, dst)
 }
 
+// directDialFails is a negative cache of direct Telegram IP endpoints whose dial
+// recently failed. When an ISP/DPI blocks direct Telegram IPs, subsequent dials
+// are failed fast instead of piling up dozens of parallel 1.2-second dial timeouts
+// from churning clients.
+var (
+	directDialFailMu sync.Mutex
+	directDialFails  = map[string]time.Time{}
+)
+
+const directDialFailBackoff = 60 * time.Second
+
+func directDialBlockedRecently(ipStr string) bool {
+	directDialFailMu.Lock()
+	defer directDialFailMu.Unlock()
+	t, ok := directDialFails[ipStr]
+	return ok && time.Now().Before(t)
+}
+
+func directDialMarkFail(ipStr string) {
+	directDialFailMu.Lock()
+	defer directDialFailMu.Unlock()
+	directDialFails[ipStr] = time.Now().Add(directDialFailBackoff)
+}
+
+func directDialMarkReachable(ipStr string) {
+	directDialFailMu.Lock()
+	defer directDialFailMu.Unlock()
+	delete(directDialFails, ipStr)
+}
+
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
@@ -3816,6 +3861,22 @@ func sweepRouteCaches() {
 		}
 	}
 	h2FailsMu.Unlock()
+
+	directDialFailMu.Lock()
+	for ipStr, until := range directDialFails {
+		if until.Before(now) {
+			delete(directDialFails, ipStr)
+		}
+	}
+	directDialFailMu.Unlock()
+
+	cdn203FailMu.Lock()
+	for dst, until := range cdn203Fails {
+		if until.Before(now) {
+			delete(cdn203Fails, dst)
+		}
+	}
+	cdn203FailMu.Unlock()
 }
 
 // Repeated early remote EOFs indicate a frontend that accepts the WebSocket
@@ -4084,15 +4145,21 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 
 	for _, ip := range directIPs {
 		ipAddr := ip
+		ipStr := ipAddr.String()
+		if directDialBlockedRecently(ipStr) {
+			continue
+		}
 		candDirect := dialCandidate{
 			name: fmt.Sprintf("direct (%s@%s)", targetHost, ipAddr),
 			dial: func(c context.Context) (*wsConn, error) {
 				attemptCtx, cancel := context.WithTimeout(c, 2500*time.Millisecond)
 				defer cancel()
-				raw, err := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ipAddr.String(), "443"), 1200*time.Millisecond)
+				raw, err := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ipStr, "443"), 1200*time.Millisecond)
 				if err != nil {
+					directDialMarkFail(ipStr)
 					return nil, err
 				}
+				directDialMarkReachable(ipStr)
 				setConnSockOpts(raw)
 				return finishTelegramWSPath(attemptCtx, raw, targetHost, wsUpgradePath)
 			},

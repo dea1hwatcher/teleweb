@@ -2552,3 +2552,62 @@ func TestTailLog_BoundedTail(t *testing.T) {
 func TestInitMemoryTuning(t *testing.T) {
 	initMemoryTuning()
 }
+
+func TestDirectDialNegativeCache(t *testing.T) {
+	testIP := "149.154.167.220"
+	directDialMarkReachable(testIP)
+	if directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s not to be blocked initially", testIP)
+	}
+
+	directDialMarkFail(testIP)
+	if !directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s to be blocked after directDialMarkFail", testIP)
+	}
+
+	directDialMarkReachable(testIP)
+	if directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s to be unblocked after directDialMarkReachable", testIP)
+	}
+}
+
+func TestIsTelegramTarget(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"149.154.167.51:443", true},
+		{"91.108.4.1:80", true},
+		{"91.105.192.100:443", true},
+		{"185.76.151.10:443", true},
+		{"104.16.123.96:443", false}, // Cloudflare
+		{"1.1.1.1:53", false},         // Cloudflare DNS
+		{"8.8.8.8:53", false},         // Google DNS
+		{"invalid-host", false},
+	}
+	for _, tc := range cases {
+		got := isTelegramTarget(tc.addr)
+		if got != tc.want {
+			t.Errorf("isTelegramTarget(%q) = %v; want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestIsLocalAddrInUse(t *testing.T) {
+	if !isLocalAddrInUse(errors.New("bind: address already in use")) {
+		t.Error("expected true for standard bind address already in use")
+	}
+	if !isLocalAddrInUse(errors.New("bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.")) {
+		t.Error("expected true for Windows WSAEADDRINUSE text")
+	}
+	if !isLocalAddrInUse(errors.New("WSAEADDRINUSE 10048")) {
+		t.Error("expected true for 10048 code")
+	}
+	if isLocalAddrInUse(errors.New("connection refused")) {
+		t.Error("expected false for connection refused")
+	}
+	if isLocalAddrInUse(nil) {
+		t.Error("expected false for nil error")
+	}
+}
+

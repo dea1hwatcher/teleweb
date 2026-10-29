@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -81,38 +84,83 @@ func trackSelfDial(c net.Conn) net.Conn {
 	return c
 }
 
+func isTelegramTarget(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	if !ip.Is4() {
+		return false
+	}
+	for _, sub := range telegramParsedSubnets {
+		if sub.prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLocalAddrInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "address already in use") ||
+		strings.Contains(s, "only one usage of each socket address") ||
+		strings.Contains(s, "10048")
+}
+
 // trackedDial reserves and registers the local port before the SYN leaves, so
 // the Windows redirector never mistakes our own outbound connection for
 // client traffic even in the first packet. The timeout budgets the WHOLE
-// call (all retry attempts included): an unreachable destination must fail
-// within the caller's deadline, not quadruple it.
+// call: an unreachable destination fails immediately without retrying or
+// cascading into WinDivert loopback.
 func trackedDial(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
 	overall, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	d := net.Dialer{KeepAlive: 30 * time.Second}
+
+	// External destinations (Cloudflare, Workers, DoH) are never intercepted by
+	// WinDivert because its filter only captures telegramSubnets. Dialing them
+	// through standard ephemeral ports skips the Listen/Close/selfDial overhead.
+	if !isTelegramTarget(addr) {
+		d := net.Dialer{KeepAlive: 30 * time.Second}
+		return d.DialContext(overall, network, addr)
+	}
+
 	for attempt := 0; attempt < 3; attempt++ {
 		l, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
-			break
+			return nil, err
 		}
 		port := uint16(l.Addr().(*net.TCPAddr).Port)
 		_ = l.Close()
+
 		selfDialRegister(port)
-		d.LocalAddr = &net.TCPAddr{Port: int(port)}
+		d := net.Dialer{
+			LocalAddr: &net.TCPAddr{Port: int(port)},
+			Control: func(network, address string, c syscall.RawConn) error {
+				return setDialSockOpts(c)
+			},
+		}
 		c, err := d.DialContext(overall, network, addr)
 		if err == nil {
 			return &selfPortConn{Conn: c, port: port}, nil
 		}
 		selfDialExpire(port)
 		if overall.Err() != nil {
-			break
+			return nil, err
+		}
+		if !isLocalAddrInUse(err) {
+			// Remote endpoint is unreachable/refused/reset; do not retry.
+			return nil, err
 		}
 	}
-	c, err := d.DialContext(overall, network, addr)
-	if err != nil {
-		return nil, err
-	}
-	return trackSelfDial(c), nil
+	return nil, fmt.Errorf("trackedDial: local port conflict across attempts for %s", addr)
 }
 
 // runDesktop is the long-lived foreground supervisor used by systemd on Linux
