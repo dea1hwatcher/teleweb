@@ -14,13 +14,16 @@ $WebuiFallback = Join-Path $SrcDir "webui_fallback"
 $GoPath = "go"
 if (Test-Path "C:\Program Files\Go\bin\go.exe") { $GoPath = "C:\Program Files\Go\bin\go.exe" }
 
-function Build-Target([string]$goos, [string]$goarch, [string]$outFile) {
+function Build-Target([string]$goos, [string]$goarch, [string]$outFile, [string]$tags = "") {
     Write-Host ">>> $goos/$goarch -> $outFile" -ForegroundColor Yellow
     $env:CGO_ENABLED = "0"
     $env:GOOS = $goos
     $env:GOARCH = $goarch
+    $buildArgs = @("build", "-trimpath", "-ldflags", "-s -w")
+    if ($tags -ne "") { $buildArgs += @("-tags", $tags) }
+    $buildArgs += @("-o", $outFile, ".")
     Push-Location $SrcDir
-    & $GoPath build -trimpath -ldflags "-s -w" -o $outFile .
+    & $GoPath @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "build failed for $goos/$goarch" }
     Pop-Location
 }
@@ -50,7 +53,7 @@ foreach ($t in $winTargets) {
     $dir = Join-Path $DistDir "teleweb-windows-$arch"
     if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
     Copy-Common $dir
-    Build-Target "windows" $arch (Join-Path $dir "tgws.exe")
+    Build-Target "windows" $arch (Join-Path $dir "tgws.exe") "nativegui"
     if ($t.Driver) {
         Copy-Item (Join-Path $SrcDir "drivers\$arch\*") $dir -Force
         Copy-Item (Join-Path $SrcDir "drivers\LICENSE") (Join-Path $dir "WinDivert-LICENSE.txt") -Force
