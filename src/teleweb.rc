@@ -1,0 +1,31 @@
+#define RT_MANIFEST 24
+1 RT_MANIFEST "app.manifest"
+1 ICON "icon.ico"
+1 VERSIONINFO
+FILEVERSION     0,1,4,0
+PRODUCTVERSION  0,1,4,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          0x40004L
+FILETYPE        0x1L
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "TeleWEB Open Source"
+            VALUE "FileDescription",  "TeleWEB Transparent WSS Transport & Proxy"
+            VALUE "FileVersion",      "0.1.4.0"
+            VALUE "InternalName",     "tgws"
+            VALUE "LegalCopyright",   "Open Source MIT / BSD"
+            VALUE "OriginalFilename", "tgws.exe"
+            VALUE "ProductName",      "TeleWEB"
+            VALUE "ProductVersion",   "0.1.4"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

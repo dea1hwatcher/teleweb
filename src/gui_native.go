@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ const (
 
 type guiState struct {
 	mu        sync.Mutex
+	themeOnce sync.Once
 	st        Status
 	busy      bool
 	activeTab guiTab
@@ -69,6 +71,7 @@ type guiState struct {
 	// Status Actions
 	heroToggleBtn  widget.Clickable
 	heroRestartBtn widget.Clickable
+	heroElevateBtn widget.Clickable
 	openWebUIBtn   widget.Clickable
 
 	// Routing & Settings
@@ -105,6 +108,31 @@ type guiState struct {
 func cmdGui(_ string) {
 	ensureDir()
 	startSignalLogger()
+
+	cleanup, ok := acquireSingleInstance()
+	if !ok {
+		// Existing instance was brought to foreground
+		return
+	}
+	defer cleanup()
+
+	trayCleanup := setupSystemTray(
+		"TeleWEB",
+		func() {
+			st := status()
+			target := !st.Running
+			_, _ = apiDispatch(apiRequest{Cmd: "set", Enabled: &target})
+		},
+		func() {
+			openInBrowser("http://127.0.0.1:17842")
+		},
+		func() {
+			stopServer()
+			os.Exit(0)
+		},
+	)
+	defer trayCleanup()
+
 	go func() {
 		w := new(app.Window)
 		w.Option(
@@ -155,7 +183,15 @@ func guiLoop(w *app.Window) error {
 		switch e := e.(type) {
 		case app.DestroyEvent:
 			return e.Err
+		case *app.ClosingEvent:
+			if runtime.GOOS == "windows" {
+				e.Abort()
+				hideMainWindow()
+			}
 		case app.FrameEvent:
+			st.themeOnce.Do(func() {
+				applyWindowsDarkTheme("TeleWEB")
+			})
 			gtx := app.NewContext(&ops, e)
 			handleGuiEvents(w, st, gtx)
 			guiLayout(st, gtx, th)
@@ -174,6 +210,16 @@ func guiPollLoop(w *app.Window, st *guiState, stop chan struct{}) {
 		case <-t.C:
 			st.refresh()
 			w.Invalidate()
+			if runtime.GOOS == "windows" {
+				tip := "TeleWEB: Остановлен"
+				if st.st.Running {
+					tip = "TeleWEB: Активен (WinDivert)"
+					if !st.st.Redirector {
+						tip = "TeleWEB: Активен (SOCKS / WSS)"
+					}
+				}
+				updateSystemTray(st.st.Running, tip)
+			}
 		}
 	}
 }
@@ -266,6 +312,13 @@ func handleGuiEvents(w *app.Window, st *guiState, gtx layout.Context) {
 	// Open WebUI in browser
 	if st.openWebUIBtn.Clicked(gtx) {
 		go openInBrowser("http://127.0.0.1:17842")
+	}
+
+	// UAC Elevation
+	if st.heroElevateBtn.Clicked(gtx) {
+		if err := restartElevated(); err != nil {
+			logf("gui: elevate: %v", err)
+		}
 	}
 
 	// Pool size selectors
@@ -593,6 +646,48 @@ func renderHeroCard(st *guiState, gtx layout.Context, th *material.Theme, s Stat
 							})
 						}),
 					)
+				}),
+				// UAC Elevation Banner (Windows without Admin rights)
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					if runtime.GOOS != "windows" || isElevated() {
+						return layout.Dimensions{}
+					}
+					return layout.Inset{Top: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return card(gtx, colCardHighest, 12, func(gtx layout.Context) layout.Dimensions {
+							return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+										return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+												lbl := material.Body2(th, "Требуются права Администратора для сетевого драйвера WinDivert")
+												lbl.Color = colText
+												lbl.Font.Weight = font.Bold
+												return lbl.Layout(gtx)
+											}),
+											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+												lbl := material.Caption(th, "Без повышения прав доступен только SOCKS5 режим или служба Windows")
+												lbl.Color = colTextMuted
+												return lbl.Layout(gtx)
+											}),
+										)
+									}),
+									layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										return st.heroElevateBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+											return card(gtx, colPrimary, 16, func(gtx layout.Context) layout.Dimensions {
+												return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+													lbl := material.Caption(th, "Запустить от Администратора")
+													lbl.Color = colOnPrimary
+													lbl.Font.Weight = font.Bold
+													return lbl.Layout(gtx)
+												})
+											})
+										})
+									}),
+								)
+							})
+						})
+					})
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(18)}.Layout),
 				// Stats Grid (6 stat cards)
