@@ -66,6 +66,9 @@ var (
 	procAppendMenu       = user32.NewProc("AppendMenuW")
 	procTrackPopupMenuEx = user32.NewProc("TrackPopupMenuEx")
 	procDestroyMenu      = user32.NewProc("DestroyMenu")
+	procGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
+	procEnumWindows      = user32.NewProc("EnumWindows")
+	procIsWindow         = user32.NewProc("IsWindow")
 
 	procShellNotifyIcon = shell32.NewProc("Shell_NotifyIconW")
 	procShellExecute    = shell32.NewProc("ShellExecuteW")
@@ -225,6 +228,8 @@ type notifyIconDataW struct {
 }
 
 var (
+	mainHwnd       uintptr
+	mainHwndMu     sync.Mutex
 	trayMu         sync.Mutex
 	trayNID        notifyIconDataW
 	trayHwnd       uintptr
@@ -237,13 +242,34 @@ var (
 )
 
 func findMainWindow() uintptr {
-	title, _ := windows.UTF16PtrFromString("TeleWEB")
-	class, _ := windows.UTF16PtrFromString("GioWindow")
-	hwnd, _, _ := procFindWindow.Call(uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)))
-	if hwnd == 0 {
-		hwnd, _, _ = procFindWindow.Call(0, uintptr(unsafe.Pointer(title)))
+	mainHwndMu.Lock()
+	defer mainHwndMu.Unlock()
+	if mainHwnd != 0 {
+		r, _, _ := procIsWindow.Call(mainHwnd)
+		if r != 0 {
+			return mainHwnd
+		}
+		mainHwnd = 0
 	}
-	return hwnd
+	pid := windows.GetCurrentProcessId()
+	procEnumWindows.Call(syscall.NewCallback(func(hwnd, lParam uintptr) uintptr {
+		var wndPid uint32
+		procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&wndPid)))
+		trayMu.Lock()
+		isTray := (hwnd == trayHwnd)
+		trayMu.Unlock()
+		if wndPid == pid && !isTray {
+			mainHwnd = hwnd
+			return 0 // stop enumeration
+		}
+		return 1 // continue
+	}), 0)
+	if mainHwnd == 0 {
+		title, _ := windows.UTF16PtrFromString("TeleWEB")
+		h, _, _ := procFindWindow.Call(0, uintptr(unsafe.Pointer(title)))
+		mainHwnd = h
+	}
+	return mainHwnd
 }
 
 // applyWindowsDarkTheme sets the DWM non-client attributes for dark mode,
@@ -286,8 +312,10 @@ func showMainWindow(restore bool) {
 	if restore {
 		cmd = uintptr(SW_RESTORE)
 	}
-	procShowWindow.Call(hwnd, cmd)
-	procSetFgWindow.Call(hwnd)
+	go func(h, c uintptr) {
+		procShowWindow.Call(h, c)
+		procSetFgWindow.Call(h)
+	}(hwnd, cmd)
 }
 
 func hideMainWindow() {
@@ -296,7 +324,7 @@ func hideMainWindow() {
 		return
 	}
 	const SW_HIDE = 0
-	procShowWindow.Call(hwnd, uintptr(SW_HIDE))
+	go procShowWindow.Call(hwnd, uintptr(SW_HIDE))
 }
 
 func restartElevated() error {

@@ -63,10 +63,11 @@ type guiState struct {
 	activeTab guiTab
 
 	// Navigation
-	tabStatusBtn  widget.Clickable
-	tabRoutingBtn widget.Clickable
-	tabLogsBtn    widget.Clickable
-	refreshBtn    widget.Clickable
+	tabStatusBtn    widget.Clickable
+	tabRoutingBtn   widget.Clickable
+	tabLogsBtn      widget.Clickable
+	refreshBtn      widget.Clickable
+	trayMinimizeBtn widget.Clickable
 
 	// Status Actions
 	heroToggleBtn  widget.Clickable
@@ -276,6 +277,9 @@ func handleGuiEvents(w *app.Window, st *guiState, gtx layout.Context) {
 			st.refresh()
 			w.Invalidate()
 		}()
+	}
+	if st.trayMinimizeBtn.Clicked(gtx) {
+		hideMainWindow()
 	}
 
 	// Hero Start / Stop Toggle
@@ -492,6 +496,10 @@ func renderAppBar(st *guiState, gtx layout.Context, th *material.Theme) layout.D
 							layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return renderIconButton(gtx, th, &st.refreshBtn, "↻")
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return renderIconButton(gtx, th, &st.trayMinimizeBtn, "⤓")
 							}),
 						)
 					}),
