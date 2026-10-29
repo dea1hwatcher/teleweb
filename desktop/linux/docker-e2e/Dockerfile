@@ -13,8 +13,9 @@ RUN apt-get update \
 WORKDIR /src
 COPY src/ /src/
 RUN go mod download \
- && go vet ./... \
- && go test ./... \
+ && TELEWEB_DIR=/tmp/test-state go vet ./... \
+ && TELEWEB_DIR=/tmp/test-state go test ./... \
+ && rm -rf /tmp/test-state \
  && CGO_ENABLED=0 go build -trimpath -o /out/tgws . \
  && CGO_ENABLED=0 go build -trimpath -o /out/e2eclient ./e2eclient
 

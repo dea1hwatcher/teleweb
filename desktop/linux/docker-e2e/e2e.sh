@@ -7,6 +7,16 @@ OUT_DIR=${E2E_LOG_DIR:-/out/logs}
 mkdir -p "$OUT_DIR"
 exec &> >(tee -a "$OUT_DIR/e2e.log")
 
+# The container writes logs as root into a bind mount owned by the runner
+# user; hand ownership back so artifact upload can read them.
+return_ownership() {
+    local uid gid
+    uid=$(stat -c %u "$OUT_DIR" 2>/dev/null || echo 0)
+    gid=$(stat -c %g "$OUT_DIR" 2>/dev/null || echo 0)
+    chown -R "$uid:$gid" "$OUT_DIR" 2>/dev/null || true
+}
+trap return_ownership EXIT
+
 export TELEWEB_DIR=/var/lib/teleweb
 export TELEWEB_WEBROOT=/out/webroot
 LOG=$TELEWEB_DIR/tgws.log
