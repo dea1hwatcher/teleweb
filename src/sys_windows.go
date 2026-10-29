@@ -74,8 +74,11 @@ func setCmdNoWindow(cmd *exec.Cmd) {
 }
 
 func setDaemonProcAttr(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
+		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,
 		HideWindow:    true,
 	}
 }

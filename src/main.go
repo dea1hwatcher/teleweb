@@ -752,9 +752,14 @@ var packageNames = []struct{ Pkg, Name string }{
 }
 
 func packageUID(pkg string) int {
+	if !isAndroidRuntime() {
+		return 0
+	}
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err == nil {
 			re := regexp.MustCompile(`uid:(\d+)`)
@@ -768,7 +773,9 @@ func packageUID(pkg string) int {
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	out, _ := exec.CommandContext(ctx, "dumpsys", "package", pkg).CombinedOutput()
+	c := exec.CommandContext(ctx, "dumpsys", "package", pkg)
+	setCmdNoWindow(c)
+	out, _ := c.CombinedOutput()
 	cancel()
 	for _, pat := range []string{`userId=(\d+)`, `appId=(\d+)`} {
 		m := regexp.MustCompile(pat).FindSubmatch(out)
@@ -783,9 +790,14 @@ func packageUID(pkg string) int {
 }
 
 func findPackageAPK(pkg string) string {
+	if !isAndroidRuntime() {
+		return ""
+	}
 	for _, cmd := range [][]string{{"cmd", "package", "path", pkg}, {"pm", "path", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
@@ -1005,6 +1017,9 @@ func extractAPKIcons(apkPath string) (normalB64 string, monetB64 string) {
 	return normalB64, monetB64
 }
 func discoverApps() ([]App, []int) {
+	if !isAndroidRuntime() {
+		return nil, nil
+	}
 	var apps []App
 	var uids []int
 	seen := map[int]bool{}
@@ -1015,7 +1030,9 @@ func discoverApps() ([]App, []int) {
 	// Android's package manager can return all package UIDs in one call.
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U"}, {"pm", "list", "packages", "-U"}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err != nil {
 			continue
@@ -1093,6 +1110,9 @@ func saveCachedApps(apps []App) {
 }
 
 func installedApps() ([]App, []int) {
+	if !isAndroidRuntime() {
+		return nil, nil
+	}
 	appCacheMu.Lock()
 	defer appCacheMu.Unlock()
 	if len(appCache) == 0 {
@@ -1150,6 +1170,7 @@ func runCmd(name string, args ...string) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		c := exec.CommandContext(ctx, name, args...)
+		setCmdNoWindow(c)
 		b, e := c.CombinedOutput()
 		cancel()
 		if e == nil {
@@ -1658,6 +1679,9 @@ func processUID(pid int) (int, bool) {
 // must retain normal memory management. This cannot force Android to deliver
 // FCM notifications and is best-effort because OEM freezer implementations vary.
 func protectTargetAppProcesses() {
+	if !isAndroidRuntime() {
+		return
+	}
 	apps, _ := installedApps()
 	if len(apps) == 0 {
 		return
@@ -3301,6 +3325,12 @@ func androidDNSServers() []string {
 	dnsCacheMu.Lock()
 	defer dnsCacheMu.Unlock()
 	if time.Since(dnsCacheAt) < 45*time.Second && len(dnsCacheServers) > 0 {
+		return append([]string(nil), dnsCacheServers...)
+	}
+
+	if !isAndroidRuntime() {
+		dnsCacheServers = []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+		dnsCacheAt = time.Now()
 		return append([]string(nil), dnsCacheServers...)
 	}
 
