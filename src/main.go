@@ -3636,8 +3636,13 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 		f.raw = f.raw[n:]
 		f.plain = f.plain[n:]
 		if len(f.raw) == 0 {
-			f.raw = f.raw[:0]
-			f.plain = f.plain[:0]
+			if cap(f.raw) > 128*1024 {
+				f.raw = nil
+				f.plain = nil
+			} else {
+				f.raw = f.raw[:0]
+				f.plain = f.plain[:0]
+			}
 		} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
 			newRaw := make([]byte, len(f.raw))
 			copy(newRaw, f.raw)
@@ -4158,11 +4163,17 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 		// stall the start of the dial race by two DNS round trips.
 		resolved := make([][]netip.Addr, len(hosts))
 		var dnsWG sync.WaitGroup
+		dnsCtx := ctx
+		if len(directIPs) > 0 {
+			var dnsCancel context.CancelFunc
+			dnsCtx, dnsCancel = context.WithTimeout(ctx, 350*time.Millisecond)
+			defer dnsCancel()
+		}
 		for i, h := range hosts {
 			dnsWG.Add(1)
 			go func(i int, h string) {
 				defer dnsWG.Done()
-				if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
+				if ips, err := resolver.LookupNetIP(dnsCtx, "ip4", h); err == nil {
 					resolved[i] = ips
 				}
 			}(i, h)

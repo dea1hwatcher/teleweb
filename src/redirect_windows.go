@@ -170,6 +170,7 @@ type natEntry struct {
 	clientPort uint16
 	natPort    uint16
 	lastSeen   atomic.Int64
+	closing    atomic.Bool
 }
 
 type natFlowKey struct {
@@ -190,10 +191,12 @@ func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry 
 	natTable.mu.Lock()
 	defer natTable.mu.Unlock()
 	if !isSYN {
-		if e := natTable.flows[flow]; e != nil {
-			return e
-		}
-	} else if old := natTable.flows[flow]; old != nil {
+		// Non-SYN packets for untracked flows must never allocate a new port.
+		// Assigning a fresh port to an in-flight packet causes the local proxy
+		// to reply with TCP RST (no active handshake), breaking Telegram sessions.
+		return natTable.flows[flow]
+	}
+	if old := natTable.flows[flow]; old != nil {
 		// New TCP connection initiated with SYN: purge the stale mapping so
 		// this connection receives a fresh local port and does not collide
 		// with a previous socket in TIME_WAIT.
@@ -237,19 +240,30 @@ func natLookup(port uint16) (netip.AddrPort, bool) {
 	return e.orig, true
 }
 
-func natJanitor() {
+func (r *wdRedirector) janitor() {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
-	for range t.C {
-		cutoff := time.Now().Add(-60 * time.Second).UnixNano()
-		natTable.mu.Lock()
-		for k, e := range natTable.flows {
-			if e.lastSeen.Load() < cutoff {
-				delete(natTable.flows, k)
-				delete(natTable.ports, e.natPort)
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-t.C:
+			now := time.Now().UnixNano()
+			// Established TCP flows idle for >15m are evicted (RFC 5382 REQ-5).
+			// Terminated flows (FIN/RST observed) are purged after 30s.
+			cutoffEstablished := now - int64(15*time.Minute)
+			cutoffClosing := now - int64(30*time.Second)
+
+			natTable.mu.Lock()
+			for k, e := range natTable.flows {
+				last := e.lastSeen.Load()
+				if (e.closing.Load() && last < cutoffClosing) || last < cutoffEstablished {
+					delete(natTable.flows, k)
+					delete(natTable.ports, e.natPort)
+				}
 			}
+			natTable.mu.Unlock()
 		}
-		natTable.mu.Unlock()
 	}
 }
 
@@ -319,6 +333,7 @@ func parseTCPv4(pkt []byte) (tcpMeta, bool) {
 type wdRedirector struct {
 	hOut, hRet uintptr
 	running    atomic.Bool
+	stopCh     chan struct{}
 }
 
 var (
@@ -368,12 +383,12 @@ func startRedirector() error {
 		_, _, _ = wdClose.Call(hOut)
 		return err
 	}
-	r := &wdRedirector{hOut: hOut, hRet: hRet}
+	r := &wdRedirector{hOut: hOut, hRet: hRet, stopCh: make(chan struct{})}
 	r.running.Store(true)
 	activeRedirector = r
 	go r.outLoop()
 	go r.retLoop()
-	go natJanitor()
+	go r.janitor()
 	logf("redirector: WinDivert active; Telegram TCP -> 127.0.0.1:%d", defaultPort)
 	return nil
 }
@@ -385,6 +400,7 @@ func stopRedirector() {
 		return
 	}
 	activeRedirector.running.Store(false)
+	close(activeRedirector.stopCh)
 	_, _, _ = wdClose.Call(activeRedirector.hOut)
 	_, _, _ = wdClose.Call(activeRedirector.hRet)
 	activeRedirector = nil
@@ -415,6 +431,9 @@ func (r *wdRedirector) outLoop() {
 			continue
 		}
 		e.lastSeen.Store(time.Now().UnixNano())
+		if (m.flags & 0x05) != 0 { // FIN (0x01) or RST (0x04)
+			e.closing.Store(true)
+		}
 		copy(p[12:16], []byte{127, 0, 0, 1})
 		copy(p[16:20], []byte{127, 0, 0, 1})
 		binary.BigEndian.PutUint16(p[m.ihl:], e.natPort)
@@ -446,6 +465,9 @@ func (r *wdRedirector) retLoop() {
 			continue
 		}
 		e.lastSeen.Store(time.Now().UnixNano())
+		if (m.flags & 0x05) != 0 { // FIN (0x01) or RST (0x04)
+			e.closing.Store(true)
+		}
 		o := e.orig.Addr().As4()
 		copy(p[12:16], o[:])
 		copy(p[16:20], e.clientIP[:])

@@ -100,17 +100,34 @@ func TestMemoryLeak_MTProtoFramer(t *testing.T) {
 		}
 	}
 
+	// Large media chunk test: feed a 256KB packet to force slice expansion,
+	// then verify that on complete drain (len==0), the oversized capacity is reclaimed.
+	largeWords := 65536 // 256KB payload
+	largePkt := make([]byte, 4+largeWords*4)
+	largePkt[0] = 0x7f
+	largePkt[1] = byte(largeWords & 0xff)
+	largePkt[2] = byte((largeWords >> 8) & 0xff)
+	largePkt[3] = byte((largeWords >> 16) & 0xff)
+	largeEnc := make([]byte, len(largePkt))
+	clientStream.XORKeyStream(largeEnc, largePkt)
+
+	if err := f.feed(largeEnc, ws); err != nil {
+		t.Fatalf("feed large packet failed: %v", err)
+	}
+
+	if len(f.raw) != 0 {
+		t.Fatalf("expected len(f.raw) == 0 after large packet dispatch, got %d", len(f.raw))
+	}
+	if cap(f.raw) > 128*1024 {
+		t.Fatalf("f.raw capacity remained %d bytes (> 128KB) after drain; memory compaction failed", cap(f.raw))
+	}
+
 	runtime.GC()
 	var mAfter runtime.MemStats
 	runtime.ReadMemStats(&mAfter)
 
-	// Verify framer memory compaction: when empty or low len, capacity must be small
-	if len(f.raw) != 0 {
-		t.Errorf("expected len(f.raw) == 0, got %d", len(f.raw))
-	}
-
 	growth := int64(mAfter.HeapAlloc) - int64(mBefore.HeapAlloc)
-	t.Logf("Framer 20k packets: HeapAlloc before=%d KB, after=%d KB, growth=%d KB, final raw cap=%d, plain cap=%d",
+	t.Logf("Framer 20k packets + 256KB media chunk: HeapAlloc before=%d KB, after=%d KB, growth=%d KB, final raw cap=%d, plain cap=%d",
 		mBefore.HeapAlloc/1024, mAfter.HeapAlloc/1024, growth/1024, cap(f.raw), cap(f.plain))
 
 	if growth > 1024*1024 {
@@ -583,4 +600,61 @@ func TestPipeWSTunnelRoundTrip(t *testing.T) {
 	if final := runtime.NumGoroutine(); final > initialGoroutines+3 {
 		t.Errorf("goroutine leak after tunnel teardown: initial=%d final=%d", initialGoroutines, final)
 	}
+}
+
+func TestNAT_NonSYN_NoPortAlloc_AndEviction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NAT table is only compiled on Windows")
+	}
+
+	flow := natFlowKey{
+		srcIP:   [4]byte{10, 0, 0, 1},
+		srcPort: 54321,
+		dstIP:   [4]byte{149, 154, 167, 51},
+		dstPort: 443,
+	}
+	orig := netip.AddrPortFrom(netip.AddrFrom4(flow.dstIP), flow.dstPort)
+
+	// 1. Non-SYN packet for untracked flow MUST return nil and not allocate a port.
+	if e := natGetOrCreate(flow, orig, false); e != nil {
+		t.Fatalf("expected nil for non-SYN packet on untracked flow, got natPort=%d", e.natPort)
+	}
+
+	// 2. SYN packet initiates the connection and allocates a port.
+	entry1 := natGetOrCreate(flow, orig, true)
+	if entry1 == nil {
+		t.Fatal("expected valid natEntry on SYN")
+	}
+	port1 := entry1.natPort
+	if port1 < 20000 || port1 >= 32000 {
+		t.Fatalf("natPort out of range: %d", port1)
+	}
+
+	// 3. Subsequent mid-stream non-SYN packet finds the existing flow.
+	entry2 := natGetOrCreate(flow, orig, false)
+	if entry2 == nil || entry2.natPort != port1 {
+		t.Fatalf("expected existing entry with port %d, got %v", port1, entry2)
+	}
+
+	// 4. Return entry lookup by natPort.
+	lookupOrig, ok := natLookup(port1)
+	if !ok || lookupOrig != orig {
+		t.Fatalf("natLookup(%d) = %v, %v; want %v, true", port1, lookupOrig, ok, orig)
+	}
+
+	// 5. Subsequent SYN replaces the stale mapping with a fresh port (TIME_WAIT protection).
+	entry3 := natGetOrCreate(flow, orig, true)
+	if entry3 == nil {
+		t.Fatal("expected valid entry on new SYN")
+	}
+	if entry3.natPort == port1 {
+		t.Fatalf("expected new port on fresh SYN, got identical port %d", entry3.natPort)
+	}
+
+	// Clean up test entry
+	natTable.mu.Lock()
+	delete(natTable.flows, flow)
+	delete(natTable.ports, port1)
+	delete(natTable.ports, entry3.natPort)
+	natTable.mu.Unlock()
 }

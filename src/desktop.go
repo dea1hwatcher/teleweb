@@ -72,18 +72,6 @@ func (s *selfPortConn) Close() error {
 	return s.Conn.Close()
 }
 
-func trackSelfDial(c net.Conn) net.Conn {
-	if c == nil {
-		return c
-	}
-	if ta, ok := c.LocalAddr().(*net.TCPAddr); ok && ta.Port > 0 {
-		port := uint16(ta.Port)
-		selfDialRegister(port)
-		return &selfPortConn{Conn: c, port: port}
-	}
-	return c
-}
-
 func isTelegramTarget(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

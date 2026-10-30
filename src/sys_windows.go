@@ -549,6 +549,9 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 func updateSystemTray(active bool, tip string) {
 	trayMu.Lock()
 	defer trayMu.Unlock()
+	if trayActive == active && trayTipText == tip {
+		return
+	}
 	trayActive = active
 	trayTipText = tip
 	if trayHwnd != 0 {
