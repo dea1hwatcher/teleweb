@@ -72,18 +72,6 @@ func (s *selfPortConn) Close() error {
 	return s.Conn.Close()
 }
 
-func trackSelfDial(c net.Conn) net.Conn {
-	if c == nil {
-		return c
-	}
-	if ta, ok := c.LocalAddr().(*net.TCPAddr); ok && ta.Port > 0 {
-		port := uint16(ta.Port)
-		selfDialRegister(port)
-		return &selfPortConn{Conn: c, port: port}
-	}
-	return c
-}
-
 // isTelegramTarget reports whether addr names a Telegram endpoint that the
 // platform redirector will intercept; such dials must reserve their local port
 // first so the redirector never captures the daemon's own connection.

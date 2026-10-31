@@ -323,6 +323,12 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		}
 	}()
 
+	// Unblock client read loop immediately when the bridge is cancelled
+	go func() {
+		<-bridgeCtx.Done()
+		_ = c.SetReadDeadline(time.Now())
+	}()
+
 	postSeq := uint64(0)
 	// Read loop from client
 	buf := make([]byte, 32*1024)
@@ -344,7 +350,11 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				packetBody := append([]byte(nil), framer.plain[:n]...)
 				framer.plain = framer.plain[n:]
 				if len(framer.plain) == 0 {
-					framer.plain = framer.plain[:0]
+					if cap(framer.plain) > 128*1024 {
+						framer.plain = nil
+					} else {
+						framer.plain = framer.plain[:0]
+					}
 				} else if cap(framer.plain) > 128*1024 && len(framer.plain) < 32*1024 {
 					// Shrink an oversized buffer like mtprotoPacketFramer.feed does.
 					compacted := make([]byte, len(framer.plain))

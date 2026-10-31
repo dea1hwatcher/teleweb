@@ -100,17 +100,34 @@ func TestMemoryLeak_MTProtoFramer(t *testing.T) {
 		}
 	}
 
+	// Large media chunk test: feed a 256KB packet to force slice expansion,
+	// then verify that on complete drain (len==0), the oversized capacity is reclaimed.
+	largeWords := 65536 // 256KB payload
+	largePkt := make([]byte, 4+largeWords*4)
+	largePkt[0] = 0x7f
+	largePkt[1] = byte(largeWords & 0xff)
+	largePkt[2] = byte((largeWords >> 8) & 0xff)
+	largePkt[3] = byte((largeWords >> 16) & 0xff)
+	largeEnc := make([]byte, len(largePkt))
+	clientStream.XORKeyStream(largeEnc, largePkt)
+
+	if err := f.feed(largeEnc, ws); err != nil {
+		t.Fatalf("feed large packet failed: %v", err)
+	}
+
+	if len(f.raw) != 0 {
+		t.Fatalf("expected len(f.raw) == 0 after large packet dispatch, got %d", len(f.raw))
+	}
+	if cap(f.raw) > 128*1024 {
+		t.Fatalf("f.raw capacity remained %d bytes (> 128KB) after drain; memory compaction failed", cap(f.raw))
+	}
+
 	runtime.GC()
 	var mAfter runtime.MemStats
 	runtime.ReadMemStats(&mAfter)
 
-	// Verify framer memory compaction: when empty or low len, capacity must be small
-	if len(f.raw) != 0 {
-		t.Errorf("expected len(f.raw) == 0, got %d", len(f.raw))
-	}
-
 	growth := int64(mAfter.HeapAlloc) - int64(mBefore.HeapAlloc)
-	t.Logf("Framer 20k packets: HeapAlloc before=%d KB, after=%d KB, growth=%d KB, final raw cap=%d, plain cap=%d",
+	t.Logf("Framer 20k packets + 256KB media chunk: HeapAlloc before=%d KB, after=%d KB, growth=%d KB, final raw cap=%d, plain cap=%d",
 		mBefore.HeapAlloc/1024, mAfter.HeapAlloc/1024, growth/1024, cap(f.raw), cap(f.plain))
 
 	if growth > 1024*1024 {
@@ -124,7 +141,11 @@ func TestMemoryLeak_WsPool_Churn(t *testing.T) {
 	runtime.GC()
 	initialGoroutines := runtime.NumGoroutine()
 
+	// Pre-cancel the pool context: Get() kicks off Refill, and a live Refill
+	// would dial real Telegram WSS endpoints from a unit test and leave its
+	// goroutines running past the leak check.
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	defer cancel()
 
 	pool := newWsPool(ctx, 2)
