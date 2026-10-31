@@ -32,6 +32,12 @@ func buildObfuscatedInit(dc int16) ([]byte, cipher.Stream) {
 }
 
 func main() {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "usage: e2eclient <socks|direct> <host:port>")
+		fmt.Fprintln(os.Stderr, "  socks  - connect through a running `tgws socks` listener")
+		fmt.Fprintln(os.Stderr, "  direct - connect straight to a listener (SOCKS or the 17841 port)")
+		os.Exit(2)
+	}
 	mode := os.Args[1]
 	target := os.Args[2]
 	init, stream := buildObfuscatedInit(2) // DC2
