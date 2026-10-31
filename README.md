@@ -2,15 +2,14 @@
 
 <img align='right' src='icon.png' width='220px' alt="TeleWEB Icon">
 
-Полнофункциональный прозрачный WSS-обходчик блокировок Telegram для Android.
+Полнофункциональный прозрачный WSS-обходчик блокировок Telegram: модуль для Android и десктопные порты для Windows и Linux.
 
-[![KernelSU](https://img.shields.io/badge/KernelSU-Supported-brightgreen.svg)](https://github.com/tiann/KernelSU)
-[![Magisk](https://img.shields.io/badge/Magisk-Supported-blue.svg)](https://github.com/topjohnwu/Magisk)
-[![APatch](https://img.shields.io/badge/APatch-Supported-orange.svg)](https://github.com/bmax121/APatch)
 [![Release](https://img.shields.io/github/v/release/dea1hwatcher/teleweb?label=Release)](https://github.com/dea1hwatcher/teleweb/releases/latest)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
 Модуль предназначен для прозрачного перехвата и обхода блокировок дата-центров Telegram (DC1–DC5) нативно на уровне ядра через `iptables nat REDIRECT` в зашифрованные WebSocket-сессии (WSS). В отличие от классических VPN-приложений (V2Ray, Clash, ByeDPI и др.), этот метод **не создает виртуального сетевого интерфейса (tun)**, не требует настройки прокси внутри мессенджера, не расходует дополнительный заряд батареи и не режет скорость соединения.
+
+> **Ветки:** `android` — модуль Magisk/KernelSU/APatch, `win` — Windows-порт, `linux` — Linux-порт. README общий; установка и требования ниже относятся к Android-модулю, десктопные пакеты описаны в [`docs/DESKTOP.md`](docs/DESKTOP.md).
 
 ## Особенности
 
@@ -105,19 +104,13 @@ su -c tgws check
 
 ## Сборка из исходников
 
-Для сборки проекта требуется **Go 1.24+** и **Python 3**. Сборка мультиархитектурных бинарников (`ARM64`, `ARM`, `x86`, `x86_64`) и упаковка zip-модуля автоматизированы:
+Для сборки требуется **Go 1.24+**. Windows-пакеты (standalone `tgws.exe`, архивы в `dist/`):
 
 ```powershell
-# Полная сборка бинарников под все архитектуры и создание готового zip-модуля:
-python .\package_zip.py
-
-# Или через PowerShell скрипт:
-powershell -ExecutionPolicy Bypass -File .\build_all.ps1
-
-# Опциональные флаги package_zip.py:
-#   --skip-build   - пропустить компиляцию Go и только переупаковать zip
-#   --build-only   - только скомпилировать бинарники без создания zip
+powershell -ExecutionPolicy Bypass -File .\build_desktop.ps1
 ```
+
+Zip-модуль для Android собирается в ветке `android` скриптом `package_zip.py`.
 
 ## Благодарности
 
