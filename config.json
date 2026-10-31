@@ -1,6 +1,0 @@
-{
-  "title": "TeleWEB",
-  "icon": "webroot/module_icon.png",
-  "windowResize": false,
-  "backInterceptor": "javascript"
-}
