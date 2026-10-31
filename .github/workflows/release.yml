@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release version, as in module.prop (for example v0.1.0)
+        description: Desktop release tag, as used in changelog.md (for example v0.1.5)
         required: true
 
 env:
@@ -23,30 +23,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate module.prop version matches tag
-        run: |
-          ver=$(sed -n 's/^version=//p' module.prop | tr -d '\r')
-          [ "$ver" = "$TAG" ] || { echo "::error::module.prop: version=$ver, tag is $TAG"; exit 1; }
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+      - name: Build desktop packages (Windows)
+        shell: pwsh
+        run: ./build_desktop.ps1
 
-      - name: Build multi-arch binaries and package zip
-        run: |
-          python3 package_zip.py
-          ls -lh teleweb-*.zip
-
-      - name: Publish release
+      - name: Prepare release notes from changelog
         env:
-          GH_TOKEN: ${{ github.token }}
           PYTHONIOENCODING: utf-8
           LC_ALL: C.UTF-8
         run: |
@@ -58,41 +46,17 @@ jobs:
           open('release-notes.md', 'w', encoding='utf-8').write(notes + '\n')
           " "$TAG"
 
-          zip_file=$(ls teleweb-*.zip | head -n 1)
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            if gh release view "$TAG" --json assets -q '.assets[].name' | grep -q '\.zip$'; then
-              echo "zip already attached"
-            else
-              gh release upload "$TAG" "$zip_file" --clobber
-            fi
             gh release edit "$TAG" --notes-file release-notes.md
           else
-            gh release create "$TAG" "$zip_file" --title "$TAG" --notes-file release-notes.md --target "$GITHUB_SHA"
+            gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --target "$GITHUB_SHA"
           fi
-
-      - name: Build desktop packages (Windows/Linux)
-        shell: pwsh
-        run: ./build_desktop.ps1
 
       - name: Attach desktop packages to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" dist/tgws-windows-*.exe dist/*.zip dist/*.tar.gz --clobber
-
-      - name: Update update.json on master
-        run: |
-          set -eu
-          git fetch origin master
-          git checkout -B master origin/master
-          code=$(git show "$GITHUB_SHA:module.prop" | sed -n 's/^versionCode=//p' | tr -d '\r')
-          zip_file=$(ls teleweb-*.zip | head -n 1)
-          jq -n --arg v "$TAG" --argjson c "$code" \
-                --arg z "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/$zip_file" \
-                --arg l "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/master/changelog.md" \
-                '{version: $v, versionCode: $c, zipUrl: $z, changelog: $l}' > update.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
-          git add update.json
-          git diff --cached --quiet && exit 0
-          git commit -m "update.json: $TAG"
-          git push origin HEAD:master

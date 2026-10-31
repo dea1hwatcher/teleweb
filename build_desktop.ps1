@@ -1,7 +1,6 @@
 # TeleWEB desktop build script.
 # Windows: amd64/386/arm64 — standalone tgws.exe (WebUI + WinDivert driver are
 # embedded, so a single exe works without any accompanying files).
-# Linux: amd64/arm64 — tgws + webroot + installers.
 # Produces packages under dist/.
 $ErrorActionPreference = "Stop"
 
