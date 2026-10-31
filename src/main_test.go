@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -150,6 +151,14 @@ func TestMediaIPClassification(t *testing.T) {
 	}
 }
 
+func TestInitMemoryTuningDoesNotClampHeap(t *testing.T) {
+	t.Setenv("GOGC", "100") // keep the global GC target untouched
+	before := debug.SetMemoryLimit(-1)
+	initMemoryTuning()
+	if after := debug.SetMemoryLimit(-1); after != before {
+		t.Fatalf("initMemoryTuning changed the heap limit: %d -> %d", before, after)
+	}
+}
 func TestMTProtoPacketFramerAbridgedPacketBoundaries(t *testing.T) {
 	// Construct an obfuscated2 header whose decrypted tag is abridged. The
 	// header bytes 0:56 are the key/IV material; bytes 56:64 are CTR-encrypted.
