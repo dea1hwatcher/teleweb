@@ -71,4 +71,3 @@ func serverListening() bool {
 }
 
 func setDialSockOpts(c syscall.RawConn) error { return nil }
-

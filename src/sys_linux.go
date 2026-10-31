@@ -133,4 +133,3 @@ func originalDestination(c net.Conn) (netip.AddrPort, error) {
 }
 
 func setDialSockOpts(c syscall.RawConn) error { return nil }
-
