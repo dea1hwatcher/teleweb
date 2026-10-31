@@ -190,17 +190,21 @@ func runDesktop() error {
 }
 
 // cmdRun blocks until a termination signal, then tears everything down.
+// It installs its own signal handler instead of startSignalLogger: that
+// helper exits on the first signal, which would race this graceful teardown
+// and leave the REDIRECT rules pointing at a dead port.
 func cmdRun() {
 	ensureDir()
-	startSignalLogger()
+	// Register before startup so a signal arriving mid-boot is queued and
+	// still triggers the teardown below.
+	ch := make(chan os.Signal, 1)
+	notifySignals(ch)
 	fmt.Println("TeleWEB desktop runtime starting; Ctrl+C to stop")
 	if err := runDesktop(); err != nil {
 		logf("run: %v", err)
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	ch := make(chan os.Signal, 1)
-	notifySignals(ch)
 	sig := <-ch
 	logf("run: signal %v received, stopping", sig)
 	stopWatchdog()
