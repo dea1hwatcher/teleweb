@@ -512,7 +512,7 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 		trayNID.uFlags = nifMessage | nifIcon | nifTip
 		trayNID.uCallbackMessage = wmUserTray
 		trayNID.hIcon = hIcon
-		copy(trayNID.szTip[:], windows.StringToUTF16(title))
+		copyUTF16(trayNID.szTip[:], title)
 		procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&trayNID)))
 		trayMu.Unlock()
 
@@ -557,9 +557,19 @@ func updateSystemTray(active bool, tip string) {
 	trayActive = active
 	trayTipText = tip
 	if trayHwnd != 0 {
-		var sz [128]uint16
-		copy(sz[:], windows.StringToUTF16(tip))
-		trayNID.szTip = sz
+		copyUTF16(trayNID.szTip[:], tip)
 		procShellNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&trayNID)))
+	}
+}
+
+// copyUTF16 fills a fixed-size shell string field, always leaving the NUL
+// terminator: Shell_NotifyIcon treats these fields as C strings, and a
+// truncated tip without a terminator would be read past its end.
+func copyUTF16(dst []uint16, s string) {
+	if len(dst) == 0 {
+		return
+	}
+	if n := copy(dst, windows.StringToUTF16(s)); n == len(dst) {
+		dst[len(dst)-1] = 0
 	}
 }
