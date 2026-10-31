@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -147,6 +148,15 @@ func TestMediaIPClassification(t *testing.T) {
 		if got := mediaForIP(netip.MustParseAddr(raw)); got != want {
 			t.Errorf("mediaForIP(%s)=%t, want %t", raw, got, want)
 		}
+	}
+}
+
+func TestInitMemoryTuningDoesNotClampHeap(t *testing.T) {
+	t.Setenv("GOGC", "100") // keep the global GC target untouched
+	before := debug.SetMemoryLimit(-1)
+	initMemoryTuning()
+	if after := debug.SetMemoryLimit(-1); after != before {
+		t.Fatalf("initMemoryTuning changed the heap limit: %d -> %d", before, after)
 	}
 }
 
