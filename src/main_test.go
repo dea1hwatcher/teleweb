@@ -2571,6 +2571,30 @@ func TestDirectDialNegativeCache(t *testing.T) {
 	}
 }
 
+func TestIsTelegramEndpoint(t *testing.T) {
+	cases := map[string]bool{
+		"149.154.167.51":        true,
+		"149.154.175.50":        true,
+		"91.108.56.100":         true,
+		"91.105.192.100":        true,
+		"185.76.151.10":         true,
+		"8.8.8.8":               false,
+		"149.154.176.1":         false,
+		"::ffff:149.154.167.51": true,
+		"2001:67c:4e8::1":       false,
+	}
+	for raw, want := range cases {
+		if got := isTelegramEndpoint(netip.MustParseAddr(raw)); got != want {
+			t.Errorf("isTelegramEndpoint(%s)=%t, want %t", raw, got, want)
+		}
+	}
+	// The CDN203 endpoint must stay inside the intercepted aggregates even
+	// without a dedicated address check.
+	if !isTelegramEndpoint(netip.MustParseAddr(cdn203IP)) {
+		t.Fatalf("CDN203 endpoint %s is not covered by telegramSubnets", cdn203IP)
+	}
+}
+
 func TestIsTelegramTarget(t *testing.T) {
 	cases := []struct {
 		addr string
@@ -2581,8 +2605,9 @@ func TestIsTelegramTarget(t *testing.T) {
 		{"91.105.192.100:443", true},
 		{"185.76.151.10:443", true},
 		{"104.16.123.96:443", false}, // Cloudflare
-		{"1.1.1.1:53", false},         // Cloudflare DNS
-		{"8.8.8.8:53", false},         // Google DNS
+		{"1.1.1.1:53", false},        // Cloudflare DNS
+		{"8.8.8.8:53", false},        // Google DNS
+		{"149.154.167.51", true},     // bare IP without port
 		{"invalid-host", false},
 	}
 	for _, tc := range cases {
@@ -2610,4 +2635,3 @@ func TestIsLocalAddrInUse(t *testing.T) {
 		t.Error("expected false for nil error")
 	}
 }
-
