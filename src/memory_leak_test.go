@@ -141,7 +141,12 @@ func TestMemoryLeak_WsPool_Churn(t *testing.T) {
 	runtime.GC()
 	initialGoroutines := runtime.NumGoroutine()
 
+	// Pre-cancel the pool context: Get() kicks off Refill, and a live Refill
+	// would dial real Telegram WSS endpoints from a unit test and leave its
+	// dial goroutines running past the leak check (network timing made this
+	// assertion flaky).
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	defer cancel()
 
 	pool := newWsPool(ctx, 2)
