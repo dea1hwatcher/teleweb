@@ -72,6 +72,9 @@ func (s *selfPortConn) Close() error {
 	return s.Conn.Close()
 }
 
+// isTelegramTarget reports whether addr names a Telegram endpoint that the
+// platform redirector will intercept; such dials must reserve their local port
+// first so the redirector never captures the daemon's own connection.
 func isTelegramTarget(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -81,16 +84,7 @@ func isTelegramTarget(addr string) bool {
 	if err != nil {
 		return false
 	}
-	ip = ip.Unmap()
-	if !ip.Is4() {
-		return false
-	}
-	for _, sub := range telegramParsedSubnets {
-		if sub.prefix.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return isTelegramEndpoint(ip)
 }
 
 func isLocalAddrInUse(err error) bool {

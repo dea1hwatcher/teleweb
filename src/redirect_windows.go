@@ -187,6 +187,10 @@ var natTable = struct {
 	next  uint16
 }{flows: map[natFlowKey]*natEntry{}, ports: map[uint16]*natEntry{}, next: 20000}
 
+// natGetOrCreate maps one client flow to a local port used as the rewritten
+// source port. Ports are drawn from 20000-32000: below the Windows ephemeral
+// range (49152-65535 by default), so an injected loopback packet cannot land on
+// a socket the system already handed out, and clear of the listener port.
 func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry {
 	natTable.mu.Lock()
 	defer natTable.mu.Unlock()
