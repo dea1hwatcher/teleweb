@@ -776,6 +776,44 @@ func TestNoteRouteHTTPFailureEscalatesWithinSeries(t *testing.T) {
 	}
 }
 
+func TestRouteCacheFreshnessTTL(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() { baseDir = oldDir })
+
+	key, host := "ttl", "kws2.ttl.example"
+	saveRouteCache(key, host)
+	t.Cleanup(func() {
+		routeCacheMu.Lock()
+		delete(routeCacheDisk, key)
+		routeCacheMu.Unlock()
+		cfHostCache.Delete(key)
+	})
+
+	if !routeCacheFresh(key, host) {
+		t.Fatal("a just-saved route must count as fresh")
+	}
+	if routeCacheFresh(key, "kws2.other.example") {
+		t.Fatal("a different host must not match the cached entry")
+	}
+
+	// Age the stamp past the TTL: the fast path must stop front-loading it.
+	routeCacheMu.Lock()
+	entry := routeCacheDisk[key]
+	entry.UpdatedAt = time.Now().Add(-routeCacheTTL - time.Minute)
+	routeCacheDisk[key] = entry
+	routeCacheMu.Unlock()
+	if routeCacheFresh(key, host) {
+		t.Fatal("an entry older than the TTL must be stale")
+	}
+
+	// A winning dial re-stamps the same host in memory (no file rewrite).
+	saveRouteCache(key, host)
+	if !routeCacheFresh(key, host) {
+		t.Fatal("re-saving the same host must refresh the freshness stamp")
+	}
+}
+
 func TestRouteCachePersistence(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "teleweb-route-cache-test-*")
 	if err != nil {
