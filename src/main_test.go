@@ -2602,8 +2602,8 @@ func TestIsTelegramTarget(t *testing.T) {
 		{"91.105.192.100:443", true},
 		{"185.76.151.10:443", true},
 		{"104.16.123.96:443", false}, // Cloudflare
-		{"1.1.1.1:53", false},         // Cloudflare DNS
-		{"8.8.8.8:53", false},         // Google DNS
+		{"1.1.1.1:53", false},        // Cloudflare DNS
+		{"8.8.8.8:53", false},        // Google DNS
 		{"invalid-host", false},
 	}
 	for _, tc := range cases {
@@ -2631,4 +2631,3 @@ func TestIsLocalAddrInUse(t *testing.T) {
 		t.Error("expected false for nil error")
 	}
 }
-

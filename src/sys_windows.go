@@ -40,42 +40,42 @@ var androidRuntime = false
 func isAndroidRuntime() bool { return androidRuntime }
 
 var (
-	kernel32            = windows.NewLazySystemDLL("kernel32.dll")
-	user32              = windows.NewLazySystemDLL("user32.dll")
-	shell32             = windows.NewLazySystemDLL("shell32.dll")
-	dwmapi              = windows.NewLazySystemDLL("dwmapi.dll")
+	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
+	user32   = windows.NewLazySystemDLL("user32.dll")
+	shell32  = windows.NewLazySystemDLL("shell32.dll")
+	dwmapi   = windows.NewLazySystemDLL("dwmapi.dll")
 
 	procAttachConsole   = kernel32.NewProc("AttachConsole")
 	procCreateMutex     = kernel32.NewProc("CreateMutexW")
 	procCloseHandle     = kernel32.NewProc("CloseHandle")
 	procGetModuleHandle = kernel32.NewProc("GetModuleHandleW")
 
-	procFindWindow       = user32.NewProc("FindWindowW")
-	procShowWindow       = user32.NewProc("ShowWindow")
-	procSetFgWindow      = user32.NewProc("SetForegroundWindow")
-	procLoadIcon         = user32.NewProc("LoadIconW")
-	procDefWindowProc    = user32.NewProc("DefWindowProcW")
-	procRegisterClassEx  = user32.NewProc("RegisterClassExW")
-	procCreateWindowEx   = user32.NewProc("CreateWindowExW")
-	procDestroyWindow    = user32.NewProc("DestroyWindow")
-	procGetMessage       = user32.NewProc("GetMessageW")
-	procTranslateMessage = user32.NewProc("TranslateMessage")
-	procDispatchMessage  = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
-	procPostMessage      = user32.NewProc("PostMessageW")
-	procGetCursorPos     = user32.NewProc("GetCursorPos")
-	procCreatePopupMenu  = user32.NewProc("CreatePopupMenu")
-	procAppendMenu       = user32.NewProc("AppendMenuW")
-	procTrackPopupMenuEx = user32.NewProc("TrackPopupMenuEx")
-	procDestroyMenu      = user32.NewProc("DestroyMenu")
+	procFindWindow               = user32.NewProc("FindWindowW")
+	procShowWindow               = user32.NewProc("ShowWindow")
+	procSetFgWindow              = user32.NewProc("SetForegroundWindow")
+	procLoadIcon                 = user32.NewProc("LoadIconW")
+	procDefWindowProc            = user32.NewProc("DefWindowProcW")
+	procRegisterClassEx          = user32.NewProc("RegisterClassExW")
+	procCreateWindowEx           = user32.NewProc("CreateWindowExW")
+	procDestroyWindow            = user32.NewProc("DestroyWindow")
+	procGetMessage               = user32.NewProc("GetMessageW")
+	procTranslateMessage         = user32.NewProc("TranslateMessage")
+	procDispatchMessage          = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage          = user32.NewProc("PostQuitMessage")
+	procPostMessage              = user32.NewProc("PostMessageW")
+	procGetCursorPos             = user32.NewProc("GetCursorPos")
+	procCreatePopupMenu          = user32.NewProc("CreatePopupMenu")
+	procAppendMenu               = user32.NewProc("AppendMenuW")
+	procTrackPopupMenuEx         = user32.NewProc("TrackPopupMenuEx")
+	procDestroyMenu              = user32.NewProc("DestroyMenu")
 	procGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
-	procEnumWindows      = user32.NewProc("EnumWindows")
-	procIsWindow         = user32.NewProc("IsWindow")
+	procEnumWindows              = user32.NewProc("EnumWindows")
+	procIsWindow                 = user32.NewProc("IsWindow")
 
 	procShellNotifyIcon = shell32.NewProc("Shell_NotifyIconW")
 	procShellExecute    = shell32.NewProc("ShellExecuteW")
 
-	procDwmSetAttr      = dwmapi.NewProc("DwmSetWindowAttribute")
+	procDwmSetAttr = dwmapi.NewProc("DwmSetWindowAttribute")
 )
 
 // attachParentConsole attaches standard I/O to the parent console if tgws was
@@ -367,21 +367,21 @@ func acquireSingleInstance() (func(), bool) {
 }
 
 const (
-	wmUserTray     = 0x0400 + 101
-	nimAdd         = 0
-	nimModify      = 1
-	nimDelete      = 2
-	nifMessage     = 0x00000001
-	nifIcon        = 0x00000002
-	nifTip         = 0x00000004
-	wmLButtonUp    = 0x0202
+	wmUserTray      = 0x0400 + 101
+	nimAdd          = 0
+	nimModify       = 1
+	nimDelete       = 2
+	nifMessage      = 0x00000001
+	nifIcon         = 0x00000002
+	nifTip          = 0x00000004
+	wmLButtonUp     = 0x0202
 	wmLButtonDblClk = 0x0203
-	wmRButtonUp    = 0x0205
-	tpmReturnCmd   = 0x0100
-	tpmRightButton = 0x0002
-	mfString       = 0x00000000
-	mfSeparator    = 0x00000800
-	mfGrayed       = 0x00000001
+	wmRButtonUp     = 0x0205
+	tpmReturnCmd    = 0x0100
+	tpmRightButton  = 0x0002
+	mfString        = 0x00000000
+	mfSeparator     = 0x00000800
+	mfGrayed        = 0x00000001
 )
 
 func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit func()) func() {
@@ -563,4 +563,3 @@ func updateSystemTray(active bool, tip string) {
 		procShellNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&trayNID)))
 	}
 }
-
