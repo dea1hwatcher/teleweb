@@ -2382,9 +2382,10 @@ func emitErr(e error) {
 }
 
 func initMemoryTuning() {
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(48 * 1024 * 1024)
-	}
+	// No forced GOMEMLIMIT: clamping the heap at 48 MB drove the GC into a
+	// death spiral whenever media buffers or the socket pool pushed the live
+	// heap past the limit (observed as ~220% user CPU on-device). An explicit
+	// GOMEMLIMIT environment variable is still honoured by the runtime itself.
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(50)
 	}
