@@ -524,6 +524,27 @@ func TestFrontingSNIConfig(t *testing.T) {
 	}
 }
 
+func TestAndroidRuntimeGatesPoolDefault(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	orig := androidRuntime
+	t.Cleanup(func() {
+		baseDir = oldDir
+		androidRuntime = orig
+	})
+
+	// Without a pool_size file the default must follow the platform gate:
+	// Android pre-warms two sockets per DC, desktop keeps sessions 1:1.
+	androidRuntime = true
+	if got := readPoolSize(); got != 2 {
+		t.Fatalf("android default pool=%d, want 2", got)
+	}
+	androidRuntime = false
+	if got := readPoolSize(); got != 0 {
+		t.Fatalf("desktop default pool=%d, want 0", got)
+	}
+}
+
 func TestShouldSkipTLSVerify(t *testing.T) {
 	cases := []struct {
 		host, sni string

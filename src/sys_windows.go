@@ -35,7 +35,9 @@ func defaultBaseDir() string {
 	return "teleweb-data"
 }
 
-func isAndroidRuntime() bool { return false }
+var androidRuntime = false
+
+func isAndroidRuntime() bool { return androidRuntime }
 
 var (
 	kernel32            = windows.NewLazySystemDLL("kernel32.dll")

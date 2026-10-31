@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !linux && !windows
 
 package main
 
@@ -22,7 +22,9 @@ func defaultBaseDir() string {
 	return "teleweb-data"
 }
 
-func isAndroidRuntime() bool { return false }
+var androidRuntime = false
+
+func isAndroidRuntime() bool { return androidRuntime }
 
 func attachParentConsole() {}
 
@@ -93,5 +95,3 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 }
 
 func updateSystemTray(active bool, tip string) {}
-
-
