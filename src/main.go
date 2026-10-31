@@ -85,6 +85,12 @@ type persistedRoute struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// routeCacheTTL bounds how long a last-known-good route keeps the fast path.
+// Once it expires the next dial re-evaluates every route instead of fronting
+// the same frontend forever; a winning dial re-stamps the entry. Six hours
+// mirrors the measured route decision used by the sibling TG Open build.
+const routeCacheTTL = 6 * time.Hour
+
 // loadRouteCache restores the last known-good routes across daemon restarts.
 // It stores only route metadata, never client streams or authentication data.
 func loadRouteCache() {
@@ -120,6 +126,11 @@ func saveRouteCache(key, host string) {
 	defer routeCacheMu.Unlock()
 	entry := routeCacheDisk[key]
 	if entry.Host == host {
+		// Keep the in-memory freshness stamp current without rewriting the
+		// file on every dial; the persisted timestamp only matters across
+		// daemon restarts.
+		entry.UpdatedAt = time.Now()
+		routeCacheDisk[key] = entry
 		return
 	}
 	entry.Host = host
@@ -139,6 +150,16 @@ func saveRouteCache(key, host string) {
 	if err := os.Rename(tmp, path("route-cache.json")); err != nil {
 		_ = os.Remove(tmp)
 	}
+}
+
+// routeCacheFresh reports whether key's last-known-good route is recent enough
+// to keep front-loading. A stale entry is skipped once so the full race
+// re-evaluates the route instead of pinning an old frontend forever.
+func routeCacheFresh(key, host string) bool {
+	routeCacheMu.Lock()
+	entry := routeCacheDisk[key]
+	routeCacheMu.Unlock()
+	return entry.Host == host && time.Since(entry.UpdatedAt) < routeCacheTTL
 }
 
 type routeHealthState struct {
@@ -4085,17 +4106,23 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 			}
 		}
 
-		// 3. Fast path: cached Cloudflare route
+		// 3. Fast path: cached Cloudflare route, while its stamp is fresh.
+		// A stale entry is skipped so this dial re-evaluates every route;
+		// the race stores the winner again with a new stamp.
 		if cached, ok := cfHostCache.Load(key); ok {
 			if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
-				h := host
-				candCached := dialCandidate{
-					name: fmt.Sprintf("cf-cached (%s)", h),
-					dial: func(c context.Context) (*wsConn, error) {
-						return dialCFHost(c, resolver, h)
-					},
+				if routeCacheFresh(key, host) {
+					h := host
+					candCached := dialCandidate{
+						name: fmt.Sprintf("cf-cached (%s)", h),
+						dial: func(c context.Context) (*wsConn, error) {
+							return dialCFHost(c, resolver, h)
+						},
+					}
+					candidates = append(candidates, candCached)
+				} else {
+					logf("DC%d media=%t cached route %s is stale; re-evaluating all routes", dc, isMedia, host)
 				}
-				candidates = append(candidates, candCached)
 			}
 		}
 
