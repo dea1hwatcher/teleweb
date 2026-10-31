@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,8 +33,23 @@ func cmdWebUI(addr string) {
 		fmt.Fprintln(os.Stderr, "webui: webroot/index.html not found and nothing embedded (set TELEWEB_WEBROOT)")
 		os.Exit(1)
 	}
+	logf("WebUI listening on http://%s (root: %s)", addr, source)
+	fmt.Printf("TeleWEB WebUI: http://%s\n", addr)
+	srv := &http.Server{Addr: addr, Handler: newWebUIHandler(static), ReadHeaderTimeout: 5 * time.Second}
+	if err := srv.ListenAndServe(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func newWebUIHandler(static http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if !apiRequestAllowed(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
@@ -39,12 +59,12 @@ func cmdWebUI(addr string) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		payload := strings.TrimSpace(string(body))
-		if payload == "" {
-			http.Error(w, "empty payload", http.StatusBadRequest)
+		payload, err := apiPayload(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		out, err := apiDispatchJson(body)
+		out, err := apiDispatchJson(payload)
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil && len(out) == 0 {
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error())))
@@ -53,13 +73,55 @@ func cmdWebUI(addr string) {
 		_, _ = w.Write(out)
 	})
 	mux.Handle("/", static)
-	logf("WebUI listening on http://%s (root: %s)", addr, source)
-	fmt.Printf("TeleWEB WebUI: http://%s\n", addr)
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	if err := srv.ListenAndServe(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	return mux
+}
+
+// apiRequestAllowed rejects cross-site and DNS-rebinding calls to the API.
+// Browsers mark cross-origin requests with Origin / Sec-Fetch-Site, so a page
+// on another site cannot toggle the transport; the Host allowlist defeats DNS
+// rebinding, where the attacker's domain resolves to loopback but the request
+// still carries the attacker's host name.
+func apiRequestAllowed(r *http.Request) bool {
+	if !loopbackName(r.Host) {
+		return false
 	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || !loopbackName(u.Host) {
+			return false
+		}
+	}
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+		return true
+	}
+	return false
+}
+
+func loopbackName(hostport string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+	host = strings.Trim(host, "[]")
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+// apiPayload accepts both a raw JSON body (curl, scripts) and the base64 form
+// the bundled WebUI forwards from its CLI bridge command.
+func apiPayload(body []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, errors.New("empty payload")
+	}
+	if trimmed[0] == '{' {
+		return trimmed, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(string(trimmed))
+	if err != nil {
+		return nil, fmt.Errorf("payload must be JSON or base64-encoded JSON: %w", err)
+	}
+	return decoded, nil
 }
 
 func findWebroot() string {
