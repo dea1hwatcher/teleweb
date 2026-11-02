@@ -2817,3 +2817,66 @@ func TestIsTelegramAPK(t *testing.T) {
 		t.Errorf("expected isTelegramAPK = false for APK without Telegram libraries")
 	}
 }
+
+func TestExecuteAPIPayload_InProcess(t *testing.T) {
+	tmpDir := t.TempDir()
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	// 1. Base64 payload
+	b64Req := base64.StdEncoding.EncodeToString([]byte(`{"cmd":"status"}`))
+	out, err := executeAPIPayload(b64Req)
+	if err != nil {
+		t.Fatalf("executeAPIPayload(b64) error: %v", err)
+	}
+	var resp struct {
+		OK   bool   `json:"ok"`
+		Data Status `json:"data"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil || !resp.OK {
+		t.Fatalf("invalid status response: %s (err: %v)", string(out), err)
+	}
+
+	// 2. Direct raw JSON payload (no base64)
+	outRaw, err := executeAPIPayload(`{"cmd":"clearlogs"}`)
+	if err != nil {
+		t.Fatalf("executeAPIPayload(raw) error: %v", err)
+	}
+	var clearResp struct {
+		OK   bool           `json:"ok"`
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(outRaw, &clearResp); err != nil || !clearResp.OK || clearResp.Data["cleared"] != true {
+		t.Fatalf("invalid clearlogs response: %s (err: %v)", string(outRaw), err)
+	}
+}
+
+func TestIsTelegramEndpoint_PreparsedSubnets(t *testing.T) {
+	for _, ip := range []string{
+		"149.154.175.50",
+		"149.154.167.51",
+		"91.108.56.100",
+		"91.108.4.1",
+		"91.105.192.100",
+		"185.76.151.10",
+	} {
+		addr := netip.MustParseAddr(ip)
+		if !isTelegramEndpoint(addr) {
+			t.Errorf("expected isTelegramEndpoint(%s) = true", ip)
+		}
+	}
+
+	for _, ip := range []string{
+		"1.1.1.1",
+		"8.8.8.8",
+		"77.88.8.8",
+		"192.168.1.1",
+		"10.0.0.1",
+	} {
+		addr := netip.MustParseAddr(ip)
+		if isTelegramEndpoint(addr) {
+			t.Errorf("expected isTelegramEndpoint(%s) = false", ip)
+		}
+	}
+}

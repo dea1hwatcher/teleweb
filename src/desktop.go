@@ -35,10 +35,10 @@ func selfDialRegister(port uint16) {
 	selfDialMu.Unlock()
 }
 
+// selfDialExpire extends the retention of port for a grace period after close,
+// ensuring delayed SYN retransmits from the kernel are not mistaken for client traffic.
 func selfDialExpire(port uint16) {
-	selfDialMu.Lock()
-	selfDialPorts[port] = time.Now().Add(selfDialGrace)
-	selfDialMu.Unlock()
+	selfDialRegister(port)
 }
 
 func isSelfDialPort(port uint16) bool {
