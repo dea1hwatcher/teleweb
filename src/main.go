@@ -1867,6 +1867,9 @@ func processUID(pid int) (int, bool) {
 // protectTargetAppProcesses attempts to keep Telegram client processes
 // out of Android's cached-app freezer, regardless of package name.
 func protectTargetAppProcesses() {
+	if !isAndroidRuntime() {
+		return
+	}
 	apps, uids := installedApps()
 	if len(apps) == 0 && len(uids) == 0 {
 		return
