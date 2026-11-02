@@ -63,6 +63,7 @@ func getH2Client(host string) *http.Client {
 			// override in the H2 path), so certificate verification stays on.
 			InsecureSkipVerify: false,
 			NextProtos:         []string{"h2", "http/1.1"},
+			CurvePreferences:   []tls.CurveID{tls.X25519, tls.CurveP256},
 		},
 		ForceAttemptHTTP2:   true,
 		MaxIdleConns:        32,

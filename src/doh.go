@@ -54,7 +54,8 @@ func getDoHClient() *http.Client {
 				return d.DialContext(ctx, network, addr)
 			},
 			TLSClientConfig: &tls.Config{
-				RootCAs: getSystemRootCAs(),
+				RootCAs:          getSystemRootCAs(),
+				CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256},
 				// Certificate verification stays ON: DoH exists precisely to
 				// defeat spoofing, and these endpoints involve no SNI games.
 			},

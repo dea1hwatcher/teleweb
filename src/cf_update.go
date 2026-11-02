@@ -140,7 +140,8 @@ func refreshCFDomains(ctx context.Context) error {
 			return d.DialContext(ctx, network, addr)
 		},
 		TLSClientConfig: &tls.Config{
-			RootCAs: getSystemRootCAs(),
+			RootCAs:          getSystemRootCAs(),
+			CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256},
 			// GitHub raw endpoints use their real hostname: verify certificates.
 		},
 		IdleConnTimeout: 90 * time.Second,
