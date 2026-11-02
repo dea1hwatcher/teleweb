@@ -15,7 +15,6 @@ case "$MODDIR" in
     ;;
 esac
 
-DESC_BASE="Прозрачный WSS-транспорт для Telegram (DC1-DC5)"
 update_description() { # running | stopped | error
   local prop=""
   if [ -d "/data/adb/modules/teleweb" ]; then
@@ -87,9 +86,6 @@ if "$MODDIR/bin/tgws" boot >>/data/adb/teleweb/supervisor.log 2>&1; then
 else
   update_description error
 fi
-
-# 3.1 Protect Telegram voice and video calls (UDP STUN 3478, TURN 596-599) from DPI interception (Zapret / nfqws)
-# Locally generated traffic traverses OUTPUT only; PREROUTING covers forwarded traffic (hotspot).
 
 # 4. Supervisor loop to ensure daemon and rules stay active across network changes
 while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do

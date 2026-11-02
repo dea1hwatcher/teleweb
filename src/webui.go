@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -62,14 +61,7 @@ func newWebUIHandler(static http.Handler) http.Handler {
 			http.Error(w, "empty payload", http.StatusBadRequest)
 			return
 		}
-		self, err := os.Executable()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// The WebUI forwards the CLI bridge payload (base64 JSON) unchanged;
-		// `tgws api` decodes it.
-		out, err := exec.Command(self, "api", payload).Output()
+		out, err := executeAPIPayload(payload)
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil && len(out) == 0 {
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error())))
