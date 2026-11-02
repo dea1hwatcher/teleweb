@@ -99,13 +99,13 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 		}
 		domainStr := string(name)
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		ips, err := androidDNSResolver().LookupNetIP(ctx, "ip4", domainStr)
+		ips, err := systemDNSResolver().LookupNetIP(ctx, "ip", domainStr)
 		cancel()
 		if err != nil || len(ips) == 0 {
 			_, _ = c.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0}) // host unreachable
 			return
 		}
-		ip = ips[0]
+		ip = ips[0].Unmap()
 		if isTelegramDomain(domainStr) {
 			isDomainAllowed = true
 		}
