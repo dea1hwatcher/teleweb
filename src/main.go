@@ -782,8 +782,10 @@ var packageNames = []struct{ Pkg, Name string }{
 }
 
 var telegramKeywords = []string{
-	"gram", "tgnet", "extera", "nekox", "plus", "ime",
-	"turrit", "telegraph", "teleplus", "mobogram",
+	"gram", "tgnet", "tg", "tele", "extera", "nekox", "neko", "plus", "ime",
+	"turrit", "telegraph", "teleplus", "mobogram", "ayugram", "cherrygram",
+	"kotato", "forkgram", "catogram", "nemogram", "swiftgram", "mdgram",
+	"bgram", "octogram", "unigram", "tdlib",
 }
 
 func matchesTelegramKeyword(pkg string) bool {
@@ -825,7 +827,11 @@ func isTelegramAPK(apkPath string) bool {
 
 	for _, f := range zr.File {
 		name := strings.ToLower(f.Name)
-		if strings.Contains(name, "libtmessages") || strings.Contains(name, "libtgnet") {
+		if strings.Contains(name, "libtmessages") ||
+			strings.Contains(name, "libtgnet") ||
+			strings.Contains(name, "libtdjson") ||
+			strings.Contains(name, "libtdjni") ||
+			strings.Contains(name, "libtelegram") {
 			return true
 		}
 	}
@@ -1422,6 +1428,11 @@ var telegramV4 = func() []string {
 	return out
 }()
 
+var telegramV6 = []string{
+	"2001:b88::/32",
+	"2001:67c:4e8::/48",
+}
+
 func runCmd(name string, args ...string) error {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
@@ -1580,9 +1591,28 @@ type workerCooldownState struct {
 	strikes int
 }
 
-var workerCooldowns sync.Map // host -> workerCooldownState
+var workerCooldowns sync.Map // host or host:dcN -> workerCooldownState
 
-func isWorkerInCooldown(host string) bool {
+func workerCooldownKey(host string, dc int) string {
+	if dc <= 0 {
+		return host
+	}
+	return fmt.Sprintf("%s:dc%d", host, dc)
+}
+
+func isWorkerInCooldown(host string, optDC ...int) bool {
+	dc := 0
+	if len(optDC) > 0 {
+		dc = optDC[0]
+	}
+	if dc > 0 {
+		if v, ok := workerCooldowns.Load(workerCooldownKey(host, dc)); ok {
+			cd := v.(workerCooldownState)
+			if time.Now().Before(cd.until) {
+				return true
+			}
+		}
+	}
 	if v, ok := workerCooldowns.Load(host); ok {
 		cd := v.(workerCooldownState)
 		if time.Now().Before(cd.until) {
@@ -1592,9 +1622,13 @@ func isWorkerInCooldown(host string) bool {
 	return false
 }
 
-func markWorkerCooldown(host string, retryAfter time.Duration) {
+func markWorkerCooldownDC(host string, dc int, retryAfter time.Duration) {
+	key := host
+	if dc > 0 {
+		key = workerCooldownKey(host, dc)
+	}
 	var strikes int
-	if v, ok := workerCooldowns.Load(host); ok {
+	if v, ok := workerCooldowns.Load(key); ok {
 		strikes = v.(workerCooldownState).strikes + 1
 	} else {
 		strikes = 1
@@ -1610,14 +1644,29 @@ func markWorkerCooldown(host string, retryAfter time.Duration) {
 		}
 		retryAfter = delay
 	}
-	workerCooldowns.Store(host, workerCooldownState{
+	workerCooldowns.Store(key, workerCooldownState{
 		until:   time.Now().Add(retryAfter),
 		strikes: strikes,
 	})
-	logf("worker %s: rate limited (HTTP 429/503); quarantined for %v", host, retryAfter)
+	if dc > 0 {
+		logf("worker %s (DC%d): rate limited (HTTP 429/503); quarantined for %v", host, dc, retryAfter)
+	} else {
+		logf("worker %s: rate limited (HTTP 429/503); quarantined for %v", host, retryAfter)
+	}
 }
 
-func clearWorkerCooldown(host string) {
+func markWorkerCooldown(host string, retryAfter time.Duration) {
+	markWorkerCooldownDC(host, 0, retryAfter)
+}
+
+func clearWorkerCooldown(host string, optDC ...int) {
+	dc := 0
+	if len(optDC) > 0 {
+		dc = optDC[0]
+	}
+	if dc > 0 {
+		workerCooldowns.Delete(workerCooldownKey(host, dc))
+	}
 	workerCooldowns.Delete(host)
 }
 
@@ -1736,6 +1785,9 @@ func setupRules() error {
 	apps, uids := installedApps()
 	if err := iptSetup(findBin("iptables"), uids, telegramV4, "TELEWEB", "IPv4"); err != nil {
 		return err
+	}
+	if ip6tables := findBin("ip6tables"); ip6tables != "" {
+		_ = iptSetup(ip6tables, uids, telegramV6, "TELEWEB", "IPv6")
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
@@ -4718,7 +4770,29 @@ func prepareUTLSForHTTP1(conn *utls.UConn) error {
 		if alpn, ok := extension.(*utls.ALPNExtension); ok {
 			alpn.AlpnProtocols = []string{"http/1.1"}
 			found = true
-			break
+		}
+		if sc, ok := extension.(*utls.SupportedCurvesExtension); ok {
+			var filtered []utls.CurveID
+			for _, c := range sc.Curves {
+				// Strip Post-Quantum groups (e.g. X25519Kyber768Draft00, X25519MLKEM768) that trigger TSPU blocks
+				if c == utls.X25519 || c == utls.CurveP256 || c == utls.CurveP384 || c == utls.CurveP521 {
+					filtered = append(filtered, c)
+				}
+			}
+			if len(filtered) > 0 {
+				sc.Curves = filtered
+			}
+		}
+		if ks, ok := extension.(*utls.KeyShareExtension); ok {
+			var filtered []utls.KeyShare
+			for _, k := range ks.KeyShares {
+				if k.Group == utls.X25519 || k.Group == utls.CurveP256 {
+					filtered = append(filtered, k)
+				}
+			}
+			if len(filtered) > 0 {
+				ks.KeyShares = filtered
+			}
 		}
 	}
 	if !found {
@@ -4754,6 +4828,7 @@ func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, h
 		InsecureSkipVerify:          shouldSkipTLSVerify(host, sni),
 		NextProtos:                  []string{"http/1.1"},
 		DynamicRecordSizingDisabled: true,
+		CurvePreferences:            []utls.CurveID{utls.X25519, utls.CurveP256},
 	}
 	uConn := utls.UClient(raw, uConfig, utls.HelloChrome_Auto)
 	if err := prepareUTLSForHTTP1(uConn); err != nil {
@@ -4857,17 +4932,22 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		host = worker[:idx]
 		query = worker[idx+1:]
 	}
+	customPath := ""
 	if slash := strings.IndexByte(host, '/'); slash != -1 {
+		customPath = host[slash:]
 		host = host[:slash]
 	}
 
-	if isWorkerInCooldown(host) {
-		return nil, fmt.Errorf("worker %s is in rate limit cooldown", host)
+	if isWorkerInCooldown(host, dc) {
+		return nil, fmt.Errorf("worker %s (DC%d) is in rate limit cooldown", host, dc)
 	}
 
 	basePath := "/apiws"
 	if isTest {
 		basePath = "/apiws_test"
+	}
+	if customPath != "" {
+		basePath = customPath
 	}
 	path := fmt.Sprintf("%s?dst=%s&dc=%d", basePath, dstIP, dc)
 	if query != "" {
@@ -4882,6 +4962,9 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 
 	var lastErr error
 	for _, ip := range ips {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if !ip.Is4() {
 			continue
 		}
@@ -4889,6 +4972,9 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		raw, e := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"), 1500*time.Millisecond)
 		if e != nil {
 			cancel()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			lastErr = e
 			continue
 		}
@@ -4897,15 +4983,23 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		ws, e := finishWorkerWS(attemptCtx, raw, host, path)
 		cancel()
 		if e == nil {
-			clearWorkerCooldown(host)
+			clearWorkerCooldown(host, dc)
 			return ws, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 		var rle *RateLimitError
 		if errors.As(e, &rle) {
-			markWorkerCooldown(host, rle.RetryAfter)
+			if shouldPenalizeRoute(ctx) {
+				markWorkerCooldownDC(host, dc, rle.RetryAfter)
+			}
 			return nil, e
 		}
 		lastErr = e
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	return nil, fmt.Errorf("worker %s: %v", host, lastErr)
 }
