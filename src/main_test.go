@@ -2554,7 +2554,6 @@ func TestCachedFileReadInvalidation(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestTailLog_BoundedTail(t *testing.T) {
 	origBase := baseDir
 	tmpDir := t.TempDir()
@@ -2816,7 +2815,5 @@ func TestIsTelegramAPK(t *testing.T) {
 
 	if isTelegramAPK(otherAPKPath) {
 		t.Errorf("expected isTelegramAPK = false for APK without Telegram libraries")
-	}
-}
 	}
 }
