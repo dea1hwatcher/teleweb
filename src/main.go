@@ -739,10 +739,8 @@ var packageNames = []struct{ Pkg, Name string }{
 }
 
 var telegramKeywords = []string{
-	"telegram", "tgnet", "challegram", "extera", "nicegram", "ayugram",
-	"forkgram", "nekox", "nekogram", "plus", "ime", "octogram",
-	"nemogram", "swiftgram", "cherrygram", "mdgram", "turrit",
-	"bgram", "telegraph", "teleplus", "mobogram", "vidogram", "catogram", "gram",
+	"gram", "tgnet", "extera", "nekox", "plus", "ime",
+	"turrit", "telegraph", "teleplus", "mobogram",
 }
 
 func matchesTelegramKeyword(pkg string) bool {
@@ -2392,59 +2390,39 @@ func writeStatus() {
 		_ = os.Remove(tmp)
 	}
 }
-func apiMain(arg string) {
-	b, e := base64.StdEncoding.DecodeString(arg)
-	if e != nil {
-		emitErr(e)
-		return
-	}
-	var q apiRequest
-	if e = json.Unmarshal(b, &q); e != nil {
-		emitErr(e)
-		return
-	}
+func executeAPICommand(q apiRequest) (any, error) {
 	switch q.Cmd {
 	case "status":
-		emitOK(status())
+		return status(), nil
 	case "resume":
-		// Returning to WebUI is an explicit opportunity to reassert interception
-		// without restarting a healthy daemon. This addresses cases where the
-		// process/listener remain alive but fresh Telegram flows stop being
-		// redirected after the app has been backgrounded.
 		if !readEnabled() {
-			emitOK(status())
-			return
+			return status(), nil
 		}
 		if err := ensureServer(); err != nil {
-			emitErr(err)
-			return
+			return nil, err
 		}
 		if !waitForListener(4 * time.Second) {
-			emitErr(fmt.Errorf("tgws failed to listen on port %d", defaultPort))
-			return
+			return nil, fmt.Errorf("tgws failed to listen on port %d", defaultPort)
 		}
 		if err := setupRules(); err != nil {
-			emitErr(err)
-			return
+			return nil, err
 		}
 		protectTargetAppProcesses()
 		if err := ensureWatchdog(); err != nil {
 			logf("resume: failed to start watchdog: %v", err)
 		}
 		logf("WebUI resume: redirection rules reapplied without restarting live daemon")
-		emitOK(status())
+		return status(), nil
 	case "set", "setConfig":
 		if q.Enabled != nil {
 			if err := writeEnabled(*q.Enabled); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 			if *q.Enabled {
 				if err := ensureServer(); err != nil {
 					_ = writeEnabled(false)
 					updateModuleDescription("status: failed ⚠️")
-					emitErr(err)
-					return
+					return nil, err
 				}
 				// REDIRECT rules go in only after the listener is up, otherwise
 				// a slow start would blackhole Telegram traffic into a dead port.
@@ -2452,15 +2430,13 @@ func apiMain(arg string) {
 					_ = writeEnabled(false)
 					stopServer()
 					updateModuleDescription("status: failed ⚠️")
-					emitErr(fmt.Errorf("tgws failed to listen on port %d", defaultPort))
-					return
+					return nil, fmt.Errorf("tgws failed to listen on port %d", defaultPort)
 				}
 				if err := setupRules(); err != nil {
 					_ = writeEnabled(false)
 					cleanupRules()
 					updateModuleDescription("status: failed ⚠️")
-					emitErr(err)
-					return
+					return nil, err
 				}
 				protectTargetAppProcesses()
 				if err := ensureWatchdog(); err != nil {
@@ -2475,74 +2451,89 @@ func apiMain(arg string) {
 		}
 		if q.CFPriority != nil {
 			if err := writeCFPriority(*q.CFPriority); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 			updateModuleDescription(currentStatusDesc())
 		}
 		if q.CFBalance != nil {
 			if err := writeCFBalance(*q.CFBalance); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.CustomCFDomain != nil {
 			if err := writeCustomCFDomain(*q.CustomCFDomain); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.CustomCFWorker != nil {
 			if err := writeCustomCFWorker(*q.CustomCFWorker); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.DCOverrides != nil {
 			if err := writeDCOverrides(*q.DCOverrides); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.PoolSize != nil {
 			if err := writePoolSize(*q.PoolSize); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.DoHEnabled != nil {
 			if err := writeDoHEnabled(*q.DoHEnabled); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.ForceTestDC != nil {
 			if err := writeForceTestDC(*q.ForceTestDC); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.H2MediaEnabled != nil {
 			if err := writeH2MediaEnabled(*q.H2MediaEnabled); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.DC203DirectTCP != nil {
 			if err := writeDC203DirectTCP(*q.DC203DirectTCP); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
-		emitOK(status())
+		return status(), nil
 	case "clearlogs":
 		for _, name := range []string{"tgws.log", "daemon.log", "supervisor.log", "watchdog.log"} {
 			_ = os.Truncate(path(name), 0)
 		}
-		emitOK(map[string]any{"cleared": true})
+		return map[string]any{"cleared": true}, nil
 	default:
-		emitErr(fmt.Errorf("unknown command: %s", q.Cmd))
+		return nil, fmt.Errorf("unknown command: %s", q.Cmd)
 	}
+}
+
+func executeAPIPayload(arg string) ([]byte, error) {
+	b, err := base64.StdEncoding.DecodeString(arg)
+	if err != nil {
+		b = []byte(arg)
+	}
+	var q apiRequest
+	if err := json.Unmarshal(b, &q); err != nil {
+		return json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+	}
+	res, err := executeAPICommand(q)
+	if err != nil {
+		return json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+	}
+	return json.Marshal(map[string]any{"ok": true, "data": res})
+}
+
+func apiMain(arg string) {
+	out, err := executeAPIPayload(arg)
+	if err != nil {
+		emitErr(err)
+		return
+	}
+	fmt.Println(string(out))
 }
 func emitOK(v any) {
 	b, _ := json.Marshal(map[string]any{"ok": true, "data": v})
@@ -3082,8 +3073,6 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
 	statsMu.Unlock()
-	atomic.AddInt64(&wsCount, 1)
-	defer atomic.AddInt64(&wsCount, -1)
 
 	worker := customCFWorkerCached()
 	if worker != "" {
@@ -3091,6 +3080,8 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		ws, err := dialCFWorker(ctx, 203, cdn203IP, worker, false)
 		cancel()
 		if err == nil {
+			atomic.AddInt64(&wsCount, 1)
+			defer atomic.AddInt64(&wsCount, -1)
 			logf("conn #%d %s -> CDN203 via Cloudflare Worker %s", id, orig, worker)
 			defer ws.Close()
 			pipeWSTunnel(c, ws, init, id, 203, false)

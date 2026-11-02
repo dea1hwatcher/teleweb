@@ -3,11 +3,8 @@
 package main
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,37 +86,19 @@ func guiPollLoop(w *app.Window, st *guiState, stop chan struct{}) {
 	}
 }
 
-// apiExec runs the API command in a child tgws process, mirroring the WebUI
-// bridge, so the GUI shares the exact CLI semantics on every platform.
 func apiExec(q apiRequest) (Status, error) {
-	self, err := os.Executable()
+	res, err := executeAPICommand(q)
 	if err != nil {
 		return Status{}, err
 	}
-	b, _ := json.Marshal(q)
-	out, err := exec.Command(self, "api", base64.StdEncoding.EncodeToString(b)).Output()
-	if err != nil && len(out) == 0 {
-		return Status{}, err
+	if s, ok := res.(Status); ok {
+		return s, nil
 	}
-	var resp struct {
-		OK    bool   `json:"ok"`
-		Data  Status `json:"data"`
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return Status{}, err
-	}
-	if !resp.OK {
-		return Status{}, fmt.Errorf("%s", resp.Error)
-	}
-	return resp.Data, nil
+	return status(), nil
 }
 
 func (st *guiState) refresh() {
-	s, err := apiExec(apiRequest{Cmd: "status"})
-	if err != nil {
-		return
-	}
+	s := status()
 	st.mu.Lock()
 	st.st = s
 	st.mu.Unlock()
@@ -134,7 +113,7 @@ func guiToggle(w *app.Window, st *guiState, enable bool) {
 	st.busy = true
 	st.mu.Unlock()
 	w.Invalidate()
-	_, _ = apiExec(apiRequest{Cmd: "set", Enabled: &enable})
+	_, _ = executeAPICommand(apiRequest{Cmd: "set", Enabled: &enable})
 	time.Sleep(300 * time.Millisecond)
 	st.refresh()
 	st.mu.Lock()

@@ -382,7 +382,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				seq := postSeq
 				postSeq++
 				go func(seq uint64, body []byte) {
-					postCtx, postCancel := context.WithTimeout(bridgeCtx, 45*time.Second)
+					postCtx, postCancel := context.WithTimeout(bridgeCtx, 15*time.Second)
 					defer postCancel()
 					data := h2PostPacket(postCtx, client, apiURL, selectedHost, body)
 					select {

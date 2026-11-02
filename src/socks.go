@@ -132,14 +132,13 @@ func isTelegramEndpoint(ip netip.Addr) bool {
 	if !ip.Is4() {
 		return false
 	}
-	for _, sub := range telegramSubnets {
-		p, err := netip.ParsePrefix(sub.cidr)
-		if err != nil {
-			continue
-		}
-		if p.Contains(ip) {
+	if isCDN203IP(ip) {
+		return true
+	}
+	for _, sub := range telegramParsedSubnets {
+		if sub.prefix.Contains(ip) {
 			return true
 		}
 	}
-	return ip.String() == cdn203IP
+	return false
 }
