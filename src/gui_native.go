@@ -86,17 +86,6 @@ func guiPollLoop(w *app.Window, st *guiState, stop chan struct{}) {
 	}
 }
 
-func apiExec(q apiRequest) (Status, error) {
-	res, err := executeAPICommand(q)
-	if err != nil {
-		return Status{}, err
-	}
-	if s, ok := res.(Status); ok {
-		return s, nil
-	}
-	return status(), nil
-}
-
 func (st *guiState) refresh() {
 	s := status()
 	st.mu.Lock()

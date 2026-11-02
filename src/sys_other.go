@@ -69,3 +69,5 @@ func serverListening() bool {
 	_ = c.Close()
 	return true
 }
+
+func setReuseAddr(raw syscall.RawConn) error { return nil }

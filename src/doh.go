@@ -50,7 +50,7 @@ func getDoHClient() *http.Client {
 	dohClientOnce.Do(func() {
 		tr := &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				d := net.Dialer{Resolver: androidDNSResolver(), Timeout: 3 * time.Second}
+				d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 3 * time.Second}
 				return d.DialContext(ctx, network, addr)
 			},
 			TLSClientConfig: &tls.Config{

@@ -98,4 +98,15 @@ func serverListening() bool {
 	return true
 }
 
+func setReuseAddr(raw syscall.RawConn) error {
+	var err error
+	controlErr := raw.Control(func(fd uintptr) {
+		err = windows.SetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_REUSEADDR, 1)
+	})
+	if controlErr != nil {
+		return controlErr
+	}
+	return err
+}
+
 var errAdminRequired = errors.New("administrator privileges are required for transparent interception on Windows (run from an elevated console)")

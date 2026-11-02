@@ -136,7 +136,7 @@ func fetchCFDomainsFromURL(ctx context.Context, client *http.Client, targetURL s
 func refreshCFDomains(ctx context.Context) error {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			d := net.Dialer{Resolver: androidDNSResolver(), Timeout: 5 * time.Second}
+			d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 5 * time.Second}
 			return d.DialContext(ctx, network, addr)
 		},
 		TLSClientConfig: &tls.Config{

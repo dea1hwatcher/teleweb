@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -89,7 +90,12 @@ func trackSelfDial(c net.Conn) net.Conn {
 func trackedDial(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
 	overall, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	d := net.Dialer{KeepAlive: 30 * time.Second}
+	d := net.Dialer{
+		KeepAlive: 30 * time.Second,
+		Control: func(network, address string, c syscall.RawConn) error {
+			return setReuseAddr(c)
+		},
+	}
 	for attempt := 0; attempt < 3; attempt++ {
 		l, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {

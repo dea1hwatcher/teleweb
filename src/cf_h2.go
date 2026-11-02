@@ -288,6 +288,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 	}
 
 	logf("conn #%d DC%d media bridged via HTTP/2 host=%s (%s)", id, dc, selectedHost, apiURL)
+	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
 
 	// 4. Run HTTP/2 pipeline
 	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
@@ -331,6 +332,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		_ = c.SetReadDeadline(time.Now().Add(3 * time.Minute))
 		nr, err := c.Read(buf)
 		if nr > 0 {
+			atomic.AddInt64(&trafficUpBytes, int64(nr))
 			lastActivity.Store(time.Now().UnixNano())
 			prevPlain := len(framer.plain)
 			chunk := buf[:nr]

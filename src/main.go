@@ -1407,12 +1407,12 @@ func iptSetup(bin string, uids []int, cidrs []string, chain string, family strin
 	}
 	// Remove both previous global, root-excluding and UID-scoped jumps before
 	// selecting a mode.
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 8; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
 			break
 		}
 	}
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 8; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
 			break
 		}
@@ -1455,12 +1455,12 @@ func iptCleanup(bin string, uids []int, chain string) {
 	}
 	// Remove the previous v1.2 global jump as well as this version's UID-scoped
 	// and desktop (root-excluding) jumps.
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 8; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
 			break
 		}
 	}
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 8; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
 			break
 		}
@@ -2839,6 +2839,16 @@ var (
 	}()
 
 	prefix149_160 = telegramParsedSubnets[0].prefix
+
+	telegramV6Subnets = []telegramSubnet{
+		{prefix: netip.MustParsePrefix("2001:b88:0::/48"), dc: 1},
+		{prefix: netip.MustParsePrefix("2001:67c:4e8:f002::/64"), dc: 2},
+		{prefix: netip.MustParsePrefix("2001:b88:2::/48"), dc: 3},
+		{prefix: netip.MustParsePrefix("2001:67c:4e8:f004::/64"), dc: 4},
+		{prefix: netip.MustParsePrefix("2001:b88:3::/48"), dc: 5},
+		{prefix: netip.MustParsePrefix("2001:67c:4e8::/48"), dc: 2},
+		{prefix: netip.MustParsePrefix("2001:b88::/32"), dc: 2},
+	}
 )
 
 type telegramSubnet struct {
@@ -2851,6 +2861,14 @@ func dcFor(ip netip.Addr) int {
 	// ::ffff:149.154.167.51. Normalize these before IPv4 DC matching.
 	ip = ip.Unmap()
 	if !ip.Is4() {
+		if dc, _, ok := lookupLearnedDC(ip.String()); ok {
+			return dc
+		}
+		for _, sub := range telegramV6Subnets {
+			if sub.dc != 0 && sub.prefix.Contains(ip) {
+				return sub.dc
+			}
+		}
 		return 0
 	}
 	if d := knownDCMap[ip.String()]; d != 0 {
@@ -3559,6 +3577,13 @@ func androidDNSResolver() *net.Resolver {
 	}}
 }
 
+func systemDNSResolver() *net.Resolver {
+	if isAndroidRuntime() {
+		return androidDNSResolver()
+	}
+	return net.DefaultResolver
+}
+
 func wsHostsForDC(dc int, isMedia bool) []string {
 	if dc < 1 || dc > 5 {
 		return nil
@@ -4188,7 +4213,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 			return "main"
 		}())
 	}
-	resolver := androidDNSResolver()
+	resolver := systemDNSResolver()
 
 	cfPriority := cfPriorityCached()
 	cfBalance := cfBalanceCached()
@@ -4767,7 +4792,7 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		path += "&" + query
 	}
 
-	resolver := androidDNSResolver()
+	resolver := systemDNSResolver()
 	ips, err := resolver.LookupNetIP(ctx, "ip4", host)
 	if err != nil {
 		return nil, fmt.Errorf("worker DNS %s: %w", host, err)
