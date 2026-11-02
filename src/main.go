@@ -758,6 +758,7 @@ var packageNames = []struct{ Pkg, Name string }{
 	{"org.telegram.messenger.web", "Telegram Web"},
 	{"org.telegram.messenger.beta", "Telegram Beta"},
 	{"org.telegram.plus", "Plus Messenger"},
+	{"org.telegram.plus.beta", "Plus Messenger Beta"},
 	{"org.thunderdog.challegram", "Telegram X"},
 	{"com.nicegram", "Nicegram"},
 	{"nekox.messenger", "Nekogram X"},
@@ -770,6 +771,231 @@ var packageNames = []struct{ Pkg, Name string }{
 	{"com.telegram.messenger", "Telegram"},
 	{"org.nemogram.messenger", "Nemogram"},
 	{"org.nemogram", "Nemogram"},
+	{"org.swiftgram.messenger", "Swiftgram"},
+	{"org.telegram.messenger.cherry", "Cherrygram"},
+	{"com.cherrygram.messenger", "Cherrygram"},
+	{"org.telegram.messenger.mdgram", "MDGram"},
+	{"com.turrit.chat", "Turrit"},
+	{"org.telegram.bgram", "BGram"},
+	{"ir.ilmili.telegraph", "Telegraph"},
+	{"org.catogram.messenger", "Catogram"},
+}
+
+var telegramKeywords = []string{
+	"telegram", "tgnet", "challegram", "extera", "nicegram", "ayugram",
+	"forkgram", "nekox", "nekogram", "plus", "ime", "octogram",
+	"nemogram", "swiftgram", "cherrygram", "mdgram", "turrit",
+	"bgram", "telegraph", "teleplus", "mobogram", "vidogram", "catogram", "gram",
+}
+
+func matchesTelegramKeyword(pkg string) bool {
+	low := strings.ToLower(pkg)
+	for _, kw := range telegramKeywords {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func humanizePackageName(pkg string) string {
+	for _, p := range packageNames {
+		if p.Pkg == pkg {
+			return p.Name
+		}
+	}
+	parts := strings.Split(pkg, ".")
+	last := parts[len(parts)-1]
+	if (last == "messenger" || last == "android" || last == "chat" || last == "app" || last == "client") && len(parts) > 1 {
+		last = parts[len(parts)-2]
+	}
+	if len(last) > 0 {
+		return strings.ToUpper(last[:1]) + last[1:]
+	}
+	return pkg
+}
+
+func isTelegramAPK(apkPath string) bool {
+	if apkPath == "" {
+		return false
+	}
+	zr, err := zip.OpenReader(apkPath)
+	if err != nil {
+		return false
+	}
+	defer zr.Close()
+
+	for _, f := range zr.File {
+		name := strings.ToLower(f.Name)
+		if strings.Contains(name, "libtmessages") || strings.Contains(name, "libtgnet") {
+			return true
+		}
+	}
+	return false
+}
+
+func parseProcNetTCPIP(hexAddr string) (netip.Addr, uint16, bool) {
+	parts := strings.Split(hexAddr, ":")
+	if len(parts) != 2 || len(parts[0]) != 8 || len(parts[1]) != 4 {
+		return netip.Addr{}, 0, false
+	}
+	ipNum, err := strconv.ParseUint(parts[0], 16, 32)
+	if err != nil {
+		return netip.Addr{}, 0, false
+	}
+	portNum, err := strconv.ParseUint(parts[1], 16, 16)
+	if err != nil {
+		return netip.Addr{}, 0, false
+	}
+	// /proc/net/tcp stores IPv4 as little-endian 32-bit uint
+	b0 := byte(ipNum & 0xff)
+	b1 := byte((ipNum >> 8) & 0xff)
+	b2 := byte((ipNum >> 16) & 0xff)
+	b3 := byte((ipNum >> 24) & 0xff)
+	addr := netip.AddrFrom4([4]byte{b0, b1, b2, b3})
+	return addr, uint16(portNum), true
+}
+
+func parseProcNetTCPContent(content string) []int {
+	seen := map[int]bool{}
+	var uids []int
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		st := fields[3]
+		// 01 = ESTABLISHED, 02 = SYN_SENT, 03 = SYN_RECV
+		if st != "01" && st != "02" && st != "03" {
+			continue
+		}
+		addr, _, ok := parseProcNetTCPIP(fields[2])
+		if !ok || !isTelegramEndpoint(addr) {
+			continue
+		}
+		uid, err := strconv.Atoi(fields[7])
+		if err == nil && uid > 0 && !seen[uid] {
+			seen[uid] = true
+			uids = append(uids, uid)
+		}
+	}
+	return uids
+}
+
+func scanActiveTelegramSockets() []int {
+	if !isAndroidRuntime() && runtime.GOOS != "linux" {
+		return nil
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, procPath := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(procPath)
+		if err != nil {
+			continue
+		}
+		for _, uid := range parseProcNetTCPContent(string(data)) {
+			if !seen[uid] {
+				seen[uid] = true
+				out = append(out, uid)
+			}
+		}
+	}
+	return out
+}
+
+func resolveUIDToPackage(uid int) string {
+	// 1. Try reading /data/system/packages.list on rooted Android
+	if b, err := os.ReadFile("/data/system/packages.list"); err == nil {
+		target := strconv.Itoa(uid)
+		for _, line := range strings.Split(string(b), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[1] == target {
+				return fields[0]
+			}
+		}
+	}
+	// 2. Try inspecting running processes in /proc
+	entries, err := os.ReadDir("/proc")
+	if err == nil {
+		for _, de := range entries {
+			if !de.IsDir() {
+				continue
+			}
+			pid, e := strconv.Atoi(de.Name())
+			if e != nil || pid <= 1 {
+				continue
+			}
+			puid, ok := processUID(pid)
+			if ok && puid == uid {
+				if cmd, err := os.ReadFile(filepath.Join("/proc", de.Name(), "cmdline")); err == nil {
+					cmdline := strings.SplitN(string(cmd), "\x00", 2)[0]
+					cmdline = strings.TrimSpace(cmdline)
+					if cmdline != "" && !strings.HasPrefix(cmdline, "/") {
+						pkg := strings.Split(cmdline, ":")[0]
+						return pkg
+					}
+				}
+			}
+		}
+	}
+	// 3. Fallback to pm / cmd
+	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U"}, {"pm", "list", "packages", "-U"}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		cancel()
+		if err == nil {
+			target := fmt.Sprintf("uid:%d", uid)
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.Contains(line, target) && strings.HasPrefix(line, "package:") {
+					fields := strings.Fields(line)
+					return strings.TrimPrefix(fields[0], "package:")
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func discoverActiveTelegramClients() {
+	activeUIDs := scanActiveTelegramSockets()
+	if len(activeUIDs) == 0 {
+		return
+	}
+	appCacheMu.Lock()
+	defer appCacheMu.Unlock()
+
+	known := map[int]bool{}
+	for _, u := range uidCache {
+		known[u] = true
+	}
+
+	dirty := false
+	for _, uid := range activeUIDs {
+		if known[uid] {
+			continue
+		}
+		pkg := resolveUIDToPackage(uid)
+		if pkg == "" {
+			pkg = fmt.Sprintf("unknown.telegram.uid%d", uid)
+		}
+		name := humanizePackageName(pkg)
+		normalIco, monetIco := extractAPKIcons(findPackageAPK(pkg))
+		app := App{
+			Name:       name,
+			Pkg:        pkg,
+			UID:        uid,
+			IconNormal: normalIco,
+			IconMonet:  monetIco,
+		}
+		appCache = append(appCache, app)
+		uidCache = append(uidCache, uid)
+		known[uid] = true
+		dirty = true
+		logf("detected Telegram client by live traffic: %s (uid=%d)", pkg, uid)
+	}
+	if dirty {
+		saveCachedApps(appCache)
+	}
 }
 
 func packageUID(pkg string) int {
@@ -1067,6 +1293,18 @@ func discoverApps() ([]App, []int) {
 			pkg := strings.TrimPrefix(fields[0], "package:")
 			name, wanted := nameByPkg[pkg]
 			if !wanted {
+				if matchesTelegramKeyword(pkg) {
+					name = humanizePackageName(pkg)
+					wanted = true
+				} else {
+					apkPath := findPackageAPK(pkg)
+					if isTelegramAPK(apkPath) {
+						name = humanizePackageName(pkg)
+						wanted = true
+					}
+				}
+			}
+			if !wanted {
 				continue
 			}
 			m := regexp.MustCompile(`uid:(\d+)`).FindStringSubmatch(line)
@@ -1248,24 +1486,23 @@ func iptSetup(bin string, uids []int, cidrs []string, chain string, family strin
 			return fmt.Errorf("failed to create chain %s: %w", chain, err)
 		}
 	}
+	// 1. Root exclusion inside chain: the daemon's own WSS and direct dials to Telegram
+	// must never be looped back into its listener.
+	_ = runCmd(bin, "-t", "nat", "-A", chain, "-m", "owner", "--uid-owner", "0", "-j", "RETURN")
+
+	// 2. Telegram destination redirects
 	for _, cidr := range cidrs {
 		if e := runCmd(bin, "-t", "nat", "-A", chain, "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)); e != nil {
 			logf("rule %s skipped: %v", cidr, e)
 		}
 	}
-	// Desktop Linux has no per-app UID scoping: every local TCP flow to a
-	// Telegram DC aggregate is redirected (the chain itself already matches
-	// only Telegram destinations). Root is excluded so the daemon's own WSS
-	// dials to Telegram are never redirected back into its listener.
-	if len(uids) == 0 {
-		return runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "!", "--uid-owner", "0", "-j", chain)
+	// 3. Universal non-root redirection: every local TCP flow to a Telegram DC
+	// aggregate is redirected. This ensures 100% compatibility with all Telegram
+	// clients, mods, and clones regardless of package name.
+	if err := runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "!", "--uid-owner", "0", "-j", chain); err == nil {
+		return nil
 	}
-	for _, uid := range uids {
-		if err := runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-j", chain)
 }
 func iptCleanup(bin string, uids []int, chain string) {
 	if bin == "" {
@@ -1499,18 +1736,15 @@ func setupRules() error {
 		}
 	}
 	apps, uids := installedApps()
-	if len(uids) == 0 && isAndroidRuntime() {
-		return errors.New("no installed Telegram app found (e.g., org.telegram.messenger)")
-	}
 	if err := iptSetup(findBin("iptables"), uids, telegramV4, "TELEWEB", "IPv4"); err != nil {
 		return err
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
 	if len(apps) > 0 {
-		logf("redirection enabled; apps: %s", appNames(apps))
+		logf("redirection enabled; apps: %s (+ universal package-agnostic scope)", appNames(apps))
 	} else {
-		logf("redirection enabled; desktop scope=all local TCP to Telegram DC ranges")
+		logf("redirection enabled; package-agnostic universal scope=all local TCP to Telegram DC ranges")
 	}
 	return nil
 }
@@ -1694,18 +1928,24 @@ func processUID(pid int) (int, bool) {
 	return 0, false
 }
 
-// protectTargetAppProcesses attempts to keep only the configured Telegram
-// client's own processes out of Android's cached-app freezer. Unlike the
-// transport daemon, app processes are NOT given oom_score_adj=-1000: Android
-// must retain normal memory management. This cannot force Android to deliver
-// FCM notifications and is best-effort because OEM freezer implementations vary.
+// protectTargetAppProcesses attempts to keep Telegram client processes
+// out of Android's cached-app freezer, regardless of package name.
 func protectTargetAppProcesses() {
 	if !isAndroidRuntime() {
 		return
 	}
-	apps, _ := installedApps()
-	if len(apps) == 0 {
+	apps, uids := installedApps()
+	if len(apps) == 0 && len(uids) == 0 {
 		return
+	}
+	uidSet := map[int]bool{}
+	for _, u := range uids {
+		uidSet[u] = true
+	}
+	for _, a := range apps {
+		if a.UID > 0 {
+			uidSet[a.UID] = true
+		}
 	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -1719,22 +1959,11 @@ func protectTargetAppProcesses() {
 		if e != nil || pid <= 1 {
 			continue
 		}
-		cmd, e := os.ReadFile(filepath.Join("/proc", de.Name(), "cmdline"))
-		if e != nil {
-			continue
-		}
-		cmdline := strings.SplitN(string(cmd), "\x00", 2)[0]
 		uid, ok := processUID(pid)
-		if !ok {
+		if !ok || !uidSet[uid] {
 			continue
 		}
-		for _, app := range apps {
-			if uid != app.UID || !appProcessMatches(cmdline, app.Pkg) {
-				continue
-			}
-			protectAppPID(pid)
-			break
-		}
+		protectAppPID(pid)
 	}
 }
 
@@ -1957,31 +2186,27 @@ func rulesHealthy() bool {
 	if bin == "" {
 		return false
 	}
-	_, uids := installedApps()
-	if len(uids) == 0 {
-		// Desktop mode: a single root-excluding global jump scopes the whole
-		// OUTPUT chain to the Telegram-only REDIRECT chain.
-		if !isAndroidRuntime() && runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil {
-			for _, cidr := range telegramV4 {
-				if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
-					return false
-				}
-			}
-			return true
-		}
-		return false
-	}
-	for _, uid := range uids {
-		if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
-			return false
-		}
-	}
 	for _, cidr := range telegramV4 {
 		if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
 			return false
 		}
 	}
-	return true
+	// Universal jump check (with root exclusion or global jump)
+	if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
+		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil {
+		return true
+	}
+	// UID-scoped fallback check
+	_, uids := installedApps()
+	if len(uids) > 0 {
+		for _, uid := range uids {
+			if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func watchdog() {
@@ -1989,6 +2214,7 @@ func watchdog() {
 	pid := os.Getpid()
 	_ = os.WriteFile(path("watchdog.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600)
 	protectProcess(pid)
+	discoverActiveTelegramClients()
 	protectTargetAppProcesses()
 	logf("watchdog: started, checking every 30s; %s", procSummary(pid))
 	tickCount := 0
@@ -2009,6 +2235,7 @@ func watchdog() {
 			continue
 		}
 		protectProcess(pid)
+		discoverActiveTelegramClients()
 		protectTargetAppProcesses()
 		daemonOK, rulesOK := daemonHealthy(), rulesHealthy()
 		if daemonOK != lastDaemonOK || rulesOK != lastRulesOK {

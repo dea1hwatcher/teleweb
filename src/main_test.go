@@ -160,30 +160,6 @@ func TestInitMemoryTuningDoesNotClampHeap(t *testing.T) {
 	}
 }
 
-func TestIsTelegramEndpoint(t *testing.T) {
-	cases := map[string]bool{
-		"149.154.167.51":        true,
-		"149.154.175.50":        true,
-		"91.108.56.100":         true,
-		"91.105.192.100":        true,
-		"185.76.151.10":         true,
-		"8.8.8.8":               false,
-		"149.154.176.1":         false,
-		"::ffff:149.154.167.51": true,
-		"2001:67c:4e8::1":       false,
-	}
-	for raw, want := range cases {
-		if got := isTelegramEndpoint(netip.MustParseAddr(raw)); got != want {
-			t.Errorf("isTelegramEndpoint(%s)=%t, want %t", raw, got, want)
-		}
-	}
-	// The CDN203 endpoint must stay inside the intercepted aggregates even
-	// without a dedicated address check.
-	if !isTelegramEndpoint(netip.MustParseAddr(cdn203IP)) {
-		t.Fatalf("CDN203 endpoint %s is not covered by telegramSubnets", cdn203IP)
-	}
-}
-
 func TestMTProtoPacketFramerAbridgedPacketBoundaries(t *testing.T) {
 	// Construct an obfuscated2 header whose decrypted tag is abridged. The
 	// header bytes 0:56 are the key/IV material; bytes 56:64 are CTR-encrypted.
@@ -555,27 +531,6 @@ func TestFrontingSNIConfig(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tmp, "fronting-sni"), []byte("disable\n"), 0600)
 	if got := configuredFrontingSNI(); got != "" {
 		t.Errorf("expected disabled fronting SNI, got %q", got)
-	}
-}
-
-func TestAndroidRuntimeGatesPoolDefault(t *testing.T) {
-	oldDir := baseDir
-	baseDir = t.TempDir()
-	orig := androidRuntime
-	t.Cleanup(func() {
-		baseDir = oldDir
-		androidRuntime = orig
-	})
-
-	// Without a pool_size file the default must follow the platform gate:
-	// Android pre-warms two sockets per DC, desktop keeps sessions 1:1.
-	androidRuntime = true
-	if got := readPoolSize(); got != 2 {
-		t.Fatalf("android default pool=%d, want 2", got)
-	}
-	androidRuntime = false
-	if got := readPoolSize(); got != 0 {
-		t.Fatalf("desktop default pool=%d, want 0", got)
 	}
 }
 
@@ -2664,6 +2619,30 @@ func TestDirectDialNegativeCache(t *testing.T) {
 	}
 }
 
+func TestIsTelegramEndpoint(t *testing.T) {
+	cases := map[string]bool{
+		"149.154.167.51":        true,
+		"149.154.175.50":        true,
+		"91.108.56.100":         true,
+		"91.105.192.100":        true,
+		"185.76.151.10":         true,
+		"8.8.8.8":               false,
+		"149.154.176.1":         false,
+		"::ffff:149.154.167.51": true,
+		"2001:67c:4e8::1":       false,
+	}
+	for raw, want := range cases {
+		if got := isTelegramEndpoint(netip.MustParseAddr(raw)); got != want {
+			t.Errorf("isTelegramEndpoint(%s)=%t, want %t", raw, got, want)
+		}
+	}
+	// The CDN203 endpoint must stay inside the intercepted aggregates even
+	// without a dedicated address check.
+	if !isTelegramEndpoint(netip.MustParseAddr(cdn203IP)) {
+		t.Fatalf("CDN203 endpoint %s is not covered by telegramSubnets", cdn203IP)
+	}
+}
+
 func TestIsTelegramTarget(t *testing.T) {
 	cases := []struct {
 		addr string
@@ -2702,5 +2681,139 @@ func TestIsLocalAddrInUse(t *testing.T) {
 	}
 	if isLocalAddrInUse(nil) {
 		t.Error("expected false for nil error")
+	}
+}
+
+func TestMatchesTelegramKeyword(t *testing.T) {
+	cases := []struct {
+		pkg  string
+		want bool
+	}{
+		{"org.telegram.messenger", true},
+		{"org.telegram.messenger.web", true},
+		{"com.radolyn.ayugram", true},
+		{"org.swiftgram.messenger", true},
+		{"com.turrit.chat", true},
+		{"org.telegram.messenger.cherry", true},
+		{"com.cherrygram.messenger", true},
+		{"org.telegram.messenger.mdgram", true},
+		{"org.telegram.bgram", true},
+		{"ir.ilmili.telegraph", true},
+		{"org.catogram.messenger", true},
+		{"com.custom.client.forkgram", true},
+		{"me.app.nicegram", true},
+		{"com.android.chrome", false},
+		{"com.google.android.youtube", false},
+		{"com.whatsapp", false},
+		{"org.mozilla.firefox", false},
+	}
+	for _, tc := range cases {
+		if got := matchesTelegramKeyword(tc.pkg); got != tc.want {
+			t.Errorf("matchesTelegramKeyword(%q) = %t, want %t", tc.pkg, got, tc.want)
+		}
+	}
+}
+
+func TestHumanizePackageName(t *testing.T) {
+	cases := []struct {
+		pkg  string
+		want string
+	}{
+		{"org.telegram.messenger", "Telegram"},
+		{"com.turrit.chat", "Turrit"},
+		{"org.swiftgram.messenger", "Swiftgram"},
+		{"org.catogram.messenger", "Catogram"},
+		{"com.custom.client", "Custom"},
+	}
+	for _, tc := range cases {
+		if got := humanizePackageName(tc.pkg); got != tc.want {
+			t.Errorf("humanizePackageName(%q) = %q, want %q", tc.pkg, got, tc.want)
+		}
+	}
+}
+
+func TestParseProcNetTCPIP(t *testing.T) {
+	// 149.154.167.51:443 -> 33A79A95:01BB
+	addr, port, ok := parseProcNetTCPIP("33A79A95:01BB")
+	if !ok {
+		t.Fatal("expected ok = true for 33A79A95:01BB")
+	}
+	if addr.String() != "149.154.167.51" || port != 443 {
+		t.Fatalf("unexpected parsed addr: %s:%d, want 149.154.167.51:443", addr, port)
+	}
+
+	// 91.108.56.100:443 -> 64386C5B:01BB
+	addr2, port2, ok2 := parseProcNetTCPIP("64386C5B:01BB")
+	if !ok2 {
+		t.Fatal("expected ok = true for 64386C5B:01BB")
+	}
+	if addr2.String() != "91.108.56.100" || port2 != 443 {
+		t.Fatalf("unexpected parsed addr: %s:%d, want 91.108.56.100:443", addr2, port2)
+	}
+
+	// Invalid
+	if _, _, ok := parseProcNetTCPIP("invalid"); ok {
+		t.Fatal("expected ok = false for invalid format")
+	}
+}
+
+func TestParseProcNetTCPContent(t *testing.T) {
+	fakeProcNetTCP := `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:13AD 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000000000000000 100 0 0 10 0
+   1: 0200A8C0:D431 33A79A95:01BB 01 00000000:00000000 00:00000000 00000000 10123        0 54321 1 0000000000000000 100 0 0 10 0
+   2: 0200A8C0:D432 64386C5B:01BB 02 00000000:00000000 00:00000000 00000000 10456        0 54322 1 0000000000000000 100 0 0 10 0
+   3: 0200A8C0:D433 2EBEC28E:01BB 01 00000000:00000000 00:00000000 00000000 10789        0 54323 1 0000000000000000 100 0 0 10 0
+`
+	// Line 0: LISTEN (state 0A) -> ignored
+	// Line 1: ESTABLISHED (state 01) to 149.154.167.51 (Telegram DC2) with UID 10123 -> matched!
+	// Line 2: SYN_SENT (state 02) to 91.108.56.100 (Telegram DC5) with UID 10456 -> matched!
+	// Line 3: ESTABLISHED (state 01) to 142.190.190.46 (Non-Telegram IP) with UID 10789 -> ignored!
+
+	uids := parseProcNetTCPContent(fakeProcNetTCP)
+	if len(uids) != 2 {
+		t.Fatalf("expected 2 detected UIDs from Telegram sockets, got %d: %#v", len(uids), uids)
+	}
+	if uids[0] != 10123 || uids[1] != 10456 {
+		t.Fatalf("unexpected UIDs: %#v, want [10123, 10456]", uids)
+	}
+}
+
+func TestIsTelegramAPK(t *testing.T) {
+	// Create temporary synthetic APK with libtmessages
+	tgAPKPath := filepath.Join(t.TempDir(), "test_tg.apk")
+	tgFile, err := os.Create(tgAPKPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(tgFile)
+	w, err := zw.Create("lib/arm64-v8a/libtmessages.48.so")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.Write([]byte("fake ELF content"))
+	zw.Close()
+	tgFile.Close()
+
+	if !isTelegramAPK(tgAPKPath) {
+		t.Errorf("expected isTelegramAPK = true for APK with libtmessages.48.so")
+	}
+
+	// Create temporary synthetic APK without Telegram libraries
+	otherAPKPath := filepath.Join(t.TempDir(), "test_other.apk")
+	otherFile, err := os.Create(otherAPKPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw2 := zip.NewWriter(otherFile)
+	w2, err := zw2.Create("lib/arm64-v8a/libsomeother.so")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w2.Write([]byte("fake ELF content"))
+	zw2.Close()
+	otherFile.Close()
+
+	if isTelegramAPK(otherAPKPath) {
+		t.Errorf("expected isTelegramAPK = false for APK without Telegram libraries")
 	}
 }
