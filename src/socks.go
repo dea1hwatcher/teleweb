@@ -124,7 +124,7 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 		return
 	}
 	port := binary.BigEndian.Uint16(pb[:])
-	if !isDomainAllowed && !isTelegramEndpoint(ip) {
+	if !isDomainAllowed && !isTelegramEndpoint(ip) && !isTelegramEndpointV6(ip) {
 		// Allow speculative SOCKS5 handshakes for Telegram-standard ports (443, 80, 8443, 5222);
 		// serveConn will inspect the initial 64-byte payload and drop non-MTProto traffic.
 		if port == 443 || port == 80 || port == 8443 || port == 5222 {
@@ -174,24 +174,29 @@ func isTelegramDomain(domain string) bool {
 // that the transparent mode intercepts as well.
 func isTelegramEndpoint(ip netip.Addr) bool {
 	ip = ip.Unmap()
+	if !ip.Is4() {
+		return false
+	}
 	if isCDN203IP(ip) {
 		return true
 	}
-	if ip.Is4() {
-		for _, sub := range telegramParsedSubnets {
-			if sub.prefix.Contains(ip) {
-				return true
-			}
+	for _, sub := range telegramParsedSubnets {
+		if sub.prefix.Contains(ip) {
+			return true
 		}
+	}
+	return false
+}
+
+func isTelegramEndpointV6(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.Is6() {
 		return false
 	}
-	if ip.Is6() {
-		for _, prefix := range telegramParsedSubnetsV6 {
-			if prefix.Contains(ip) {
-				return true
-			}
+	for _, prefix := range telegramParsedSubnetsV6 {
+		if prefix.Contains(ip) {
+			return true
 		}
-		return false
 	}
 	return false
 }

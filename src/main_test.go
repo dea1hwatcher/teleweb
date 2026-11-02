@@ -2746,8 +2746,8 @@ func TestIsTelegramEndpoint_IPv6(t *testing.T) {
 		"2001:67c:4e8::2",
 	} {
 		addr := netip.MustParseAddr(ip)
-		if !isTelegramEndpoint(addr) {
-			t.Errorf("expected isTelegramEndpoint(%s) = true", ip)
+		if !isTelegramEndpointV6(addr) {
+			t.Errorf("expected isTelegramEndpointV6(%s) = true", ip)
 		}
 	}
 
@@ -2757,8 +2757,8 @@ func TestIsTelegramEndpoint_IPv6(t *testing.T) {
 		"::1",
 	} {
 		addr := netip.MustParseAddr(ip)
-		if isTelegramEndpoint(addr) {
-			t.Errorf("expected isTelegramEndpoint(%s) = false", ip)
+		if isTelegramEndpointV6(addr) {
+			t.Errorf("expected isTelegramEndpointV6(%s) = false", ip)
 		}
 	}
 }
