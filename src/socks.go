@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -79,6 +80,7 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 		return
 	}
 	var ip netip.Addr
+	var isDomainAllowed bool
 	switch req[3] {
 	case 1:
 		var b [4]byte
@@ -95,14 +97,24 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 		if _, err := io.ReadFull(c, name); err != nil {
 			return
 		}
+		domainStr := string(name)
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		ips, err := androidDNSResolver().LookupNetIP(ctx, "ip4", string(name))
+		ips, err := androidDNSResolver().LookupNetIP(ctx, "ip4", domainStr)
 		cancel()
 		if err != nil || len(ips) == 0 {
 			_, _ = c.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0}) // host unreachable
 			return
 		}
 		ip = ips[0]
+		if isTelegramDomain(domainStr) {
+			isDomainAllowed = true
+		}
+	case 4:
+		var b [16]byte
+		if _, err := io.ReadFull(c, b[:]); err != nil {
+			return
+		}
+		ip = netip.AddrFrom16(b)
 	default:
 		_, _ = c.Write([]byte{5, 8, 0, 1, 0, 0, 0, 0, 0, 0}) // address type not supported
 		return
@@ -112,10 +124,16 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 		return
 	}
 	port := binary.BigEndian.Uint16(pb[:])
-	if !ip.Is4() || !isTelegramEndpoint(ip) {
-		logger.Printf("socks: rejected non-Telegram destination %s:%d", ip, port)
-		_, _ = c.Write([]byte{5, 2, 0, 1, 0, 0, 0, 0, 0, 0}) // connection not allowed
-		return
+	if !isDomainAllowed && !isTelegramEndpoint(ip) {
+		// Allow speculative SOCKS5 handshakes for Telegram-standard ports (443, 80, 8443, 5222);
+		// serveConn will inspect the initial 64-byte payload and drop non-MTProto traffic.
+		if port == 443 || port == 80 || port == 8443 || port == 5222 {
+			isDomainAllowed = true
+		} else {
+			logger.Printf("socks: rejected non-Telegram destination %s:%d", ip, port)
+			_, _ = c.Write([]byte{5, 2, 0, 1, 0, 0, 0, 0, 0, 0}) // connection not allowed
+			return
+		}
 	}
 	if _, err := c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
 		return
@@ -125,22 +143,57 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 	serveConn(c, netip.AddrPortFrom(ip, port))
 }
 
+var telegramParsedSubnetsV6 = func() []netip.Prefix {
+	cidrs := []string{
+		"2001:b88::/32",
+		"2001:67c:4e8::/48",
+	}
+	out := make([]netip.Prefix, len(cidrs))
+	for i, c := range cidrs {
+		out[i] = netip.MustParsePrefix(c)
+	}
+	return out
+}()
+
+func isTelegramDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	d = strings.TrimSuffix(d, ".")
+	return strings.HasSuffix(d, ".telegram.org") ||
+		d == "telegram.org" ||
+		strings.HasSuffix(d, ".t.me") ||
+		d == "t.me" ||
+		strings.HasSuffix(d, ".telegra.ph") ||
+		d == "telegra.ph" ||
+		strings.HasSuffix(d, ".telesco.pe") ||
+		d == "telesco.pe" ||
+		strings.HasSuffix(d, ".telegram-cdn.org") ||
+		d == "telegram-cdn.org"
+}
+
 // isTelegramEndpoint reports whether ip falls into a Telegram DC aggregate
 // that the transparent mode intercepts as well. Every aggregate, including the
 // CDN203 /23, comes from telegramSubnets, so this stays in sync with both the
 // iptables REDIRECT list and the WinDivert filter by construction.
 func isTelegramEndpoint(ip netip.Addr) bool {
 	ip = ip.Unmap()
-	if !ip.Is4() {
-		return false
-	}
 	if isCDN203IP(ip) {
 		return true
 	}
-	for _, sub := range telegramParsedSubnets {
-		if sub.prefix.Contains(ip) {
-			return true
+	if ip.Is4() {
+		for _, sub := range telegramParsedSubnets {
+			if sub.prefix.Contains(ip) {
+				return true
+			}
 		}
+		return false
+	}
+	if ip.Is6() {
+		for _, prefix := range telegramParsedSubnetsV6 {
+			if prefix.Contains(ip) {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
