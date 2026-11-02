@@ -142,3 +142,5 @@ func setReuseAddr(raw syscall.RawConn) error {
 	}
 	return err
 }
+
+func setDialSockOpts(c syscall.RawConn) error { return setReuseAddr(c) }
