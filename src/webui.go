@@ -64,7 +64,7 @@ func newWebUIHandler(static http.Handler) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		out, err := apiDispatchJson(payload)
+		out, err := executeAPIPayload(string(payload))
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil && len(out) == 0 {
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error())))

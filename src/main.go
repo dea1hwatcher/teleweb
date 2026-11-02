@@ -782,10 +782,8 @@ var packageNames = []struct{ Pkg, Name string }{
 }
 
 var telegramKeywords = []string{
-	"telegram", "tgnet", "challegram", "extera", "nicegram", "ayugram",
-	"forkgram", "nekox", "nekogram", "plus", "ime", "octogram",
-	"nemogram", "swiftgram", "cherrygram", "mdgram", "turrit",
-	"bgram", "telegraph", "teleplus", "mobogram", "vidogram", "catogram", "gram",
+	"gram", "tgnet", "extera", "nekox", "plus", "ime",
+	"turrit", "telegraph", "teleplus", "mobogram",
 }
 
 func matchesTelegramKeyword(pkg string) bool {
@@ -2471,7 +2469,7 @@ func writeStatus() {
 		_ = os.Remove(tmp)
 	}
 }
-func apiDispatch(q apiRequest) (any, error) {
+func executeAPICommand(q apiRequest) (any, error) {
 	switch q.Cmd {
 	case "status":
 		return status(), nil
@@ -2596,35 +2594,35 @@ func apiDispatch(q apiRequest) (any, error) {
 	}
 }
 
-func apiDispatchJson(payload []byte) ([]byte, error) {
-	var q apiRequest
-	if err := json.Unmarshal(payload, &q); err != nil {
-		return nil, err
+var apiDispatch = executeAPICommand
+
+func executeAPIPayload(arg string) ([]byte, error) {
+	b, err := base64.StdEncoding.DecodeString(arg)
+	if err != nil {
+		b = []byte(arg)
 	}
-	res, err := apiDispatch(q)
+	var q apiRequest
+	if err := json.Unmarshal(b, &q); err != nil {
+		return json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+	}
+	res, err := executeAPICommand(q)
 	if err != nil {
 		return json.Marshal(map[string]any{"ok": false, "error": err.Error()})
 	}
 	return json.Marshal(map[string]any{"ok": true, "data": res})
 }
 
+func apiDispatchJson(payload []byte) ([]byte, error) {
+	return executeAPIPayload(string(payload))
+}
+
 func apiMain(arg string) {
-	b, e := base64.StdEncoding.DecodeString(arg)
-	if e != nil {
-		emitErr(e)
-		return
-	}
-	var q apiRequest
-	if e = json.Unmarshal(b, &q); e != nil {
-		emitErr(e)
-		return
-	}
-	res, err := apiDispatch(q)
+	out, err := executeAPIPayload(arg)
 	if err != nil {
 		emitErr(err)
 		return
 	}
-	emitOK(res)
+	fmt.Println(string(out))
 }
 func emitOK(v any) {
 	b, _ := json.Marshal(map[string]any{"ok": true, "data": v})
@@ -3217,8 +3215,6 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
 	statsMu.Unlock()
-	atomic.AddInt64(&wsCount, 1)
-	defer atomic.AddInt64(&wsCount, -1)
 
 	worker := customCFWorkerCached()
 	if worker != "" {
@@ -3226,6 +3222,8 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		ws, err := dialCFWorker(ctx, 203, cdn203IP, worker, false)
 		cancel()
 		if err == nil {
+			atomic.AddInt64(&wsCount, 1)
+			defer atomic.AddInt64(&wsCount, -1)
 			logf("conn #%d %s -> CDN203 via Cloudflare Worker %s", id, orig, worker)
 			defer ws.Close()
 			pipeWSTunnel(c, ws, init, id, 203, false)

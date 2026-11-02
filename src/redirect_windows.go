@@ -244,6 +244,12 @@ func natLookup(port uint16) (netip.AddrPort, bool) {
 	return e.orig, true
 }
 
+func natLookupFlow(flow natFlowKey) *natEntry {
+	natTable.mu.RLock()
+	defer natTable.mu.RUnlock()
+	return natTable.flows[flow]
+}
+
 func (r *wdRedirector) janitor() {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
@@ -404,7 +410,9 @@ func stopRedirector() {
 		return
 	}
 	activeRedirector.running.Store(false)
-	close(activeRedirector.stopCh)
+	if activeRedirector.stopCh != nil {
+		close(activeRedirector.stopCh)
+	}
 	_, _, _ = wdClose.Call(activeRedirector.hOut)
 	_, _, _ = wdClose.Call(activeRedirector.hRet)
 	activeRedirector = nil
@@ -429,17 +437,20 @@ func (r *wdRedirector) outLoop() {
 		}
 		isSYN := (m.flags & 0x12) == 0x02 // SYN set, ACK clear
 		flow := natFlowKey{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
-		e := natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
+		e := natLookupFlow(flow)
 		if e == nil {
-			_ = wdSendPacket(r.hOut, p, &addr)
-			continue
+			e = natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
+			if e == nil {
+				_ = wdSendPacket(r.hOut, p, &addr)
+				continue
+			}
 		}
 		e.lastSeen.Store(time.Now().UnixNano())
 		if (m.flags & 0x05) != 0 { // FIN (0x01) or RST (0x04)
 			e.closing.Store(true)
 		}
-		copy(p[12:16], []byte{127, 0, 0, 1})
-		copy(p[16:20], []byte{127, 0, 0, 1})
+		p[12], p[13], p[14], p[15] = 127, 0, 0, 1
+		p[16], p[17], p[18], p[19] = 127, 0, 0, 1
 		binary.BigEndian.PutUint16(p[m.ihl:], e.natPort)
 		binary.BigEndian.PutUint16(p[m.ihl+2:], defaultPort)
 		wdCalcChecksums(p, &addr)

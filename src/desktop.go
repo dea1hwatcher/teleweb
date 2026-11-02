@@ -35,10 +35,10 @@ func selfDialRegister(port uint16) {
 	selfDialMu.Unlock()
 }
 
+// selfDialExpire extends the retention of port for a grace period after close,
+// ensuring delayed SYN retransmits from the kernel are not mistaken for client traffic.
 func selfDialExpire(port uint16) {
-	selfDialMu.Lock()
-	selfDialPorts[port] = time.Now().Add(selfDialGrace)
-	selfDialMu.Unlock()
+	selfDialRegister(port)
 }
 
 func isSelfDialPort(port uint16) bool {
@@ -70,6 +70,18 @@ type selfPortConn struct {
 func (s *selfPortConn) Close() error {
 	selfDialExpire(s.port)
 	return s.Conn.Close()
+}
+
+func trackSelfDial(c net.Conn) net.Conn {
+	if c == nil {
+		return c
+	}
+	if ta, ok := c.LocalAddr().(*net.TCPAddr); ok && ta.Port > 0 {
+		port := uint16(ta.Port)
+		selfDialRegister(port)
+		return &selfPortConn{Conn: c, port: port}
+	}
+	return c
 }
 
 // isTelegramTarget reports whether addr names a Telegram endpoint that the
@@ -142,7 +154,17 @@ func trackedDial(ctx context.Context, network, addr string, timeout time.Duratio
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("trackedDial: local port conflict across attempts for %s", addr)
+	fallbackDialer := net.Dialer{
+		KeepAlive: 30 * time.Second,
+		Control: func(network, address string, c syscall.RawConn) error {
+			return setDialSockOpts(c)
+		},
+	}
+	c, err := fallbackDialer.DialContext(overall, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	return trackSelfDial(c), nil
 }
 
 // runDesktop is the long-lived foreground supervisor used by systemd on Linux
