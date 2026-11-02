@@ -134,6 +134,23 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 			t.Errorf("dcFor(%s)=%d, want %d", raw, got, want)
 		}
 	}
+
+	v6Cases := map[string]int{
+		"2001:b88:0::1":        1,
+		"2001:b88::1":          1,
+		"2001:67c:4e8:f002::1": 2,
+		"2001:b88:2::1":        3,
+		"2001:67c:4e8:f004::1": 4,
+		"2001:b88:3::1":        5,
+		"2001:67c:4e8::1":      2,
+		"2001:b88:1::1":        2,
+		"2600::1":              0, // Non-Telegram IPv6
+	}
+	for raw, want := range v6Cases {
+		if got := dcFor(netip.MustParseAddr(raw)); got != want {
+			t.Errorf("dcFor(%s)=%d, want %d", raw, got, want)
+		}
+	}
 }
 
 func TestMediaIPClassification(t *testing.T) {

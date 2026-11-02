@@ -72,18 +72,6 @@ func (s *selfPortConn) Close() error {
 	return s.Conn.Close()
 }
 
-func trackSelfDial(c net.Conn) net.Conn {
-	if c == nil {
-		return c
-	}
-	if ta, ok := c.LocalAddr().(*net.TCPAddr); ok && ta.Port > 0 {
-		port := uint16(ta.Port)
-		selfDialRegister(port)
-		return &selfPortConn{Conn: c, port: port}
-	}
-	return c
-}
-
 // isTelegramTarget reports whether addr names a Telegram endpoint that the
 // platform redirector will intercept; such dials must reserve their local port
 // first so the redirector never captures the daemon's own connection.
@@ -117,12 +105,16 @@ func isLocalAddrInUse(err error) bool {
 func trackedDial(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
 	overall, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
 	// External destinations (Cloudflare, Workers, DoH) are never intercepted by
 	// WinDivert because its filter only captures telegramSubnets. Dialing them
 	// through standard ephemeral ports skips the Listen/Close/selfDial overhead.
 	if !isTelegramTarget(addr) {
-		d := net.Dialer{KeepAlive: 30 * time.Second}
+		d := net.Dialer{
+			KeepAlive: 30 * time.Second,
+			Control: func(network, address string, c syscall.RawConn) error {
+				return setDialSockOpts(c)
+			},
+		}
 		return d.DialContext(overall, network, addr)
 	}
 
@@ -154,17 +146,7 @@ func trackedDial(ctx context.Context, network, addr string, timeout time.Duratio
 			return nil, err
 		}
 	}
-	fallbackDialer := net.Dialer{
-		KeepAlive: 30 * time.Second,
-		Control: func(network, address string, c syscall.RawConn) error {
-			return setDialSockOpts(c)
-		},
-	}
-	c, err := fallbackDialer.DialContext(overall, network, addr)
-	if err != nil {
-		return nil, err
-	}
-	return trackSelfDial(c), nil
+	return nil, fmt.Errorf("trackedDial: local port conflict across attempts for %s", addr)
 }
 
 // runDesktop is the long-lived foreground supervisor used by systemd on Linux
@@ -221,7 +203,6 @@ func openInBrowser(url string) {
 	switch runtime.GOOS {
 	case "windows":
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-		setCmdNoWindow(cmd)
 	case "darwin":
 		cmd = exec.Command("open", url)
 	default:

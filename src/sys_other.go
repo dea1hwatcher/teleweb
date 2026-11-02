@@ -22,13 +22,7 @@ func defaultBaseDir() string {
 	return "teleweb-data"
 }
 
-var androidRuntime = false
-
-func isAndroidRuntime() bool { return androidRuntime }
-
-func attachParentConsole() {}
-
-func setCmdNoWindow(cmd *exec.Cmd) {}
+func isAndroidRuntime() bool { return false }
 
 func setDaemonProcAttr(cmd *exec.Cmd) {
 	// setsid is not supported on non-linux OS
@@ -76,22 +70,5 @@ func serverListening() bool {
 	return true
 }
 
+func setReuseAddr(raw syscall.RawConn) error { return nil }
 func setDialSockOpts(c syscall.RawConn) error { return nil }
-
-func acquireSingleInstance() (func(), bool) {
-	return func() {}, true
-}
-
-func applyWindowsDarkTheme(title string) {}
-
-func showMainWindow(restore bool) {}
-
-func hideMainWindow() {}
-
-func restartElevated() error { return nil }
-
-func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit func()) func() {
-	return func() {}
-}
-
-func updateSystemTray(active bool, tip string) {}
