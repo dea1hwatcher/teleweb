@@ -2685,3 +2685,80 @@ func TestIsTelegramEndpoint_PreparsedSubnets(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerCooldown_DCScoped(t *testing.T) {
+	host := "test-worker.example.workers.dev"
+	clearWorkerCooldown(host, 1)
+	clearWorkerCooldown(host, 2)
+
+	if isWorkerInCooldown(host, 1) || isWorkerInCooldown(host, 2) {
+		t.Fatal("expected worker not in cooldown initially")
+	}
+
+	// Mark DC2 in cooldown
+	markWorkerCooldownDC(host, 2, 5*time.Minute)
+
+	if !isWorkerInCooldown(host, 2) {
+		t.Fatal("expected DC2 in cooldown")
+	}
+	if isWorkerInCooldown(host, 1) {
+		t.Fatal("expected DC1 NOT in cooldown when only DC2 was quarantined")
+	}
+
+	clearWorkerCooldown(host, 2)
+	if isWorkerInCooldown(host, 2) {
+		t.Fatal("expected DC2 cleared from cooldown")
+	}
+}
+
+func TestIsTelegramDomain(t *testing.T) {
+	for _, domain := range []string{
+		"api.telegram.org",
+		"web.telegram.org",
+		"vesta.web.telegram.org",
+		"t.me",
+		"a.t.me",
+		"telegra.ph",
+		"telesco.pe",
+		"cdn.telegram-cdn.org",
+	} {
+		if !isTelegramDomain(domain) {
+			t.Errorf("expected isTelegramDomain(%s) = true", domain)
+		}
+	}
+
+	for _, domain := range []string{
+		"google.com",
+		"cloudflare.com",
+		"nottelegram.org",
+		"fake-t.me.evil.com",
+	} {
+		if isTelegramDomain(domain) {
+			t.Errorf("expected isTelegramDomain(%s) = false", domain)
+		}
+	}
+}
+
+func TestIsTelegramEndpoint_IPv6(t *testing.T) {
+	for _, ip := range []string{
+		"2001:b88::1",
+		"2001:b88:1000::5",
+		"2001:67c:4e8::2",
+	} {
+		addr := netip.MustParseAddr(ip)
+		if !isTelegramEndpoint(addr) {
+			t.Errorf("expected isTelegramEndpoint(%s) = true", ip)
+		}
+	}
+
+	for _, ip := range []string{
+		"2001:4860:4860::8888",
+		"2606:4700:4700::1111",
+		"::1",
+	} {
+		addr := netip.MustParseAddr(ip)
+		if isTelegramEndpoint(addr) {
+			t.Errorf("expected isTelegramEndpoint(%s) = false", ip)
+		}
+	}
+}
