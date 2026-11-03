@@ -1719,6 +1719,12 @@ func learnDC(ip string, dc int, isMedia bool) {
 	if dc < 1 || (dc > 5 && dc != 203) || ip == "" {
 		return
 	}
+	// Only genuine Telegram endpoints may enter the learned map: IPs parsed
+	// out of forged inits would silently occupy the 256-entry cap and evict
+	// real media endpoints once it fills up.
+	if addr, err := netip.ParseAddr(ip); err != nil || !isTelegramAggregate(addr) {
+		return
+	}
 	if known := knownDCMap[ip]; known != 0 && known != dc {
 		return
 	}
@@ -3111,8 +3117,16 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		isMedia = mediaForIP(orig.Addr())
 		logf("conn #%d %s: DC not recognized in init, fallback by IP -> DC%d (test=%t) media=%t", id, orig, dc, isTestDC, isMedia)
 	}
-	if orig.Addr().String() == cdn203IP || dc == 203 {
+	if cdn203Dispatch(orig, dc) {
 		handleCDN203(c, orig, init, id)
+		return
+	}
+	if dc == 203 {
+		// DC203 in the init marks a CDN203 media session. A DC203 tag aimed
+		// at a destination outside the CDN203 aggregate means the client
+		// forged the tag to obtain a raw TCP tunnel to an arbitrary host.
+		atomic.AddInt64(&failCnt, 1)
+		logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst", id, orig)
 		return
 	}
 	if dc < 1 || dc > 5 {
@@ -3176,6 +3190,18 @@ var cdn203Prefix = netip.MustParsePrefix("91.105.192.0/23")
 func isCDN203IP(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	return ip.Is4() && (cdn203Prefix.Contains(ip) || ip.String() == cdn203IP)
+}
+
+// cdn203Dispatch reports whether a connection must take the CDN203 path: the
+// client dialed the dedicated CDN203 endpoint, or sent a DC203 init tag while
+// aiming at an address inside the CDN203 aggregate. A DC203 tag combined with
+// a destination outside the aggregate is a forgery (open-proxy attempt) and
+// must be refused by the caller.
+func cdn203Dispatch(orig netip.AddrPort, dc int) bool {
+	if orig.Addr().String() == cdn203IP {
+		return true
+	}
+	return dc == 203 && isCDN203IP(orig.Addr())
 }
 
 // cdn203Fails is a negative cache of CDN endpoints whose direct dial recently
@@ -3275,6 +3301,12 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	// :443 and :80).
 	if !dc203DirectTCPCached() {
 		logf("conn #%d CDN203 direct TCP disabled by configuration", id)
+		return
+	}
+	if !isCDN203IP(orig.Addr()) {
+		// Defense in depth: a forged DC203 tag must never turn this function
+		// into a raw TCP tunnel to an arbitrary destination.
+		logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst", id, orig)
 		return
 	}
 	dst := net.JoinHostPort(orig.Addr().String(), strconv.Itoa(int(orig.Port())))

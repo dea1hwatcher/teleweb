@@ -1580,7 +1580,10 @@ func TestDCLearnAndPersistence(t *testing.T) {
 	baseDir = tmp
 	defer func() { baseDir = oldBase }()
 
-	ip := "198.51.100.99"
+	// learnDC only accepts addresses inside Telegram aggregates; use an
+	// unassigned DC4 address (149.154.166.0/24, not in knownDCMap or the
+	// static media list) to exercise the learning path.
+	ip := "149.154.166.200"
 	learnedDCs.Delete(ip)
 	defer learnedDCs.Delete(ip)
 
@@ -2972,4 +2975,127 @@ func TestIsTelegramEndpoint(t *testing.T) {
 	if !isTelegramEndpoint(netip.MustParseAddr(cdn203IP)) {
 		t.Fatalf("CDN203 endpoint %s is not covered by telegramSubnets", cdn203IP)
 	}
+}
+
+func TestCDN203Dispatch(t *testing.T) {
+	cases := []struct {
+		orig string
+		dc   int
+		want bool
+	}{
+		{"91.105.192.100:443", 2, true},    // dedicated CDN203 endpoint, any DC tag
+		{"91.105.192.100:443", 203, true},  // dedicated endpoint + DC203 tag
+		{"91.105.192.55:443", 203, true},   // inside the 91.105.192.0/23 aggregate + DC203 tag
+		{"91.105.194.1:443", 203, false},   // just outside the /23 aggregate
+		{"8.8.8.8:443", 203, false},        // forged: DC203 tag aimed at an arbitrary host
+		{"149.154.167.51:443", 203, false}, // genuine Telegram DC, but not CDN203
+		{"8.8.8.8:443", 2, false},
+	}
+	for _, tc := range cases {
+		if got := cdn203Dispatch(netip.MustParseAddrPort(tc.orig), tc.dc); got != tc.want {
+			t.Errorf("cdn203Dispatch(%s, dc=%d) = %t, want %t", tc.orig, tc.dc, got, tc.want)
+		}
+	}
+}
+
+func TestServeConnRefusesForgedCDN203(t *testing.T) {
+	origDir := baseDir
+	baseDir = t.TempDir()
+	origLog := logFile
+	logMu.Lock()
+	logFile = nil
+	logMu.Unlock()
+	defer func() {
+		baseDir = origDir
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		logMu.Unlock()
+	}()
+
+	makeInit := func(dcIndex int16) []byte {
+		init := make([]byte, 64)
+		for i := range init {
+			init[i] = byte(i*13 + 7)
+		}
+		key := init[8:40]
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream := cipher.NewCTR(block, init[40:56])
+		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
+		keystream := make([]byte, 8)
+		stream.XORKeyStream(keystream, make([]byte, 8))
+		plainTail := make([]byte, 8)
+		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
+		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
+		for i := 0; i < 8; i++ {
+			init[56+i] = plainTail[i] ^ keystream[i]
+		}
+		return init
+	}
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	go serveConn(c2, netip.MustParseAddrPort("8.8.8.8:443"))
+	go func() { _, _ = c1.Write(makeInit(203)) }()
+
+	// A forged DC203 tag must be refused before any dial attempt: the
+	// connection is closed promptly instead of being bridged or timing out
+	// on a 5-second dial to the attacker-chosen destination.
+	_ = c1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 16)
+	if _, err := c1.Read(buf); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected immediate EOF for forged CDN203, got %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := learnedDCs.Load("8.8.8.8"); ok {
+		t.Fatal("forged endpoint leaked into the learned DC map")
+	}
+}
+
+func TestLearnDCRejectsNonTelegram(t *testing.T) {
+	origDir := baseDir
+	baseDir = t.TempDir()
+	origLog := logFile
+	logMu.Lock()
+	logFile = nil
+	logMu.Unlock()
+	defer func() {
+		baseDir = origDir
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		logMu.Unlock()
+	}()
+
+	learnDC("8.8.8.8", 203, false)
+	if _, ok := learnedDCs.Load("8.8.8.8"); ok {
+		t.Fatal("non-Telegram IP must not enter the learned DC map")
+	}
+	learnDC("2001:db8::1", 2, false)
+	if _, ok := learnedDCs.Load("2001:db8::1"); ok {
+		t.Fatal("non-Telegram IPv6 must not enter the learned DC map")
+	}
+	// 149.154.175.52 is a known DC1 media endpoint.
+	learnDC("149.154.175.52", 1, true)
+	if _, ok := learnedDCs.Load("149.154.175.52"); !ok {
+		t.Fatal("genuine media endpoint must be learned")
+	}
+	learnDC("91.105.192.100", 203, false)
+	if _, ok := learnedDCs.Load("91.105.192.100"); !ok {
+		t.Fatal("CDN203 endpoint must be learnable")
+	}
+	// Persist synchronously while baseDir still points at the temp dir so
+	// the goroutines spawned by learnDC find nothing left to write.
+	persistLearnedDCs()
+	learnedDCs.Delete("149.154.175.52")
+	learnedDCs.Delete("91.105.192.100")
 }
