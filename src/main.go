@@ -30,6 +30,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1568,6 +1569,14 @@ var telegramV6 = []string{
 	"2001:67c:4e8::/48",
 }
 
+var telegramV6Prefixes = func() []netip.Prefix {
+	out := make([]netip.Prefix, len(telegramV6))
+	for i, c := range telegramV6 {
+		out[i] = netip.MustParsePrefix(c)
+	}
+	return out
+}()
+
 func runCmd(name string, args ...string) error {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
@@ -1739,19 +1748,23 @@ func isWorkerInCooldown(host string, optDC ...int) bool {
 	if len(optDC) > 0 {
 		dc = optDC[0]
 	}
+	now := time.Now()
 	if dc > 0 {
-		if v, ok := workerCooldowns.Load(workerCooldownKey(host, dc)); ok {
+		k := workerCooldownKey(host, dc)
+		if v, ok := workerCooldowns.Load(k); ok {
 			cd := v.(workerCooldownState)
-			if time.Now().Before(cd.until) {
+			if now.Before(cd.until) {
 				return true
 			}
+			workerCooldowns.Delete(k)
 		}
 	}
 	if v, ok := workerCooldowns.Load(host); ok {
 		cd := v.(workerCooldownState)
-		if time.Now().Before(cd.until) {
+		if now.Before(cd.until) {
 			return true
 		}
+		workerCooldowns.Delete(host)
 	}
 	return false
 }
@@ -1805,8 +1818,9 @@ func clearWorkerCooldown(host string, optDC ...int) {
 }
 
 type learnedDCEntry struct {
-	DC      int  `json:"dc"`
-	IsMedia bool `json:"is_media"`
+	DC        int   `json:"dc"`
+	IsMedia   bool  `json:"is_media"`
+	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
 var (
@@ -1826,11 +1840,15 @@ func loadLearnedDCs() {
 	}
 	count := 0
 	cleaned := false
+	now := time.Now().Unix()
 	for ip, entry := range saved {
 		if entry.DC >= 1 && (entry.DC <= 5 || entry.DC == 203) {
 			if known := knownDCMap[ip]; known != 0 && known != entry.DC {
 				cleaned = true
 				continue
+			}
+			if entry.UpdatedAt == 0 {
+				entry.UpdatedAt = now
 			}
 			learnedDCs.Store(ip, entry)
 			count++
@@ -1889,15 +1907,32 @@ func learnDC(ip string, dc int, isMedia bool) {
 			return
 		}
 	}
+	type dcItem struct {
+		key       string
+		updatedAt int64
+	}
 	var count int
-	learnedDCs.Range(func(_, _ any) bool {
+	var items []dcItem
+	learnedDCs.Range(func(k, v any) bool {
 		count++
+		if e, ok := v.(learnedDCEntry); ok {
+			items = append(items, dcItem{key: k.(string), updatedAt: e.UpdatedAt})
+		}
 		return true
 	})
 	if count >= 256 {
-		return
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].updatedAt < items[j].updatedAt
+		})
+		toDelete := count - 192
+		if toDelete > len(items) {
+			toDelete = len(items)
+		}
+		for i := 0; i < toDelete; i++ {
+			learnedDCs.Delete(items[i].key)
+		}
 	}
-	learnedDCs.Store(ip, learnedDCEntry{DC: dc, IsMedia: isMedia})
+	learnedDCs.Store(ip, learnedDCEntry{DC: dc, IsMedia: isMedia, UpdatedAt: time.Now().Unix()})
 	learnedDCMu.Lock()
 	learnedDCDirty = true
 	learnedDCMu.Unlock()
@@ -4205,6 +4240,7 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 				return err
 			}
 			f.headerSent = true
+			f.initial = nil
 		} else if err := ws.writeFrame(2, frame); err != nil {
 			return err
 		}
@@ -4522,6 +4558,15 @@ func sweepRouteCaches() {
 		}
 	}
 	cdn203FailMu.Unlock()
+
+	workerCooldowns.Range(func(key, val any) bool {
+		if cd, ok := val.(workerCooldownState); ok {
+			if now.After(cd.until) {
+				workerCooldowns.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 // Repeated early remote EOFs indicate a frontend that accepts the WebSocket
