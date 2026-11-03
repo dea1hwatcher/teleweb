@@ -3099,3 +3099,68 @@ func TestLearnDCRejectsNonTelegram(t *testing.T) {
 	learnedDCs.Delete("149.154.175.52")
 	learnedDCs.Delete("91.105.192.100")
 }
+
+func TestH2DispatchSemaphoreBounds(t *testing.T) {
+	origPost := h2PostFn
+	defer func() { h2PostFn = origPost }()
+
+	var cur, maxSeen atomic.Int64
+	release := make(chan struct{})
+	h2PostFn = func(ctx context.Context, client *http.Client, apiURL, host string, body []byte) []byte {
+		n := cur.Add(1)
+		for {
+			m := maxSeen.Load()
+			if n <= m || maxSeen.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		<-release
+		cur.Add(-1)
+		return []byte{0, 0, 0, 0}
+	}
+
+	h2InFlight := make(chan struct{}, 16)
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	defer bridgeCancel()
+	replyCh := make(chan h2Reply, 128)
+
+	const total = 100
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < total; i++ {
+			if !dispatchH2Post(h2InFlight, bridgeCtx, nil, "http://test", "test-host", replyCh, uint64(i), []byte{1, 2, 3, 4}) {
+				return
+			}
+		}
+	}()
+
+	// While every POST is parked, at most 16 may be in flight; the dispatch
+	// loop blocks on the semaphore instead of piling up goroutines.
+	time.Sleep(200 * time.Millisecond)
+	if got := maxSeen.Load(); got != 16 {
+		t.Fatalf("expected the semaphore to saturate at 16, saw %d", got)
+	}
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("dispatch loop did not finish after releasing POSTs")
+	}
+
+	// All replies must eventually be delivered with their sequence numbers.
+	got := map[uint64]bool{}
+	for len(got) < total {
+		select {
+		case r := <-replyCh:
+			got[r.seq] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out after receiving %d/%d replies", len(got), total)
+		}
+	}
+	// No request may still hold a slot.
+	if n := cur.Load(); n != 0 {
+		t.Fatalf("%d requests still in flight after completion", n)
+	}
+}

@@ -1278,17 +1278,18 @@ func discoverApps() ([]App, []int) {
 			}
 			fields := strings.Fields(line)
 			pkg := strings.TrimPrefix(fields[0], "package:")
+			// Resolve the APK path once per package: findPackageAPK shells
+			// out to pm, and it was previously looked up 2–3 times per
+			// package (isTelegramAPK probe + icon extraction).
+			apkPath := findPackageAPK(pkg)
 			name, wanted := nameByPkg[pkg]
 			if !wanted {
 				if matchesTelegramKeyword(pkg) {
 					name = humanizePackageName(pkg)
 					wanted = true
-				} else {
-					apkPath := findPackageAPK(pkg)
-					if isTelegramAPK(apkPath) {
-						name = humanizePackageName(pkg)
-						wanted = true
-					}
+				} else if isTelegramAPK(apkPath) {
+					name = humanizePackageName(pkg)
+					wanted = true
 				}
 			}
 			if !wanted {
@@ -1302,7 +1303,7 @@ func discoverApps() ([]App, []int) {
 			if uid <= 0 || seen[uid] {
 				continue
 			}
-			normalIco, monetIco := extractAPKIcons(findPackageAPK(pkg))
+			normalIco, monetIco := extractAPKIcons(apkPath)
 			apps = append(apps, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
 			uids = append(uids, uid)
 			seen[uid] = true
@@ -1355,30 +1356,58 @@ func saveCachedApps(apps []App) {
 	}
 }
 
+// discoverMu serializes full package scans: a cold-start scan takes seconds
+// (hundreds of pm/cmd subprocesses and APK opens), and it must never run
+// under appCacheMu — watchdog and writeStatus would otherwise block on every
+// 5s tick while the scan holds the lock.
+var discoverMu sync.Mutex
+
 func installedApps() ([]App, []int) {
+	// Fast path: serve a copy of the warm cache without scanning.
 	appCacheMu.Lock()
-	defer appCacheMu.Unlock()
-	if len(appCache) == 0 {
-		appCache, uidCache = loadCachedApps()
-		if len(appCache) == 0 {
-			appCache, uidCache = discoverApps()
-			if len(appCache) > 0 {
-				saveCachedApps(appCache)
-			}
-		} else {
-			// Trigger asynchronous verification to keep app cache up to date
-			go func() {
-				freshApps, freshUIDs := discoverApps()
-				if len(freshApps) > 0 {
-					appCacheMu.Lock()
-					appCache, uidCache = freshApps, freshUIDs
-					appCacheMu.Unlock()
-					saveCachedApps(freshApps)
-				}
-			}()
-		}
+	if len(appCache) > 0 {
+		apps, uids := append([]App(nil), appCache...), append([]int(nil), uidCache...)
+		appCacheMu.Unlock()
+		return apps, uids
 	}
-	return append([]App(nil), appCache...), append([]int(nil), uidCache...)
+	appCacheMu.Unlock()
+
+	discoverMu.Lock()
+	defer discoverMu.Unlock()
+
+	// Another caller may have completed the scan while we waited for it.
+	appCacheMu.Lock()
+	if len(appCache) > 0 {
+		apps, uids := append([]App(nil), appCache...), append([]int(nil), uidCache...)
+		appCacheMu.Unlock()
+		return apps, uids
+	}
+	appCacheMu.Unlock()
+
+	apps, uids := loadCachedApps()
+	if len(apps) == 0 {
+		apps, uids = discoverApps()
+		if len(apps) > 0 {
+			saveCachedApps(apps)
+		}
+	} else {
+		// Trigger asynchronous verification to keep app cache up to date
+		go func() {
+			freshApps, freshUIDs := discoverApps()
+			if len(freshApps) > 0 {
+				appCacheMu.Lock()
+				appCache, uidCache = freshApps, freshUIDs
+				appCacheMu.Unlock()
+				saveCachedApps(freshApps)
+			}
+		}()
+	}
+
+	appCacheMu.Lock()
+	appCache, uidCache = apps, uids
+	appCacheMu.Unlock()
+
+	return append([]App(nil), apps...), append([]int(nil), uids...)
 }
 
 // telegramSubnets is the single source of Telegram IPv4 aggregates: the
@@ -1772,7 +1801,14 @@ func setupRules() error {
 		return err
 	}
 	if ip6tables := findBin("ip6tables"); ip6tables != "" {
-		_ = iptSetup(ip6tables, uids, telegramV6, "TELEWEB", "IPv6")
+		if err := iptSetup(ip6tables, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
+			// Not fatal: some kernels ship without usable ip6tables; IPv6
+			// Telegram traffic (2001:b88::/32) then bypasses the WSS
+			// transport undiagnosed. rulesHealthy deliberately ignores the
+			// IPv6 family so the watchdog does not flap on such devices,
+			// so surface the failure here — once per daemon start.
+			logf("redirect: IPv6 rules failed: %v — Telegram IPv6 will bypass WSS", err)
+		}
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
