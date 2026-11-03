@@ -3191,3 +3191,453 @@ func TestIsTelegramEndpoint_IPv6(t *testing.T) {
 		}
 	}
 }
+
+func TestTailLog_BoundedTail(t *testing.T) {
+	origBase := baseDir
+	tmpDir := t.TempDir()
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	// 1. Non-existent log file
+	if got := tailLog(10); got != "" {
+		t.Fatalf("expected empty string for non-existent log, got %q", got)
+	}
+
+	// 2. Small log file (< 32KB)
+	var smallLines []string
+	for i := 1; i <= 20; i++ {
+		smallLines = append(smallLines, fmt.Sprintf("line %02d: log entry", i))
+	}
+	logPath := path("tgws.log")
+	if err := os.WriteFile(logPath, []byte(strings.Join(smallLines, "\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailLog(5)
+	expected := strings.Join(smallLines[len(smallLines)-5:], "\n")
+	if got != expected {
+		t.Fatalf("tailLog(5) small mismatch:\nwant:\n%s\ngot:\n%s", expected, got)
+	}
+
+	// 3. Large log file (> 64KB)
+	var largeLines []string
+	for i := 1; i <= 2000; i++ {
+		largeLines = append(largeLines, fmt.Sprintf("line %04d: extended log entry with extra filler data 1234567890", i))
+	}
+	if err := os.WriteFile(logPath, []byte(strings.Join(largeLines, "\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	gotLarge := tailLog(10)
+	expectedLarge := strings.Join(largeLines[len(largeLines)-10:], "\n")
+	if gotLarge != expectedLarge {
+		t.Fatalf("tailLog(10) large mismatch:\nwant:\n%s\ngot:\n%s", expectedLarge, gotLarge)
+	}
+}
+
+func TestInitMemoryTuning(t *testing.T) {
+	initMemoryTuning()
+}
+
+func TestDirectDialNegativeCache(t *testing.T) {
+	testIP := "149.154.167.220"
+	directDialMarkReachable(testIP)
+	if directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s not to be blocked initially", testIP)
+	}
+
+	directDialMarkFail(testIP)
+	if !directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s to be blocked after directDialMarkFail", testIP)
+	}
+
+	directDialMarkReachable(testIP)
+	if directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s to be unblocked after directDialMarkReachable", testIP)
+	}
+}
+
+func TestIsTelegramTarget(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"149.154.167.51:443", true},
+		{"91.108.4.1:80", true},
+		{"91.105.192.100:443", true},
+		{"185.76.151.10:443", true},
+		{"104.16.123.96:443", false}, // Cloudflare
+		{"1.1.1.1:53", false},        // Cloudflare DNS
+		{"8.8.8.8:53", false},        // Google DNS
+		{"invalid-host", false},
+	}
+	for _, tc := range cases {
+		got := isTelegramTarget(tc.addr)
+		if got != tc.want {
+			t.Errorf("isTelegramTarget(%q) = %v; want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestIsLocalAddrInUse(t *testing.T) {
+	if !isLocalAddrInUse(errors.New("bind: address already in use")) {
+		t.Error("expected true for standard bind address already in use")
+	}
+	if !isLocalAddrInUse(errors.New("bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.")) {
+		t.Error("expected true for Windows WSAEADDRINUSE text")
+	}
+	if !isLocalAddrInUse(errors.New("WSAEADDRINUSE 10048")) {
+		t.Error("expected true for 10048 code")
+	}
+	if isLocalAddrInUse(errors.New("connection refused")) {
+		t.Error("expected false for connection refused")
+	}
+	if isLocalAddrInUse(nil) {
+		t.Error("expected false for nil error")
+	}
+}
+
+func TestIsPidAlive(t *testing.T) {
+	if !isPidAlive(os.Getpid()) {
+		t.Fatal("own process must be reported alive")
+	}
+	// An impossible pid must be dead on every supported platform: on Windows
+	// os.FindProcess alone reported every pid as alive.
+	if isPidAlive(1 << 30) {
+		t.Fatal("impossible pid reported alive")
+	}
+}
+
+func TestIsTelegramEndpoint(t *testing.T) {
+	cases := map[string]bool{
+		"149.154.167.51":        true,
+		"149.154.175.50":        true,
+		"91.108.56.100":         true,
+		"91.105.192.100":        true,
+		"185.76.151.10":         true,
+		"8.8.8.8":               false,
+		"149.154.176.1":         false,
+		"::ffff:149.154.167.51": true,
+		"2001:67c:4e8::1":       false,
+	}
+	for raw, want := range cases {
+		if got := isTelegramEndpoint(netip.MustParseAddr(raw)); got != want {
+			t.Errorf("isTelegramEndpoint(%s)=%t, want %t", raw, got, want)
+		}
+	}
+	// The CDN203 endpoint must stay inside the intercepted aggregates even
+	// without a dedicated address check.
+	if !isTelegramEndpoint(netip.MustParseAddr(cdn203IP)) {
+		t.Fatalf("CDN203 endpoint %s is not covered by telegramSubnets", cdn203IP)
+	}
+}
+
+func TestCDN203Dispatch(t *testing.T) {
+	cases := []struct {
+		orig string
+		dc   int
+		want bool
+	}{
+		{"91.105.192.100:443", 2, true},    // dedicated CDN203 endpoint, any DC tag
+		{"91.105.192.100:443", 203, true},  // dedicated endpoint + DC203 tag
+		{"91.105.192.55:443", 203, true},   // inside the 91.105.192.0/23 aggregate + DC203 tag
+		{"91.105.194.1:443", 203, false},   // just outside the /23 aggregate
+		{"8.8.8.8:443", 203, false},        // forged: DC203 tag aimed at an arbitrary host
+		{"149.154.167.51:443", 203, false}, // genuine Telegram DC, but not CDN203
+		{"8.8.8.8:443", 2, false},
+	}
+	for _, tc := range cases {
+		if got := cdn203Dispatch(netip.MustParseAddrPort(tc.orig), tc.dc); got != tc.want {
+			t.Errorf("cdn203Dispatch(%s, dc=%d) = %t, want %t", tc.orig, tc.dc, got, tc.want)
+		}
+	}
+}
+
+func TestServeConnRefusesForgedCDN203(t *testing.T) {
+	origDir := baseDir
+	baseDir = t.TempDir()
+	origLog := logFile
+	logMu.Lock()
+	logFile = nil
+	logMu.Unlock()
+	defer func() {
+		baseDir = origDir
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		logMu.Unlock()
+	}()
+
+	makeInit := func(dcIndex int16) []byte {
+		init := make([]byte, 64)
+		for i := range init {
+			init[i] = byte(i*13 + 7)
+		}
+		key := init[8:40]
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream := cipher.NewCTR(block, init[40:56])
+		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
+		keystream := make([]byte, 8)
+		stream.XORKeyStream(keystream, make([]byte, 8))
+		plainTail := make([]byte, 8)
+		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
+		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
+		for i := 0; i < 8; i++ {
+			init[56+i] = plainTail[i] ^ keystream[i]
+		}
+		return init
+	}
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	go serveConn(c2, netip.MustParseAddrPort("8.8.8.8:443"))
+	go func() { _, _ = c1.Write(makeInit(203)) }()
+
+	// A forged DC203 tag must be refused before any dial attempt: the
+	// connection is closed promptly instead of being bridged or timing out
+	// on a 5-second dial to the attacker-chosen destination.
+	_ = c1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 16)
+	if _, err := c1.Read(buf); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected immediate EOF for forged CDN203, got %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := learnedDCs.Load("8.8.8.8"); ok {
+		t.Fatal("forged endpoint leaked into the learned DC map")
+	}
+}
+
+func TestLearnDCRejectsNonTelegram(t *testing.T) {
+	origDir := baseDir
+	baseDir = t.TempDir()
+	origLog := logFile
+	logMu.Lock()
+	logFile = nil
+	logMu.Unlock()
+	defer func() {
+		baseDir = origDir
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		logMu.Unlock()
+	}()
+
+	learnDC("8.8.8.8", 203, false)
+	if _, ok := learnedDCs.Load("8.8.8.8"); ok {
+		t.Fatal("non-Telegram IP must not enter the learned DC map")
+	}
+	learnDC("2001:db8::1", 2, false)
+	if _, ok := learnedDCs.Load("2001:db8::1"); ok {
+		t.Fatal("non-Telegram IPv6 must not enter the learned DC map")
+	}
+	// 149.154.175.52 is a known DC1 media endpoint.
+	learnDC("149.154.175.52", 1, true)
+	if _, ok := learnedDCs.Load("149.154.175.52"); !ok {
+		t.Fatal("genuine media endpoint must be learned")
+	}
+	learnDC("91.105.192.100", 203, false)
+	if _, ok := learnedDCs.Load("91.105.192.100"); !ok {
+		t.Fatal("CDN203 endpoint must be learnable")
+	}
+	// Persist synchronously while baseDir still points at the temp dir so
+	// the goroutines spawned by learnDC find nothing left to write.
+	persistLearnedDCs()
+	learnedDCs.Delete("149.154.175.52")
+	learnedDCs.Delete("91.105.192.100")
+}
+
+func TestH2DispatchSemaphoreBounds(t *testing.T) {
+	origPost := h2PostFn
+	defer func() { h2PostFn = origPost }()
+
+	var cur, maxSeen atomic.Int64
+	release := make(chan struct{})
+	h2PostFn = func(ctx context.Context, client *http.Client, apiURL, host string, body []byte) []byte {
+		n := cur.Add(1)
+		for {
+			m := maxSeen.Load()
+			if n <= m || maxSeen.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		<-release
+		cur.Add(-1)
+		return []byte{0, 0, 0, 0}
+	}
+
+	h2InFlight := make(chan struct{}, 16)
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	defer bridgeCancel()
+	replyCh := make(chan h2Reply, 128)
+
+	const total = 100
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < total; i++ {
+			if !dispatchH2Post(h2InFlight, bridgeCtx, nil, "http://test", "test-host", replyCh, uint64(i), []byte{1, 2, 3, 4}) {
+				return
+			}
+		}
+	}()
+
+	// While every POST is parked, at most 16 may be in flight; the dispatch
+	// loop blocks on the semaphore instead of piling up goroutines.
+	time.Sleep(200 * time.Millisecond)
+	if got := maxSeen.Load(); got != 16 {
+		t.Fatalf("expected the semaphore to saturate at 16, saw %d", got)
+	}
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("dispatch loop did not finish after releasing POSTs")
+	}
+
+	// All replies must eventually be delivered with their sequence numbers.
+	got := map[uint64]bool{}
+	for len(got) < total {
+		select {
+		case r := <-replyCh:
+			got[r.seq] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out after receiving %d/%d replies", len(got), total)
+		}
+	}
+	// No request may still hold a slot.
+	if n := cur.Load(); n != 0 {
+		t.Fatalf("%d requests still in flight after completion", n)
+	}
+}
+
+func TestLogDeduplication(t *testing.T) {
+	origDir := baseDir
+	baseDir = t.TempDir()
+	origLog := logFile
+	logMu.Lock()
+	logFile = nil
+	lastLogRaw = ""
+	repeatLogCount = 0
+	logMu.Unlock()
+	defer func() {
+		baseDir = origDir
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		lastLogRaw = ""
+		repeatLogCount = 0
+		logMu.Unlock()
+	}()
+
+	// Log identical lines 5 times
+	for i := 0; i < 5; i++ {
+		logf("test-duplicate-line")
+	}
+	// Log a different line to trigger flush
+	logf("test-different-line")
+	flushLogDedupe()
+
+	b, err := os.ReadFile(path("tgws.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(b)
+	if !strings.Contains(content, "[last message repeated 4 times]") {
+		t.Fatalf("expected duplicate summary in log, got:\n%s", content)
+	}
+	if !strings.Contains(content, "test-different-line") {
+		t.Fatalf("expected different line in log, got:\n%s", content)
+	}
+}
+
+func TestNoteRouteHTTPFailure_RetryAfter(t *testing.T) {
+	host := "retry-after-test.invalid"
+	rle := &RateLimitError{
+		StatusCode: 429,
+		RetryAfter: 45 * time.Second,
+		Message:    "too many requests",
+	}
+	noteRouteHTTPFailure(host, rle)
+
+	routeHealthMu.Lock()
+	state, ok := routeHealth[host]
+	routeHealthMu.Unlock()
+	if !ok {
+		t.Fatalf("host %s must be recorded in routeHealth", host)
+	}
+	rem := time.Until(state.until)
+	if rem < 40*time.Second || rem > 50*time.Second {
+		t.Fatalf("expected cooldown ~45s, got %v", rem)
+	}
+}
+
+func TestCFDialLimiter(t *testing.T) {
+	ctx := context.Background()
+	var releases []func()
+	defer func() {
+		for _, rel := range releases {
+			rel()
+		}
+	}()
+
+	for i := 0; i < maxConcurrentCFDials; i++ {
+		rel, err := acquireCFDialSlot(ctx)
+		if err != nil {
+			t.Fatalf("failed to acquire slot %d: %v", i, err)
+		}
+		releases = append(releases, rel)
+	}
+
+	// 5th acquisition with 50ms timeout must fail with deadline exceeded
+	timeoutCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	_, err := acquireCFDialSlot(timeoutCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	// Release 1 slot, now acquisition must succeed
+	releases[0]()
+	releases = releases[1:]
+
+	slotCtx, slotCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer slotCancel()
+	rel2, err2 := acquireCFDialSlot(slotCtx)
+	if err2 != nil {
+		t.Fatalf("expected acquisition to succeed after release, got %v", err2)
+	}
+	rel2()
+}
+
+func TestDCDomainAffinity(t *testing.T) {
+	domains := []string{"alpha.co.uk", "beta.co.uk", "gamma.co.uk"}
+	setDCDomainAffinity(2, "gamma.co.uk")
+
+	candidates := frontCandidatesForRace(2, domains, 0, 3)
+	if len(candidates) != 3 {
+		t.Fatalf("expected 3 candidates, got %d", len(candidates))
+	}
+	if candidates[0] != "kws2.gamma.co.uk" {
+		t.Fatalf("expected first candidate to be affinity domain kws2.gamma.co.uk, got %s", candidates[0])
+	}
+	// Ensure no duplicate candidates
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		if seen[c] {
+			t.Fatalf("duplicate candidate in list: %s", c)
+		}
+		seen[c] = true
+	}
+}
