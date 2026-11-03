@@ -2725,9 +2725,10 @@ func TestWriteStatusOmitsAppsAndLog(t *testing.T) {
 		t.Fatal("live metrics disappeared along with the app list")
 	}
 	// The API answer still carries the icons, because it rebuilds the list
-	// from the app cache rather than from this file.
-	if got := status(); len(got.Apps) != 1 || got.Apps[0].IconNormal != "aGVsbG8=" {
-		t.Fatalf("status() lost the app list: %#v", got.Apps)
+	// from the app cache rather than from this file. buildStatus is used
+	// directly: installedApps() answers nothing at all on desktop platforms.
+	if got := buildStatus(appCache); len(got.Apps) != 1 || got.Apps[0].IconNormal != "aGVsbG8=" {
+		t.Fatalf("status snapshot lost the app list: %#v", got.Apps)
 	}
 }
 
