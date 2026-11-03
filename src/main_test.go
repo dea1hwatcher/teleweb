@@ -2800,6 +2800,96 @@ func writeSyntheticAPK(t *testing.T, path string, entries ...string) string {
 	return path
 }
 
+func TestParsePMPackagesListing(t *testing.T) {
+	out := strings.Join([]string{
+		// -f form: the installed path itself contains '=' characters.
+		"/data/app/~~7rQzlA==/com.example.fork-Kf3mA==/base.apk=com.example.fork uid:10234",
+		"/data/app/~~abcd==/org.telegram.messenger-efgh==/base.apk=org.telegram.messenger uid:10123 hidden",
+		// plain form
+		"package:com.instagram.android uid:10456",
+		// unusable lines
+		"package:com.no.uid.here",
+		"/data/app/x==/com.nouid-y==/base.apk=com.nouid",
+		"Failure: something else on stdout",
+	}, "\n")
+
+	got := parsePMPackagesListing(out)
+	want := []pmPackage{
+		{pkg: "com.example.fork", uid: 10234, apkPath: "/data/app/~~7rQzlA==/com.example.fork-Kf3mA==/base.apk"},
+		{pkg: "org.telegram.messenger", uid: 10123, apkPath: "/data/app/~~abcd==/org.telegram.messenger-efgh==/base.apk"},
+		{pkg: "com.instagram.android", uid: 10456, apkPath: ""},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parsed %d entries, want %d: %#v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("entry %d = %#v, want %#v", i, got[i], w)
+		}
+	}
+}
+
+func TestWriteStatusOmitsAppsAndLog(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	appCacheMu.Lock()
+	oldApps, oldUIDs := appCache, uidCache
+	appCache = []App{{Name: "Telegram", Pkg: "org.telegram.messenger", UID: 10123, IconNormal: "aGVsbG8=", IconMonet: "d29ybGQ="}}
+	uidCache = []int{10123}
+	appCacheMu.Unlock()
+	t.Cleanup(func() {
+		baseDir = oldDir
+		appCacheMu.Lock()
+		appCache, uidCache = oldApps, oldUIDs
+		appCacheMu.Unlock()
+	})
+
+	writeStatus()
+	b, err := os.ReadFile(path("status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "aGVsbG8=") || strings.Contains(string(b), "iconNormal") {
+		t.Fatalf("status.json still carries base64 icons: %s", string(b))
+	}
+	var persisted Status
+	if err := json.Unmarshal(b, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Apps) != 0 || persisted.Log != "" {
+		t.Fatalf("persisted snapshot kept apps or log: %d apps, log %q", len(persisted.Apps), persisted.Log)
+	}
+	if !persisted.Running {
+		t.Fatal("live metrics disappeared along with the app list")
+	}
+	// The API answer still carries the icons, because it rebuilds the list
+	// from the app cache rather than from this file.
+	if got := status(); len(got.Apps) != 1 || got.Apps[0].IconNormal != "aGVsbG8=" {
+		t.Fatalf("status() lost the app list: %#v", got.Apps)
+	}
+}
+
+func TestLoadCachedAppsDropsFabricatedEntries(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() { baseDir = oldDir })
+	apps := []App{
+		{Name: "Telegram", Pkg: "org.telegram.messenger", UID: 10123},
+		{Name: "Uid10999", Pkg: "unknown.telegram.uid10999", UID: 10999},
+	}
+	b, err := json.Marshal(apps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path("apps.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, uids := loadCachedApps()
+	if len(got) != 1 || got[0].Pkg != "org.telegram.messenger" || len(uids) != 1 || uids[0] != 10123 {
+		t.Fatalf("fabricated entry survived: %#v uids=%v", got, uids)
+	}
+}
+
 func TestTelegramClientName(t *testing.T) {
 	dir := t.TempDir()
 	tgAPK := writeSyntheticAPK(t, filepath.Join(dir, "fork.apk"), "lib/arm64-v8a/libtmessages.48.so")
