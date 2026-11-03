@@ -426,6 +426,7 @@ func (r *wdRedirector) outLoop() {
 		if err != nil {
 			if r.running.Load() {
 				logf("redirector: recv: %v", err)
+				r.running.Store(false)
 			}
 			return
 		}
@@ -465,6 +466,7 @@ func (r *wdRedirector) retLoop() {
 		if err != nil {
 			if r.running.Load() {
 				logf("redirector: ret recv: %v", err)
+				r.running.Store(false)
 			}
 			return
 		}
