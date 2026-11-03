@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -174,6 +175,60 @@ func TestInitMemoryTuningDoesNotClampHeap(t *testing.T) {
 	initMemoryTuning()
 	if after := debug.SetMemoryLimit(-1); after != before {
 		t.Fatalf("initMemoryTuning changed the heap limit: %d -> %d", before, after)
+	}
+}
+
+func TestFillGCStatsReportsCollectionProgress(t *testing.T) {
+	// A few real collections, so every field has something to report.
+	for i := 0; i < 4; i++ {
+		drain := make([]byte, 1<<20)
+		for j := range drain {
+			drain[j] = byte(j)
+		}
+		runtime.GC()
+		_ = drain
+	}
+	var s Status
+	fillGCStats(&s)
+	if s.GCNum < 4 {
+		t.Fatalf("gcNum = %d, want the four forced collections to be counted", s.GCNum)
+	}
+	if s.HeapLiveBytes <= 0 {
+		t.Fatalf("heapLiveBytes = %d, want the live heap reported", s.HeapLiveBytes)
+	}
+	if s.GCPauseAvgMs <= 0 || s.GCPauseAvgMs > 5000 {
+		t.Fatalf("gcPauseAvgMs = %f, want the mean stop-the-world pause in milliseconds", s.GCPauseAvgMs)
+	}
+	if s.GCCPUPercent < 0 || s.GCCPUPercent > 100 {
+		t.Fatalf("gcCpuPercent = %f, want a share of the CPU time available", s.GCCPUPercent)
+	}
+}
+
+func TestGCMetricsReachACLIStatusReader(t *testing.T) {
+	// The daemon persists its snapshot and a CLI process rebuilds the status
+	// from that file; a metric the second leg forgets never reaches the device.
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() { baseDir = oldDir })
+	runtime.GC()
+	writeStatus()
+	b, err := os.ReadFile(path("status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted Status
+	if err := json.Unmarshal(b, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.GCNum == 0 || persisted.HeapLiveBytes == 0 {
+		t.Fatalf("daemon snapshot has no GC metrics: %+v", persisted)
+	}
+	got := status()
+	if got.GCNum < persisted.GCNum || got.GCCPUPercent != persisted.GCCPUPercent ||
+		got.GCPauseAvgMs != persisted.GCPauseAvgMs || got.HeapLiveBytes != persisted.HeapLiveBytes {
+		t.Fatalf("status() lost the GC metrics: got num=%d cpu=%f pause=%f heap=%d, want num>=%d cpu=%f pause=%f heap=%d",
+			got.GCNum, got.GCCPUPercent, got.GCPauseAvgMs, got.HeapLiveBytes,
+			persisted.GCNum, persisted.GCCPUPercent, persisted.GCPauseAvgMs, persisted.HeapLiveBytes)
 	}
 }
 

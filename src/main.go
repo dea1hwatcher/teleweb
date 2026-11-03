@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -27,6 +28,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -208,6 +210,10 @@ type Status struct {
 	TrafficUpBytes    int64          `json:"trafficUpBytes"`
 	TrafficDownBytes  int64          `json:"trafficDownBytes"`
 	TrafficTotalBytes int64          `json:"trafficTotalBytes"`
+	GCNum             uint32         `json:"gcNum"`
+	GCCPUPercent      float64        `json:"gcCpuPercent"`
+	GCPauseAvgMs      float64        `json:"gcPauseAvgMs"`
+	HeapLiveBytes     int64          `json:"heapLiveBytes"`
 	Log               string         `json:"log"`
 	CFPriority        bool           `json:"cfPriority"`
 	CFBalance         bool           `json:"cfBalance"`
@@ -2375,6 +2381,63 @@ func processMemoryBytes() (current, peak int64) {
 	return current, peak
 }
 
+// fillGCStats overlays this process's GC telemetry on the snapshot. During the
+// on-device CPU incident these numbers separate a GC death spiral (gcNum
+// climbing fast, gcCpuPercent far above the runtime's 25% pacing target,
+// heapLiveBytes pinned near the limit) from a dial storm, where the counters
+// barely move while ws and fail race.
+//
+// runtime/metrics rather than runtime.ReadMemStats: the latter stops the world
+// to take its sample, which is exactly the cost being measured here, and its
+// pause bookkeeping reads back as zero on newer toolchains.
+func fillGCStats(s *Status) {
+	samples := []metrics.Sample{
+		{Name: "/gc/cycles/total:gc-cycles"},
+		{Name: "/cpu/classes/gc/total:cpu-seconds"},
+		{Name: "/cpu/classes/total:cpu-seconds"},
+		{Name: "/gc/heap/live:bytes"},
+		{Name: "/gc/pauses:seconds"},
+	}
+	metrics.Read(samples)
+	var gcCPU, totalCPU float64
+	for _, sample := range samples {
+		switch sample.Name {
+		case "/gc/cycles/total:gc-cycles":
+			s.GCNum = uint32(sample.Value.Uint64())
+		case "/gc/heap/live:bytes":
+			s.HeapLiveBytes = int64(sample.Value.Uint64())
+		case "/cpu/classes/gc/total:cpu-seconds":
+			gcCPU = sample.Value.Float64()
+		case "/cpu/classes/total:cpu-seconds":
+			totalCPU = sample.Value.Float64()
+		case "/gc/pauses:seconds":
+			// Pauses arrive bucketed, so the mean is an estimate rounded up to
+			// each bucket's upper edge. The overflow bucket is ignored: a pause
+			// longer than the largest measurable one is a different problem.
+			h := sample.Value.Float64Histogram()
+			var count uint64
+			var weighted float64
+			for i, c := range h.Counts {
+				if c == 0 || i+1 >= len(h.Buckets) {
+					continue
+				}
+				edge := h.Buckets[i+1]
+				if math.IsInf(edge, 1) {
+					continue
+				}
+				count += c
+				weighted += float64(c) * edge
+			}
+			if count > 0 {
+				s.GCPauseAvgMs = weighted / float64(count) * float64(time.Second/time.Millisecond)
+			}
+		}
+	}
+	if totalCPU > 0 {
+		s.GCCPUPercent = gcCPU / totalCPU * 100
+	}
+}
+
 // buildStatus assembles the invariant part of every status snapshot: flags
 // read from the config files, the app list, the log tail and this process's
 // Cloudflare telemetry. Callers overlay the live metrics on top — from
@@ -2440,6 +2503,7 @@ func currentStatus() Status {
 	s.TrafficUpBytes = up
 	s.TrafficDownBytes = down
 	s.TrafficTotalBytes = up + down
+	fillGCStats(&s)
 	return s
 }
 func status() Status {
@@ -2467,6 +2531,10 @@ func status() Status {
 			s.TrafficUpBytes = file.TrafficUpBytes
 			s.TrafficDownBytes = file.TrafficDownBytes
 			s.TrafficTotalBytes = file.TrafficTotalBytes
+			s.GCNum = file.GCNum
+			s.GCCPUPercent = file.GCCPUPercent
+			s.GCPauseAvgMs = file.GCPauseAvgMs
+			s.HeapLiveBytes = file.HeapLiveBytes
 			if globalWsPool == nil {
 				s.PoolHits, s.PoolMisses, s.PoolIdle = file.PoolHits, file.PoolMisses, file.PoolIdle
 			}
