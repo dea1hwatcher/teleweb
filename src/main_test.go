@@ -3381,3 +3381,125 @@ func TestH2DispatchSemaphoreBounds(t *testing.T) {
 		t.Fatalf("%d requests still in flight after completion", n)
 	}
 }
+
+func TestLogDeduplication(t *testing.T) {
+	origDir := baseDir
+	baseDir = t.TempDir()
+	origLog := logFile
+	logMu.Lock()
+	logFile = nil
+	lastLogRaw = ""
+	repeatLogCount = 0
+	logMu.Unlock()
+	defer func() {
+		baseDir = origDir
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		lastLogRaw = ""
+		repeatLogCount = 0
+		logMu.Unlock()
+	}()
+
+	// Log identical lines 5 times
+	for i := 0; i < 5; i++ {
+		logf("test-duplicate-line")
+	}
+	// Log a different line to trigger flush
+	logf("test-different-line")
+	flushLogDedupe()
+
+	b, err := os.ReadFile(path("tgws.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(b)
+	if !strings.Contains(content, "[last message repeated 4 times]") {
+		t.Fatalf("expected duplicate summary in log, got:\n%s", content)
+	}
+	if !strings.Contains(content, "test-different-line") {
+		t.Fatalf("expected different line in log, got:\n%s", content)
+	}
+}
+
+func TestNoteRouteHTTPFailure_RetryAfter(t *testing.T) {
+	host := "retry-after-test.invalid"
+	rle := &RateLimitError{
+		StatusCode: 429,
+		RetryAfter: 45 * time.Second,
+		Message:    "too many requests",
+	}
+	noteRouteHTTPFailure(host, rle)
+
+	routeHealthMu.Lock()
+	state, ok := routeHealth[host]
+	routeHealthMu.Unlock()
+	if !ok {
+		t.Fatalf("host %s must be recorded in routeHealth", host)
+	}
+	rem := time.Until(state.until)
+	if rem < 40*time.Second || rem > 50*time.Second {
+		t.Fatalf("expected cooldown ~45s, got %v", rem)
+	}
+}
+
+func TestCFDialLimiter(t *testing.T) {
+	ctx := context.Background()
+	var releases []func()
+	defer func() {
+		for _, rel := range releases {
+			rel()
+		}
+	}()
+
+	for i := 0; i < maxConcurrentCFDials; i++ {
+		rel, err := acquireCFDialSlot(ctx)
+		if err != nil {
+			t.Fatalf("failed to acquire slot %d: %v", i, err)
+		}
+		releases = append(releases, rel)
+	}
+
+	// 5th acquisition with 50ms timeout must fail with deadline exceeded
+	timeoutCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	_, err := acquireCFDialSlot(timeoutCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	// Release 1 slot, now acquisition must succeed
+	releases[0]()
+	releases = releases[1:]
+
+	slotCtx, slotCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer slotCancel()
+	rel2, err2 := acquireCFDialSlot(slotCtx)
+	if err2 != nil {
+		t.Fatalf("expected acquisition to succeed after release, got %v", err2)
+	}
+	rel2()
+}
+
+func TestDCDomainAffinity(t *testing.T) {
+	domains := []string{"alpha.co.uk", "beta.co.uk", "gamma.co.uk"}
+	setDCDomainAffinity(2, "gamma.co.uk")
+
+	candidates := frontCandidatesForRace(2, domains, 0, 3)
+	if len(candidates) != 3 {
+		t.Fatalf("expected 3 candidates, got %d", len(candidates))
+	}
+	if candidates[0] != "kws2.gamma.co.uk" {
+		t.Fatalf("expected first candidate to be affinity domain kws2.gamma.co.uk, got %s", candidates[0])
+	}
+	// Ensure no duplicate candidates
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		if seen[c] {
+			t.Fatalf("duplicate candidate in list: %s", c)
+		}
+		seen[c] = true
+	}
+}

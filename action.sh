@@ -2,6 +2,30 @@
 MODDIR=${0%/*}
 export TELEWEB_DIR=/data/adb/teleweb
 export TELEWEB_MOD="$MODDIR"
+
+case "$1" in
+  toggle|--toggle)
+    if "$MODDIR/bin/tgws" status 2>/dev/null | grep -q '"running":true'; then
+      echo "Stopping TeleWEB..."
+      "$MODDIR/bin/tgws" stop
+      echo "TeleWEB stopped ❌"
+    else
+      echo "Starting TeleWEB..."
+      "$MODDIR/bin/tgws" boot
+      echo "TeleWEB started ✅"
+    fi
+    exit 0
+    ;;
+  start|boot)
+    "$MODDIR/bin/tgws" boot
+    exit 0
+    ;;
+  stop)
+    "$MODDIR/bin/tgws" stop
+    exit 0
+    ;;
+esac
+
 echo "TeleWEB $(grep -E '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2 || echo "module")"
 echo "ABI: $(getprop ro.product.cpu.abi 2>/dev/null)"
 echo

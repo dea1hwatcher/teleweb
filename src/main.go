@@ -56,19 +56,24 @@ var (
 	connSeq          int64
 	statsMu          sync.Mutex
 	dcCounts         = map[string]int{}
-	logMu            sync.Mutex
-	logFile          *os.File
-	logWrites        uint64
-	appCacheMu       sync.Mutex
-	appCache         []App
-	uidCache         []int
-	cfHostCache      sync.Map // route key -> last working Cloudflare-fronted KWS hostname
-	routeCacheMu     sync.Mutex
-	routeCacheDisk   = map[string]persistedRoute{}
-	routeHealthMu    sync.Mutex
-	routeHealth      = map[string]routeHealthState{} // host -> repeated early remote-close state
-	cfBalanceSeq     uint64
-	cfFrontSeq       uint64
+	logMu              sync.Mutex
+	logFile            *os.File
+	logWrites          uint64
+	lastLogRaw         string
+	repeatLogCount     int
+	lastRepeatLog      time.Time
+	appCacheMu         sync.Mutex
+	appCache           []App
+	uidCache           []int
+	cfHostCache        sync.Map // route key -> last working Cloudflare-fronted KWS hostname
+	routeCacheMu       sync.Mutex
+	routeCacheDisk     = map[string]persistedRoute{}
+	routeHealthMu      sync.Mutex
+	routeHealth        = map[string]routeHealthState{} // host -> repeated early remote-close state
+	cfBalanceSeq       uint64
+	cfFrontSeq         uint64
+	dcDomainAffinityMu sync.RWMutex
+	dcDomainAffinity   = map[int]string{} // dc -> preferred working front domain
 	ioBufPool        = sync.Pool{
 		New: func() any {
 			b := make([]byte, 32*1024)
@@ -365,10 +370,47 @@ func updateModuleDescription(statusText string) {
 		}
 	}
 }
-func logf(format string, a ...any) {
-	msg := time.Now().Format("2006/01/02 15:04:05 ") + fmt.Sprintf(format, a...)
+func flushRepeatLocked(now time.Time) {
+	if repeatLogCount > 0 {
+		repeatMsg := now.Format("2006/01/02 15:04:05 ") + fmt.Sprintf("[last message repeated %d times]", repeatLogCount)
+		fmt.Fprintln(os.Stderr, repeatMsg)
+		if logFile != nil {
+			_, _ = fmt.Fprintln(logFile, repeatMsg)
+			logWrites++
+		}
+		repeatLogCount = 0
+		lastRepeatLog = now
+	}
+}
+
+func flushLogDedupe() {
 	logMu.Lock()
 	defer logMu.Unlock()
+	flushRepeatLocked(time.Now())
+	lastLogRaw = ""
+}
+
+func logf(format string, a ...any) {
+	raw := fmt.Sprintf(format, a...)
+	now := time.Now()
+
+	logMu.Lock()
+	defer logMu.Unlock()
+
+	if raw == lastLogRaw {
+		repeatLogCount++
+		// Flush summary periodically during extended duplicate storms
+		if now.Sub(lastRepeatLog) >= 5*time.Second || repeatLogCount >= 50 {
+			flushRepeatLocked(now)
+		}
+		return
+	}
+
+	flushRepeatLocked(now)
+	lastLogRaw = raw
+	lastRepeatLog = now
+
+	msg := now.Format("2006/01/02 15:04:05 ") + raw
 	fmt.Fprintln(os.Stderr, msg)
 	if logFile == nil {
 		ensureDir()
@@ -2383,7 +2425,7 @@ func watchdog() {
 	}()
 	for range ticker.C {
 		tickCount++
-		if tickCount%2 == 0 {
+		if tickCount%20 == 0 {
 			logf("watchdog: heartbeat enabled=%t daemon_ok=%t rules_ok=%t; daemon{%s}", readEnabled(), daemonHealthy(), rulesHealthy(), procSummary(readPIDFile("tgws.pid")))
 		}
 		if !readEnabled() {
@@ -2791,6 +2833,7 @@ func executeAPICommand(q apiRequest) (any, error) {
 		}
 		return status(), nil
 	case "clearlogs":
+		flushLogDedupe()
 		for _, name := range []string{"tgws.log", "daemon.log", "supervisor.log", "watchdog.log"} {
 			_ = os.Truncate(path(name), 0)
 		}
@@ -4355,6 +4398,21 @@ func frontsForDC(dc int) []string {
 	return hosts
 }
 
+func getDCDomainAffinity(dc int) string {
+	dcDomainAffinityMu.RLock()
+	defer dcDomainAffinityMu.RUnlock()
+	return dcDomainAffinity[dc]
+}
+
+func setDCDomainAffinity(dc int, domain string) {
+	if dc <= 0 || domain == "" {
+		return
+	}
+	dcDomainAffinityMu.Lock()
+	defer dcDomainAffinityMu.Unlock()
+	dcDomainAffinity[dc] = domain
+}
+
 // frontCandidatesForRace returns up to max usable fronts for the DC, starting at
 // a rotating offset so successive attempts still cover the whole pool while each
 // individual attempt stays inside the client's dial budget.
@@ -4366,11 +4424,27 @@ func frontCandidatesForRace(dc int, domains []string, start, max int) []string {
 		start = 0
 	}
 	hosts := make([]string, 0, max)
+	seen := map[string]bool{}
+
+	// If a preferred affinity domain exists for this DC and is healthy, try it first
+	if pref := getDCDomainAffinity(dc); pref != "" {
+		host := frontHost(dc, pref)
+		if !routeCoolingDown(host) {
+			hosts = append(hosts, host)
+			seen[pref] = true
+		}
+	}
+
 	for i := 0; i < len(domains) && len(hosts) < max; i++ {
-		host := frontHost(dc, domains[(start+i)%len(domains)])
+		domain := domains[(start+i)%len(domains)]
+		if seen[domain] {
+			continue
+		}
+		host := frontHost(dc, domain)
 		if routeCoolingDown(host) {
 			continue
 		}
+		seen[domain] = true
 		hosts = append(hosts, host)
 	}
 	return hosts
@@ -4803,6 +4877,10 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 				if !cfBalance && h != "" && !strings.HasPrefix(winningRoute, "cf-worker") {
 					cfHostCache.Store(key, h)
 					saveRouteCache(key, h)
+					parts := strings.SplitN(h, ".", 2)
+					if len(parts) == 2 && parts[1] != "" {
+						setDCDomainAffinity(dc, parts[1])
+					}
 				}
 			}
 		}
@@ -4897,6 +4975,15 @@ func noteRouteHTTPFailure(host string, err error) {
 	}
 	state.failures++
 	cooldown = routeBackoff(state.failures)
+	var rle *RateLimitError
+	if errors.As(err, &rle) && rle.RetryAfter > 0 {
+		if rle.RetryAfter > cooldown {
+			cooldown = rle.RetryAfter
+		}
+	}
+	if cooldown > 5*time.Minute {
+		cooldown = 5 * time.Minute
+	}
 	wasCooling := now.Before(state.until)
 	state.until = now.Add(cooldown)
 	state.last = now
@@ -4917,7 +5004,26 @@ func noteRouteHTTPFailure(host string, err error) {
 	}
 }
 
+const maxConcurrentCFDials = 4
+
+var cfDialSem = make(chan struct{}, maxConcurrentCFDials)
+
+func acquireCFDialSlot(ctx context.Context) (func(), error) {
+	select {
+	case cfDialSem <- struct{}{}:
+		return func() { <-cfDialSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsConn, error) {
+	release, err := acquireCFDialSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	var ips []netip.Addr
 	if doHEnabledCached() {
 		dohCtx, dohCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
