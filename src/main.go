@@ -788,21 +788,31 @@ var packageNames = []struct{ Pkg, Name string }{
 	{"org.catogram.messenger", "Catogram"},
 }
 
-var telegramKeywords = []string{
-	"gram", "tgnet", "tg", "tele", "extera", "nekox", "neko", "plus", "ime",
-	"turrit", "telegraph", "teleplus", "mobogram", "ayugram", "cherrygram",
-	"kotato", "forkgram", "catogram", "nemogram", "swiftgram", "mdgram",
-	"bgram", "octogram", "unigram", "tdlib",
-}
-
-func matchesTelegramKeyword(pkg string) bool {
-	low := strings.ToLower(pkg)
-	for _, kw := range telegramKeywords {
-		if strings.Contains(low, kw) {
-			return true
-		}
+var curatedClientNames = func() map[string]string {
+	m := make(map[string]string, len(packageNames))
+	for _, p := range packageNames {
+		m[p.Pkg] = p.Name
 	}
-	return false
+	return m
+}()
+
+// telegramClientName decides whether a package belongs in the detected
+// clients list. A curated name always qualifies; anything else has to prove
+// itself with Telegram's native libraries inside its APK.
+//
+// The old substring keyword guess over package names is gone: "gram", "tele",
+// "ime", "plus" and "tg" matched Instagram, the telecom and telephony
+// services, the realme/OnePlus system packages and a large part of any
+// Android install, and every match became a UI entry, a freezer target and an
+// apps.json record with two base64 icons.
+func telegramClientName(pkg, apkPath string) (string, bool) {
+	if name, ok := curatedClientNames[pkg]; ok {
+		return name, true
+	}
+	if isTelegramAPK(apkPath) {
+		return humanizePackageName(pkg), true
+	}
+	return "", false
 }
 
 func humanizePackageName(pkg string) string {
@@ -955,17 +965,38 @@ func resolveUIDToPackage(uid int) string {
 		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err == nil {
-			target := fmt.Sprintf("uid:%d", uid)
-			for _, line := range strings.Split(string(out), "\n") {
-				if strings.Contains(line, target) && strings.HasPrefix(line, "package:") {
-					fields := strings.Fields(line)
-					return strings.TrimPrefix(fields[0], "package:")
-				}
+			if pkg := packageFromPMListing(string(out), uid); pkg != "" {
+				return pkg
 			}
 		}
 	}
 	return ""
 }
+
+// packageFromPMListing returns the package that owns uid in
+// `pm list packages -U` output. The uid is compared as a whole field: looking
+// for it as a substring made "uid:10234" match the line of uid:102345 and
+// report another app's package name as the detected client.
+func packageFromPMListing(out string, uid int) string {
+	target := "uid:" + strconv.Itoa(uid)
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "package:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		for _, field := range fields[1:] {
+			if field == target {
+				return strings.TrimPrefix(fields[0], "package:")
+			}
+		}
+	}
+	return ""
+}
+
+// rejectedLiveUIDs remembers UIDs that a live-traffic probe showed not to be
+// Telegram clients, so the watchdog's 30 second tick does not resolve and
+// open the same APK over and over.
+var rejectedLiveUIDs = map[int]bool{}
 
 func discoverActiveTelegramClients() {
 	activeUIDs := scanActiveTelegramSockets()
@@ -982,23 +1013,26 @@ func discoverActiveTelegramClients() {
 
 	dirty := false
 	for _, uid := range activeUIDs {
-		if known[uid] {
+		if known[uid] || rejectedLiveUIDs[uid] {
 			continue
 		}
 		pkg := resolveUIDToPackage(uid)
 		if pkg == "" {
-			pkg = fmt.Sprintf("unknown.telegram.uid%d", uid)
+			rejectedLiveUIDs[uid] = true
+			continue
 		}
-		name := humanizePackageName(pkg)
-		normalIco, monetIco := extractAPKIcons(findPackageAPK(pkg))
-		app := App{
-			Name:       name,
-			Pkg:        pkg,
-			UID:        uid,
-			IconNormal: normalIco,
-			IconMonet:  monetIco,
+		apkPath := findPackageAPK(pkg)
+		name, wanted := telegramClientName(pkg, apkPath)
+		if !wanted {
+			// Something else in this UID's traffic reached a Telegram address
+			// — a browser on t.me, a mail checker. Not a client, and inventing
+			// "unknown.telegram.uidN" for it only grew apps.json and the
+			// base64 icons carried in every status write.
+			rejectedLiveUIDs[uid] = true
+			continue
 		}
-		appCache = append(appCache, app)
+		normalIco, monetIco := extractAPKIcons(apkPath)
+		appCache = append(appCache, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
 		uidCache = append(uidCache, uid)
 		known[uid] = true
 		dirty = true
@@ -1009,14 +1043,16 @@ func discoverActiveTelegramClients() {
 	}
 }
 
+// pmUIDRe parses the uid field of `pm list packages -U` output.
+var pmUIDRe = regexp.MustCompile(`uid:(\d+)`)
+
 func packageUID(pkg string) int {
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err == nil {
-			re := regexp.MustCompile(`uid:(\d+)`)
-			m := re.FindSubmatch(out)
+			m := pmUIDRe.FindSubmatch(out)
 			if len(m) > 1 {
 				n, _ := strconv.Atoi(string(m[1]))
 				if n > 0 {
@@ -1266,10 +1302,6 @@ func discoverApps() ([]App, []int) {
 	var apps []App
 	var uids []int
 	seen := map[int]bool{}
-	nameByPkg := map[string]string{}
-	for _, p := range packageNames {
-		nameByPkg[p.Pkg] = p.Name
-	}
 	// Android's package manager can return all package UIDs in one call.
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U"}, {"pm", "list", "packages", "-U"}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
@@ -1289,20 +1321,11 @@ func discoverApps() ([]App, []int) {
 			// out to pm, and it was previously looked up 2–3 times per
 			// package (isTelegramAPK probe + icon extraction).
 			apkPath := findPackageAPK(pkg)
-			name, wanted := nameByPkg[pkg]
-			if !wanted {
-				if matchesTelegramKeyword(pkg) {
-					name = humanizePackageName(pkg)
-					wanted = true
-				} else if isTelegramAPK(apkPath) {
-					name = humanizePackageName(pkg)
-					wanted = true
-				}
-			}
+			name, wanted := telegramClientName(pkg, apkPath)
 			if !wanted {
 				continue
 			}
-			m := regexp.MustCompile(`uid:(\d+)`).FindStringSubmatch(line)
+			m := pmUIDRe.FindStringSubmatch(line)
 			if len(m) < 2 {
 				continue
 			}
