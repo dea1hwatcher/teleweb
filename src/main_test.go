@@ -2775,32 +2775,84 @@ func TestIsLocalAddrInUse(t *testing.T) {
 	}
 }
 
-func TestMatchesTelegramKeyword(t *testing.T) {
+func writeSyntheticAPK(t *testing.T, path string, entries ...string) string {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for _, name := range entries {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("fake ELF content")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestTelegramClientName(t *testing.T) {
+	dir := t.TempDir()
+	tgAPK := writeSyntheticAPK(t, filepath.Join(dir, "fork.apk"), "lib/arm64-v8a/libtmessages.48.so")
+	plainAPK := writeSyntheticAPK(t, filepath.Join(dir, "other.apk"), "lib/arm64-v8a/libsomeother.so")
+
 	cases := []struct {
-		pkg  string
-		want bool
+		pkg      string
+		apk      string
+		wantName string
+		wantOK   bool
 	}{
-		{"org.telegram.messenger", true},
-		{"org.telegram.messenger.web", true},
-		{"com.radolyn.ayugram", true},
-		{"org.swiftgram.messenger", true},
-		{"com.turrit.chat", true},
-		{"org.telegram.messenger.cherry", true},
-		{"com.cherrygram.messenger", true},
-		{"org.telegram.messenger.mdgram", true},
-		{"org.telegram.bgram", true},
-		{"ir.ilmili.telegraph", true},
-		{"org.catogram.messenger", true},
-		{"com.custom.client.forkgram", true},
-		{"me.app.nicegram", true},
-		{"com.android.chrome", false},
-		{"com.google.android.youtube", false},
-		{"com.whatsapp", false},
-		{"org.mozilla.firefox", false},
+		{"org.telegram.messenger", "", "Telegram", true},
+		{"com.turrit.chat", "", "Turrit", true},
+		{"org.nemogram.messenger", "", "Nemogram", true},
+		// An unlisted fork still qualifies, but only on the proof of its
+		// native Telegram libraries.
+		{"com.example.cherryfork", tgAPK, "Cherryfork", true},
+		{"com.example.cherryfork", plainAPK, "", false},
+		// These are what the old substring keywords matched: "gram" caught
+		// Instagram, "tele" the telecom and telephony services, "ime" anything
+		// with "time", "plus" every OnePlus package.
+		{"com.instagram.android", plainAPK, "", false},
+		{"com.android.server.telecom", plainAPK, "", false},
+		{"com.oplus.telephonyservice", plainAPK, "", false},
+		{"com.oneplus.time", plainAPK, "", false},
+		{"net.oneplus.pay", plainAPK, "", false},
+		{"com.google.android.youtube", plainAPK, "", false},
+		{"com.whatsapp", plainAPK, "", false},
+		{"org.mozilla.firefox", plainAPK, "", false},
+		{"com.example.cherryfork", "", "", false},
 	}
 	for _, tc := range cases {
-		if got := matchesTelegramKeyword(tc.pkg); got != tc.want {
-			t.Errorf("matchesTelegramKeyword(%q) = %t, want %t", tc.pkg, got, tc.want)
+		name, ok := telegramClientName(tc.pkg, tc.apk)
+		if ok != tc.wantOK || name != tc.wantName {
+			t.Errorf("telegramClientName(%q, %q) = %q, %t; want %q, %t", tc.pkg, tc.apk, name, ok, tc.wantName, tc.wantOK)
+		}
+	}
+}
+
+func TestPackageFromPMListing(t *testing.T) {
+	out := "package:com.android.server.telecom uid:102345\npackage:org.telegram.messenger uid:10234\npackage:com.oplus.nengine uid:1000 hidden\n"
+	cases := []struct {
+		uid  int
+		want string
+	}{
+		{10234, "org.telegram.messenger"},
+		{102345, "com.android.server.telecom"},
+		{1000, "com.oplus.nengine"},
+		{9999, ""},
+	}
+	for _, tc := range cases {
+		if got := packageFromPMListing(out, tc.uid); got != tc.want {
+			t.Errorf("packageFromPMListing(uid %d) = %q, want %q", tc.uid, got, tc.want)
 		}
 	}
 }
