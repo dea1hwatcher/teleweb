@@ -1298,45 +1298,92 @@ func extractAPKIcons(apkPath string) (normalB64 string, monetB64 string) {
 
 	return normalB64, monetB64
 }
+
+// pmPackage is one entry of a package manager listing.
+type pmPackage struct {
+	pkg     string
+	uid     int
+	apkPath string
+}
+
+// parsePMPackagesListing reads both shapes of `pm list packages`:
+//
+//	package:com.example.fork uid:10234
+//	/data/app/~~abcd==/com.example.fork-EF12==/base.apk=com.example.fork uid:10234
+//
+// The -f form carries the APK path, which is what the scan needs to prove a
+// package is a Telegram client. Installed paths contain '=' themselves, so
+// the package name starts after the last one.
+func parsePMPackagesListing(out string) []pmPackage {
+	var res []pmPackage
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		var rest, apkPath string
+		if strings.HasPrefix(line, "package:") {
+			rest = strings.TrimPrefix(line, "package:")
+		} else {
+			sep := strings.LastIndex(line, "=")
+			if sep < 0 {
+				continue
+			}
+			apkPath = line[:sep]
+			rest = line[sep+1:]
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 || fields[0] == "" {
+			continue
+		}
+		uid := 0
+		for _, field := range fields[1:] {
+			if m := pmUIDRe.FindStringSubmatch(field); len(m) == 2 {
+				uid, _ = strconv.Atoi(m[1])
+			}
+		}
+		if uid <= 0 {
+			continue
+		}
+		res = append(res, pmPackage{pkg: fields[0], uid: uid, apkPath: apkPath})
+	}
+	return res
+}
+
 func discoverApps() ([]App, []int) {
 	var apps []App
 	var uids []int
 	seen := map[int]bool{}
-	// Android's package manager can return all package UIDs in one call.
-	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U"}, {"pm", "list", "packages", "-U"}} {
+	// A single listing per form. With -f the APK path comes out of the listing
+	// itself, so the scan stopped shelling out to `pm path` once for every
+	// installed package - several hundred subprocesses on a phone.
+	for _, cmd := range [][]string{
+		{"cmd", "package", "list", "packages", "-f", "-U"},
+		{"pm", "list", "packages", "-f", "-U"},
+		{"cmd", "package", "list", "packages", "-U"},
+		{"pm", "list", "packages", "-U"},
+	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "package:") {
+		for _, entry := range parsePMPackagesListing(string(out)) {
+			if seen[entry.uid] {
 				continue
 			}
-			fields := strings.Fields(line)
-			pkg := strings.TrimPrefix(fields[0], "package:")
-			// Resolve the APK path once per package: findPackageAPK shells
-			// out to pm, and it was previously looked up 2–3 times per
-			// package (isTelegramAPK probe + icon extraction).
-			apkPath := findPackageAPK(pkg)
-			name, wanted := telegramClientName(pkg, apkPath)
+			apkPath := entry.apkPath
+			if apkPath == "" {
+				// This pm build or listing form carried no paths: resolve the
+				// path per package instead.
+				apkPath = findPackageAPK(entry.pkg)
+			}
+			name, wanted := telegramClientName(entry.pkg, apkPath)
 			if !wanted {
 				continue
 			}
-			m := pmUIDRe.FindStringSubmatch(line)
-			if len(m) < 2 {
-				continue
-			}
-			uid, _ := strconv.Atoi(m[1])
-			if uid <= 0 || seen[uid] {
-				continue
-			}
 			normalIco, monetIco := extractAPKIcons(apkPath)
-			apps = append(apps, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
-			uids = append(uids, uid)
-			seen[uid] = true
+			apps = append(apps, App{Name: name, Pkg: entry.pkg, UID: entry.uid, IconNormal: normalIco, IconMonet: monetIco})
+			uids = append(uids, entry.uid)
+			seen[entry.uid] = true
 		}
 		if len(apps) > 0 {
 			return apps, uids
@@ -1366,13 +1413,20 @@ func loadCachedApps() ([]App, []int) {
 	}
 	var uids []int
 	seen := map[int]bool{}
+	kept := apps[:0]
 	for _, a := range apps {
+		// Older builds invented a package name whenever a live-traffic UID
+		// could not be resolved. Those are not clients.
+		if strings.HasPrefix(a.Pkg, "unknown.telegram.uid") {
+			continue
+		}
+		kept = append(kept, a)
 		if a.UID > 0 && !seen[a.UID] {
 			uids = append(uids, a.UID)
 			seen[a.UID] = true
 		}
 	}
-	return apps, uids
+	return kept, uids
 }
 
 func saveCachedApps(apps []App) {
@@ -2607,6 +2661,12 @@ func status() Status {
 }
 func writeStatus() {
 	s := currentStatus()
+	// The persisted snapshot is only ever read back for live counters: status()
+	// rebuilds the app list from apps.json and the log tail from the log file.
+	// Writing them anyway meant marshalling two base64 icons per detected
+	// client every five seconds, on the phone's own CPU.
+	s.Apps = nil
+	s.Log = ""
 	b, err := json.Marshal(s)
 	if err != nil {
 		return
