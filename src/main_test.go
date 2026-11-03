@@ -178,6 +178,25 @@ func TestInitMemoryTuningDoesNotClampHeap(t *testing.T) {
 	}
 }
 
+func TestLoopbackPprofAddr(t *testing.T) {
+	cases := map[string]string{
+		"":                  "",
+		"127.0.0.1:6060":    "127.0.0.1:6060",
+		"localhost:6060":    "127.0.0.1:6060",
+		"[::1]:6060":        "[::1]:6060",
+		"0.0.0.0:6060":      "",
+		"192.168.1.10:6060": "",
+		"8.8.8.8:0":         "",
+		"6060":              "",
+		"127.0.0.1":         "",
+	}
+	for raw, want := range cases {
+		if got := loopbackPprofAddr(raw); got != want {
+			t.Errorf("loopbackPprofAddr(%q)=%q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestFillGCStatsReportsCollectionProgress(t *testing.T) {
 	// A few real collections, so every field has something to report.
 	for i := 0; i < 4; i++ {

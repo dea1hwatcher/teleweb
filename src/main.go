@@ -20,6 +20,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // gated behind TELEWEB_PPROF, loopback only
 	"net/netip"
 	"os"
 	"os/exec"
@@ -2738,6 +2739,46 @@ func emitErr(e error) {
 	fmt.Println(string(b))
 }
 
+// loopbackPprofAddr validates the TELEWEB_PPROF value and returns the address
+// to bind, or "" when profiling stays off. A pprof endpoint hands out heap
+// dumps and CPU profiles, so it is refused anywhere but on loopback.
+func loopbackPprofAddr(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil || port == "" {
+		return ""
+	}
+	if strings.EqualFold(host, "localhost") {
+		host = "127.0.0.1"
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return ""
+	}
+	return net.JoinHostPort(ip.String(), port)
+}
+
+// maybeStartPprof serves net/http/pprof on TELEWEB_PPROF, e.g.
+// TELEWEB_PPROF=127.0.0.1:6060. Off unless the variable is set; used to tell a
+// GC spiral from a dial storm on the device without rebuilding.
+func maybeStartPprof() {
+	addr := loopbackPprofAddr(os.Getenv("TELEWEB_PPROF"))
+	if addr == "" {
+		if raw := os.Getenv("TELEWEB_PPROF"); raw != "" {
+			logf("pprof: TELEWEB_PPROF=%q ignored: profiling only binds a loopback address", raw)
+		}
+		return
+	}
+	go func() {
+		logf("pprof: listening on %s", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			logf("pprof: server exited: %v", err)
+		}
+	}()
+}
+
 func initMemoryTuning() {
 	// No forced GOMEMLIMIT: clamping the heap at 48 MB drove the GC into a
 	// death spiral whenever media buffers or the socket pool pushed the live
@@ -2902,6 +2943,7 @@ func serve() {
 	}
 	_ = os.WriteFile(path("tgws.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
 	protectProcess(os.Getpid())
+	maybeStartPprof()
 	// Load last-known-good routes before accepting any client sockets. Otherwise
 	// a burst of connections at boot can race the cache load and trigger a full scan.
 	loadRouteCache()
