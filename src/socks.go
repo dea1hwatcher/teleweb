@@ -125,15 +125,13 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 	}
 	port := binary.BigEndian.Uint16(pb[:])
 	if !isDomainAllowed && !isTelegramEndpoint(ip) && !isTelegramEndpointV6(ip) {
-		// Allow speculative SOCKS5 handshakes for Telegram-standard ports (443, 80, 8443, 5222);
-		// serveConn will inspect the initial 64-byte payload and drop non-MTProto traffic.
-		if port == 443 || port == 80 || port == 8443 || port == 5222 {
-			isDomainAllowed = true
-		} else {
-			logger.Printf("socks: rejected non-Telegram destination %s:%d", ip, port)
-			_, _ = c.Write([]byte{5, 2, 0, 1, 0, 0, 0, 0, 0, 0}) // connection not allowed
-			return
-		}
+		// The SOCKS listener is a Telegram transport, not a general proxy:
+		// any other destination is rejected regardless of port. Speculative
+		// port-based allowances previously let forged DC203 inits through to
+		// handleCDN203, turning the daemon into an open TCP proxy.
+		logger.Printf("socks: rejected non-Telegram destination %s:%d", ip, port)
+		_, _ = c.Write([]byte{5, 2, 0, 1, 0, 0, 0, 0, 0, 0}) // connection not allowed
+		return
 	}
 	if _, err := c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
 		return
@@ -176,6 +174,13 @@ func isTelegramEndpoint(ip netip.Addr) bool {
 		}
 	}
 	return false
+}
+
+// isTelegramAggregate reports whether ip (either address family) belongs to a
+// Telegram network aggregate. It guards learned-DC bookkeeping against
+// pollution from forged init packets.
+func isTelegramAggregate(ip netip.Addr) bool {
+	return isTelegramEndpoint(ip) || isTelegramEndpointV6(ip)
 }
 
 func isTelegramEndpointV6(ip netip.Addr) bool {
