@@ -186,11 +186,19 @@ var natTable = struct {
 	next  uint16
 }{flows: map[natFlowKey]*natEntry{}, ports: map[uint16]*natEntry{}, next: 20000}
 
-func natGetOrCreate(flow natFlowKey, orig netip.AddrPort) *natEntry {
+func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry {
 	natTable.mu.Lock()
 	defer natTable.mu.Unlock()
-	if e := natTable.flows[flow]; e != nil {
-		return e
+	if !isSYN {
+		if e := natTable.flows[flow]; e != nil {
+			return e
+		}
+	} else if old := natTable.flows[flow]; old != nil {
+		// New TCP connection initiated with SYN: purge the stale mapping so
+		// this connection receives a fresh local port and does not collide
+		// with a previous socket in TIME_WAIT.
+		delete(natTable.ports, old.natPort)
+		delete(natTable.flows, flow)
 	}
 	for i := 0; i < 12000; i++ {
 		p := natTable.next
@@ -229,19 +237,30 @@ func natLookup(port uint16) (netip.AddrPort, bool) {
 	return e.orig, true
 }
 
-func natJanitor() {
+func natLookupFlow(flow natFlowKey) *natEntry {
+	natTable.mu.RLock()
+	defer natTable.mu.RUnlock()
+	return natTable.flows[flow]
+}
+
+func natJanitor(stop <-chan struct{}) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
-	for range t.C {
-		cutoff := time.Now().Add(-180 * time.Second).UnixNano()
-		natTable.mu.Lock()
-		for k, e := range natTable.flows {
-			if e.lastSeen.Load() < cutoff {
-				delete(natTable.flows, k)
-				delete(natTable.ports, e.natPort)
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			cutoff := time.Now().Add(-180 * time.Second).UnixNano()
+			natTable.mu.Lock()
+			for k, e := range natTable.flows {
+				if e.lastSeen.Load() < cutoff {
+					delete(natTable.flows, k)
+					delete(natTable.ports, e.natPort)
+				}
 			}
+			natTable.mu.Unlock()
 		}
-		natTable.mu.Unlock()
 	}
 }
 
@@ -286,6 +305,7 @@ type tcpMeta struct {
 	ihl          int
 	srcIP, dstIP [4]byte
 	sport, dport uint16
+	flags        byte
 }
 
 func parseTCPv4(pkt []byte) (tcpMeta, bool) {
@@ -301,14 +321,16 @@ func parseTCPv4(pkt []byte) (tcpMeta, bool) {
 	copy(m.dstIP[:], pkt[16:20])
 	m.sport = binary.BigEndian.Uint16(pkt[m.ihl:])
 	m.dport = binary.BigEndian.Uint16(pkt[m.ihl+2:])
+	m.flags = pkt[m.ihl+13]
 	return m, true
 }
 
 // ------------------------------ Redirector ---------------------------------
 
 type wdRedirector struct {
-	hOut, hRet uintptr
-	running    atomic.Bool
+	hOut, hRet  uintptr
+	running     atomic.Bool
+	stopJanitor chan struct{}
 }
 
 var (
@@ -358,12 +380,13 @@ func startRedirector() error {
 		_, _, _ = wdClose.Call(hOut)
 		return err
 	}
-	r := &wdRedirector{hOut: hOut, hRet: hRet}
+	stopCh := make(chan struct{})
+	r := &wdRedirector{hOut: hOut, hRet: hRet, stopJanitor: stopCh}
 	r.running.Store(true)
 	activeRedirector = r
 	go r.outLoop()
 	go r.retLoop()
-	go natJanitor()
+	go natJanitor(stopCh)
 	logf("redirector: WinDivert active; Telegram TCP -> 127.0.0.1:%d", defaultPort)
 	return nil
 }
@@ -375,6 +398,9 @@ func stopRedirector() {
 		return
 	}
 	activeRedirector.running.Store(false)
+	if activeRedirector.stopJanitor != nil {
+		close(activeRedirector.stopJanitor)
+	}
 	_, _, _ = wdClose.Call(activeRedirector.hOut)
 	_, _, _ = wdClose.Call(activeRedirector.hRet)
 	activeRedirector = nil
@@ -397,15 +423,23 @@ func (r *wdRedirector) outLoop() {
 			_ = wdSendPacket(r.hOut, p, &addr)
 			continue
 		}
+		isSYN := (m.flags & 0x12) == 0x02 // SYN set, ACK clear
 		flow := natFlowKey{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
-		e := natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport))
-		if e == nil {
-			_ = wdSendPacket(r.hOut, p, &addr)
-			continue
+		// Fast path: established flows are resolved under a read lock. A SYN
+		// (new or retransmitted) may carry a stale TIME_WAIT mapping, so it
+		// falls through to natGetOrCreate which purges and rebinds a fresh
+		// local port for the new connection.
+		e := natLookupFlow(flow)
+		if e == nil || isSYN {
+			e = natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
+			if e == nil {
+				_ = wdSendPacket(r.hOut, p, &addr)
+				continue
+			}
 		}
 		e.lastSeen.Store(time.Now().UnixNano())
-		copy(p[12:16], []byte{127, 0, 0, 1})
-		copy(p[16:20], []byte{127, 0, 0, 1})
+		p[12], p[13], p[14], p[15] = 127, 0, 0, 1
+		p[16], p[17], p[18], p[19] = 127, 0, 0, 1
 		binary.BigEndian.PutUint16(p[m.ihl:], e.natPort)
 		binary.BigEndian.PutUint16(p[m.ihl+2:], defaultPort)
 		wdCalcChecksums(p, &addr)

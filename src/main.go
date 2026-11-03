@@ -17,8 +17,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // gated behind TELEWEB_PPROF, loopback only
 	"net/netip"
 	"os"
 	"os/exec"
@@ -27,6 +29,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,6 +88,12 @@ type persistedRoute struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// routeCacheTTL bounds how long a last-known-good route keeps the fast path.
+// Once it expires the next dial re-evaluates every route instead of fronting
+// the same frontend forever; a winning dial re-stamps the entry. Six hours
+// mirrors the measured route decision used by the sibling TG Open build.
+const routeCacheTTL = 6 * time.Hour
+
 // loadRouteCache restores the last known-good routes across daemon restarts.
 // It stores only route metadata, never client streams or authentication data.
 func loadRouteCache() {
@@ -120,6 +129,11 @@ func saveRouteCache(key, host string) {
 	defer routeCacheMu.Unlock()
 	entry := routeCacheDisk[key]
 	if entry.Host == host {
+		// Keep the in-memory freshness stamp current without rewriting the
+		// file on every dial; the persisted timestamp only matters across
+		// daemon restarts.
+		entry.UpdatedAt = time.Now()
+		routeCacheDisk[key] = entry
 		return
 	}
 	entry.Host = host
@@ -139,6 +153,16 @@ func saveRouteCache(key, host string) {
 	if err := os.Rename(tmp, path("route-cache.json")); err != nil {
 		_ = os.Remove(tmp)
 	}
+}
+
+// routeCacheFresh reports whether key's last-known-good route is recent enough
+// to keep front-loading. A stale entry is skipped once so the full race
+// re-evaluates the route instead of pinning an old frontend forever.
+func routeCacheFresh(key, host string) bool {
+	routeCacheMu.Lock()
+	entry := routeCacheDisk[key]
+	routeCacheMu.Unlock()
+	return entry.Host == host && time.Since(entry.UpdatedAt) < routeCacheTTL
 }
 
 type routeHealthState struct {
@@ -187,6 +211,10 @@ type Status struct {
 	TrafficUpBytes    int64          `json:"trafficUpBytes"`
 	TrafficDownBytes  int64          `json:"trafficDownBytes"`
 	TrafficTotalBytes int64          `json:"trafficTotalBytes"`
+	GCNum             uint32         `json:"gcNum"`
+	GCCPUPercent      float64        `json:"gcCpuPercent"`
+	GCPauseAvgMs      float64        `json:"gcPauseAvgMs"`
+	HeapLiveBytes     int64          `json:"heapLiveBytes"`
 	Log               string         `json:"log"`
 	CFPriority        bool           `json:"cfPriority"`
 	CFBalance         bool           `json:"cfBalance"`
@@ -698,11 +726,33 @@ func pidAlive() bool {
 	return true
 }
 func tailLog(n int) string {
-	b, e := os.ReadFile(path("tgws.log"))
-	if e != nil {
+	f, err := os.Open(path("tgws.log"))
+	if err != nil {
 		return ""
 	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return ""
+	}
+
+	const maxTailBytes = 32 * 1024
+	offset := int64(0)
+	readLen := fi.Size()
+	if readLen > maxTailBytes {
+		offset = readLen - maxTailBytes
+		readLen = maxTailBytes
+	}
+	buf := make([]byte, readLen)
+	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(buf)), "\n")
+	if offset > 0 && len(lines) > 0 {
+		lines = lines[1:]
+	}
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -715,6 +765,7 @@ var packageNames = []struct{ Pkg, Name string }{
 	{"org.telegram.messenger.web", "Telegram Web"},
 	{"org.telegram.messenger.beta", "Telegram Beta"},
 	{"org.telegram.plus", "Plus Messenger"},
+	{"org.telegram.plus.beta", "Plus Messenger Beta"},
 	{"org.thunderdog.challegram", "Telegram X"},
 	{"com.nicegram", "Nicegram"},
 	{"nekox.messenger", "Nekogram X"},
@@ -727,6 +778,235 @@ var packageNames = []struct{ Pkg, Name string }{
 	{"com.telegram.messenger", "Telegram"},
 	{"org.nemogram.messenger", "Nemogram"},
 	{"org.nemogram", "Nemogram"},
+	{"org.swiftgram.messenger", "Swiftgram"},
+	{"org.telegram.messenger.cherry", "Cherrygram"},
+	{"com.cherrygram.messenger", "Cherrygram"},
+	{"org.telegram.messenger.mdgram", "MDGram"},
+	{"com.turrit.chat", "Turrit"},
+	{"org.telegram.bgram", "BGram"},
+	{"ir.ilmili.telegraph", "Telegraph"},
+	{"org.catogram.messenger", "Catogram"},
+}
+
+var telegramKeywords = []string{
+	"gram", "tgnet", "tg", "tele", "extera", "nekox", "neko", "plus", "ime",
+	"turrit", "telegraph", "teleplus", "mobogram", "ayugram", "cherrygram",
+	"kotato", "forkgram", "catogram", "nemogram", "swiftgram", "mdgram",
+	"bgram", "octogram", "unigram", "tdlib",
+}
+
+func matchesTelegramKeyword(pkg string) bool {
+	low := strings.ToLower(pkg)
+	for _, kw := range telegramKeywords {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func humanizePackageName(pkg string) string {
+	for _, p := range packageNames {
+		if p.Pkg == pkg {
+			return p.Name
+		}
+	}
+	parts := strings.Split(pkg, ".")
+	last := parts[len(parts)-1]
+	if (last == "messenger" || last == "android" || last == "chat" || last == "app" || last == "client") && len(parts) > 1 {
+		last = parts[len(parts)-2]
+	}
+	if len(last) > 0 {
+		return strings.ToUpper(last[:1]) + last[1:]
+	}
+	return pkg
+}
+
+func isTelegramAPK(apkPath string) bool {
+	if apkPath == "" {
+		return false
+	}
+	zr, err := zip.OpenReader(apkPath)
+	if err != nil {
+		return false
+	}
+	defer zr.Close()
+
+	for _, f := range zr.File {
+		name := strings.ToLower(f.Name)
+		if strings.Contains(name, "libtmessages") ||
+			strings.Contains(name, "libtgnet") ||
+			strings.Contains(name, "libtdjson") ||
+			strings.Contains(name, "libtdjni") ||
+			strings.Contains(name, "libtelegram") {
+			return true
+		}
+	}
+	return false
+}
+
+func parseProcNetTCPIP(hexAddr string) (netip.Addr, uint16, bool) {
+	parts := strings.Split(hexAddr, ":")
+	if len(parts) != 2 || len(parts[0]) != 8 || len(parts[1]) != 4 {
+		return netip.Addr{}, 0, false
+	}
+	ipNum, err := strconv.ParseUint(parts[0], 16, 32)
+	if err != nil {
+		return netip.Addr{}, 0, false
+	}
+	portNum, err := strconv.ParseUint(parts[1], 16, 16)
+	if err != nil {
+		return netip.Addr{}, 0, false
+	}
+	// /proc/net/tcp stores IPv4 as little-endian 32-bit uint
+	b0 := byte(ipNum & 0xff)
+	b1 := byte((ipNum >> 8) & 0xff)
+	b2 := byte((ipNum >> 16) & 0xff)
+	b3 := byte((ipNum >> 24) & 0xff)
+	addr := netip.AddrFrom4([4]byte{b0, b1, b2, b3})
+	return addr, uint16(portNum), true
+}
+
+func parseProcNetTCPContent(content string) []int {
+	seen := map[int]bool{}
+	var uids []int
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		st := fields[3]
+		// 01 = ESTABLISHED, 02 = SYN_SENT, 03 = SYN_RECV
+		if st != "01" && st != "02" && st != "03" {
+			continue
+		}
+		addr, _, ok := parseProcNetTCPIP(fields[2])
+		if !ok || !isTelegramEndpoint(addr) {
+			continue
+		}
+		uid, err := strconv.Atoi(fields[7])
+		if err == nil && uid > 0 && !seen[uid] {
+			seen[uid] = true
+			uids = append(uids, uid)
+		}
+	}
+	return uids
+}
+
+func scanActiveTelegramSockets() []int {
+	if !isAndroidRuntime() && runtime.GOOS != "linux" {
+		return nil
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, procPath := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(procPath)
+		if err != nil {
+			continue
+		}
+		for _, uid := range parseProcNetTCPContent(string(data)) {
+			if !seen[uid] {
+				seen[uid] = true
+				out = append(out, uid)
+			}
+		}
+	}
+	return out
+}
+
+func resolveUIDToPackage(uid int) string {
+	// 1. Try reading /data/system/packages.list on rooted Android
+	if b, err := os.ReadFile("/data/system/packages.list"); err == nil {
+		target := strconv.Itoa(uid)
+		for _, line := range strings.Split(string(b), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[1] == target {
+				return fields[0]
+			}
+		}
+	}
+	// 2. Try inspecting running processes in /proc
+	entries, err := os.ReadDir("/proc")
+	if err == nil {
+		for _, de := range entries {
+			if !de.IsDir() {
+				continue
+			}
+			pid, e := strconv.Atoi(de.Name())
+			if e != nil || pid <= 1 {
+				continue
+			}
+			puid, ok := processUID(pid)
+			if ok && puid == uid {
+				if cmd, err := os.ReadFile(filepath.Join("/proc", de.Name(), "cmdline")); err == nil {
+					cmdline := strings.SplitN(string(cmd), "\x00", 2)[0]
+					cmdline = strings.TrimSpace(cmdline)
+					if cmdline != "" && !strings.HasPrefix(cmdline, "/") {
+						pkg := strings.Split(cmdline, ":")[0]
+						return pkg
+					}
+				}
+			}
+		}
+	}
+	// 3. Fallback to pm / cmd
+	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U"}, {"pm", "list", "packages", "-U"}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		cancel()
+		if err == nil {
+			target := fmt.Sprintf("uid:%d", uid)
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.Contains(line, target) && strings.HasPrefix(line, "package:") {
+					fields := strings.Fields(line)
+					return strings.TrimPrefix(fields[0], "package:")
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func discoverActiveTelegramClients() {
+	activeUIDs := scanActiveTelegramSockets()
+	if len(activeUIDs) == 0 {
+		return
+	}
+	appCacheMu.Lock()
+	defer appCacheMu.Unlock()
+
+	known := map[int]bool{}
+	for _, u := range uidCache {
+		known[u] = true
+	}
+
+	dirty := false
+	for _, uid := range activeUIDs {
+		if known[uid] {
+			continue
+		}
+		pkg := resolveUIDToPackage(uid)
+		if pkg == "" {
+			pkg = fmt.Sprintf("unknown.telegram.uid%d", uid)
+		}
+		name := humanizePackageName(pkg)
+		normalIco, monetIco := extractAPKIcons(findPackageAPK(pkg))
+		app := App{
+			Name:       name,
+			Pkg:        pkg,
+			UID:        uid,
+			IconNormal: normalIco,
+			IconMonet:  monetIco,
+		}
+		appCache = append(appCache, app)
+		uidCache = append(uidCache, uid)
+		known[uid] = true
+		dirty = true
+		logf("detected Telegram client by live traffic: %s (uid=%d)", pkg, uid)
+	}
+	if dirty {
+		saveCachedApps(appCache)
+	}
 }
 
 func packageUID(pkg string) int {
@@ -1005,7 +1285,20 @@ func discoverApps() ([]App, []int) {
 			}
 			fields := strings.Fields(line)
 			pkg := strings.TrimPrefix(fields[0], "package:")
+			// Resolve the APK path once per package: findPackageAPK shells
+			// out to pm, and it was previously looked up 2–3 times per
+			// package (isTelegramAPK probe + icon extraction).
+			apkPath := findPackageAPK(pkg)
 			name, wanted := nameByPkg[pkg]
+			if !wanted {
+				if matchesTelegramKeyword(pkg) {
+					name = humanizePackageName(pkg)
+					wanted = true
+				} else if isTelegramAPK(apkPath) {
+					name = humanizePackageName(pkg)
+					wanted = true
+				}
+			}
 			if !wanted {
 				continue
 			}
@@ -1017,7 +1310,7 @@ func discoverApps() ([]App, []int) {
 			if uid <= 0 || seen[uid] {
 				continue
 			}
-			normalIco, monetIco := extractAPKIcons(findPackageAPK(pkg))
+			normalIco, monetIco := extractAPKIcons(apkPath)
 			apps = append(apps, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
 			uids = append(uids, uid)
 			seen[uid] = true
@@ -1070,30 +1363,58 @@ func saveCachedApps(apps []App) {
 	}
 }
 
+// discoverMu serializes full package scans: a cold-start scan takes seconds
+// (hundreds of pm/cmd subprocesses and APK opens), and it must never run
+// under appCacheMu — watchdog and writeStatus would otherwise block on every
+// 5s tick while the scan holds the lock.
+var discoverMu sync.Mutex
+
 func installedApps() ([]App, []int) {
+	// Fast path: serve a copy of the warm cache without scanning.
 	appCacheMu.Lock()
-	defer appCacheMu.Unlock()
-	if len(appCache) == 0 {
-		appCache, uidCache = loadCachedApps()
-		if len(appCache) == 0 {
-			appCache, uidCache = discoverApps()
-			if len(appCache) > 0 {
-				saveCachedApps(appCache)
-			}
-		} else {
-			// Trigger asynchronous verification to keep app cache up to date
-			go func() {
-				freshApps, freshUIDs := discoverApps()
-				if len(freshApps) > 0 {
-					appCacheMu.Lock()
-					appCache, uidCache = freshApps, freshUIDs
-					appCacheMu.Unlock()
-					saveCachedApps(freshApps)
-				}
-			}()
-		}
+	if len(appCache) > 0 {
+		apps, uids := append([]App(nil), appCache...), append([]int(nil), uidCache...)
+		appCacheMu.Unlock()
+		return apps, uids
 	}
-	return append([]App(nil), appCache...), append([]int(nil), uidCache...)
+	appCacheMu.Unlock()
+
+	discoverMu.Lock()
+	defer discoverMu.Unlock()
+
+	// Another caller may have completed the scan while we waited for it.
+	appCacheMu.Lock()
+	if len(appCache) > 0 {
+		apps, uids := append([]App(nil), appCache...), append([]int(nil), uidCache...)
+		appCacheMu.Unlock()
+		return apps, uids
+	}
+	appCacheMu.Unlock()
+
+	apps, uids := loadCachedApps()
+	if len(apps) == 0 {
+		apps, uids = discoverApps()
+		if len(apps) > 0 {
+			saveCachedApps(apps)
+		}
+	} else {
+		// Trigger asynchronous verification to keep app cache up to date
+		go func() {
+			freshApps, freshUIDs := discoverApps()
+			if len(freshApps) > 0 {
+				appCacheMu.Lock()
+				appCache, uidCache = freshApps, freshUIDs
+				appCacheMu.Unlock()
+				saveCachedApps(freshApps)
+			}
+		}()
+	}
+
+	appCacheMu.Lock()
+	appCache, uidCache = apps, uids
+	appCacheMu.Unlock()
+
+	return append([]App(nil), apps...), append([]int(nil), uids...)
 }
 
 // telegramSubnets is the single source of Telegram IPv4 aggregates: the
@@ -1122,6 +1443,11 @@ var telegramV4 = func() []string {
 	}
 	return out
 }()
+
+var telegramV6 = []string{
+	"2001:b88::/32",
+	"2001:67c:4e8::/48",
+}
 
 func runCmd(name string, args ...string) error {
 	var lastErr error
@@ -1160,12 +1486,12 @@ func iptSetup(bin string, uids []int, cidrs []string, chain string, family strin
 	}
 	// Remove both previous global, root-excluding and UID-scoped jumps before
 	// selecting a mode.
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 8; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
 			break
 		}
 	}
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 8; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
 			break
 		}
@@ -1184,24 +1510,23 @@ func iptSetup(bin string, uids []int, cidrs []string, chain string, family strin
 			return fmt.Errorf("failed to create chain %s: %w", chain, err)
 		}
 	}
+	// 1. Root exclusion inside chain: the daemon's own WSS and direct dials to Telegram
+	// must never be looped back into its listener.
+	_ = runCmd(bin, "-t", "nat", "-A", chain, "-m", "owner", "--uid-owner", "0", "-j", "RETURN")
+
+	// 2. Telegram destination redirects
 	for _, cidr := range cidrs {
 		if e := runCmd(bin, "-t", "nat", "-A", chain, "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)); e != nil {
 			logf("rule %s skipped: %v", cidr, e)
 		}
 	}
-	// Desktop Linux has no per-app UID scoping: every local TCP flow to a
-	// Telegram DC aggregate is redirected (the chain itself already matches
-	// only Telegram destinations). Root is excluded so the daemon's own WSS
-	// dials to Telegram are never redirected back into its listener.
-	if len(uids) == 0 {
-		return runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "!", "--uid-owner", "0", "-j", chain)
+	// 3. Universal non-root redirection: every local TCP flow to a Telegram DC
+	// aggregate is redirected. This ensures 100% compatibility with all Telegram
+	// clients, mods, and clones regardless of package name.
+	if err := runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "!", "--uid-owner", "0", "-j", chain); err == nil {
+		return nil
 	}
-	for _, uid := range uids {
-		if err := runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-j", chain)
 }
 func iptCleanup(bin string, uids []int, chain string) {
 	if bin == "" {
@@ -1209,12 +1534,12 @@ func iptCleanup(bin string, uids []int, chain string) {
 	}
 	// Remove the previous v1.2 global jump as well as this version's UID-scoped
 	// and desktop (root-excluding) jumps.
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 8; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
 			break
 		}
 	}
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 8; i++ {
 		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
 			break
 		}
@@ -1281,9 +1606,28 @@ type workerCooldownState struct {
 	strikes int
 }
 
-var workerCooldowns sync.Map // host -> workerCooldownState
+var workerCooldowns sync.Map // host or host:dcN -> workerCooldownState
 
-func isWorkerInCooldown(host string) bool {
+func workerCooldownKey(host string, dc int) string {
+	if dc <= 0 {
+		return host
+	}
+	return fmt.Sprintf("%s:dc%d", host, dc)
+}
+
+func isWorkerInCooldown(host string, optDC ...int) bool {
+	dc := 0
+	if len(optDC) > 0 {
+		dc = optDC[0]
+	}
+	if dc > 0 {
+		if v, ok := workerCooldowns.Load(workerCooldownKey(host, dc)); ok {
+			cd := v.(workerCooldownState)
+			if time.Now().Before(cd.until) {
+				return true
+			}
+		}
+	}
 	if v, ok := workerCooldowns.Load(host); ok {
 		cd := v.(workerCooldownState)
 		if time.Now().Before(cd.until) {
@@ -1293,9 +1637,13 @@ func isWorkerInCooldown(host string) bool {
 	return false
 }
 
-func markWorkerCooldown(host string, retryAfter time.Duration) {
+func markWorkerCooldownDC(host string, dc int, retryAfter time.Duration) {
+	key := host
+	if dc > 0 {
+		key = workerCooldownKey(host, dc)
+	}
 	var strikes int
-	if v, ok := workerCooldowns.Load(host); ok {
+	if v, ok := workerCooldowns.Load(key); ok {
 		strikes = v.(workerCooldownState).strikes + 1
 	} else {
 		strikes = 1
@@ -1311,14 +1659,29 @@ func markWorkerCooldown(host string, retryAfter time.Duration) {
 		}
 		retryAfter = delay
 	}
-	workerCooldowns.Store(host, workerCooldownState{
+	workerCooldowns.Store(key, workerCooldownState{
 		until:   time.Now().Add(retryAfter),
 		strikes: strikes,
 	})
-	logf("worker %s: rate limited (HTTP 429/503); quarantined for %v", host, retryAfter)
+	if dc > 0 {
+		logf("worker %s (DC%d): rate limited (HTTP 429/503); quarantined for %v", host, dc, retryAfter)
+	} else {
+		logf("worker %s: rate limited (HTTP 429/503); quarantined for %v", host, retryAfter)
+	}
 }
 
-func clearWorkerCooldown(host string) {
+func markWorkerCooldown(host string, retryAfter time.Duration) {
+	markWorkerCooldownDC(host, 0, retryAfter)
+}
+
+func clearWorkerCooldown(host string, optDC ...int) {
+	dc := 0
+	if len(optDC) > 0 {
+		dc = optDC[0]
+	}
+	if dc > 0 {
+		workerCooldowns.Delete(workerCooldownKey(host, dc))
+	}
 	workerCooldowns.Delete(host)
 }
 
@@ -1392,6 +1755,12 @@ func learnDC(ip string, dc int, isMedia bool) {
 	if dc < 1 || (dc > 5 && dc != 203) || ip == "" {
 		return
 	}
+	// Only genuine Telegram endpoints may enter the learned map: IPs parsed
+	// out of forged inits would silently occupy the 256-entry cap and evict
+	// real media endpoints once it fills up.
+	if addr, err := netip.ParseAddr(ip); err != nil || !isTelegramAggregate(addr) {
+		return
+	}
 	if known := knownDCMap[ip]; known != 0 && known != dc {
 		return
 	}
@@ -1435,18 +1804,25 @@ func setupRules() error {
 		}
 	}
 	apps, uids := installedApps()
-	if len(uids) == 0 && isAndroidRuntime() {
-		return errors.New("no installed Telegram app found (e.g., org.telegram.messenger)")
-	}
 	if err := iptSetup(findBin("iptables"), uids, telegramV4, "TELEWEB", "IPv4"); err != nil {
 		return err
+	}
+	if ip6tables := findBin("ip6tables"); ip6tables != "" {
+		if err := iptSetup(ip6tables, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
+			// Not fatal: some kernels ship without usable ip6tables; IPv6
+			// Telegram traffic (2001:b88::/32) then bypasses the WSS
+			// transport undiagnosed. rulesHealthy deliberately ignores the
+			// IPv6 family so the watchdog does not flap on such devices,
+			// so surface the failure here — once per daemon start.
+			logf("redirect: IPv6 rules failed: %v — Telegram IPv6 will bypass WSS", err)
+		}
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
 	if len(apps) > 0 {
-		logf("redirection enabled; apps: %s", appNames(apps))
+		logf("redirection enabled; apps: %s (+ universal package-agnostic scope)", appNames(apps))
 	} else {
-		logf("redirection enabled; desktop scope=all local TCP to Telegram DC ranges")
+		logf("redirection enabled; package-agnostic universal scope=all local TCP to Telegram DC ranges")
 	}
 	return nil
 }
@@ -1630,15 +2006,24 @@ func processUID(pid int) (int, bool) {
 	return 0, false
 }
 
-// protectTargetAppProcesses attempts to keep only the configured Telegram
-// client's own processes out of Android's cached-app freezer. Unlike the
-// transport daemon, app processes are NOT given oom_score_adj=-1000: Android
-// must retain normal memory management. This cannot force Android to deliver
-// FCM notifications and is best-effort because OEM freezer implementations vary.
+// protectTargetAppProcesses attempts to keep Telegram client processes
+// out of Android's cached-app freezer, regardless of package name.
 func protectTargetAppProcesses() {
-	apps, _ := installedApps()
-	if len(apps) == 0 {
+	if !isAndroidRuntime() {
 		return
+	}
+	apps, uids := installedApps()
+	if len(apps) == 0 && len(uids) == 0 {
+		return
+	}
+	uidSet := map[int]bool{}
+	for _, u := range uids {
+		uidSet[u] = true
+	}
+	for _, a := range apps {
+		if a.UID > 0 {
+			uidSet[a.UID] = true
+		}
 	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -1652,22 +2037,11 @@ func protectTargetAppProcesses() {
 		if e != nil || pid <= 1 {
 			continue
 		}
-		cmd, e := os.ReadFile(filepath.Join("/proc", de.Name(), "cmdline"))
-		if e != nil {
-			continue
-		}
-		cmdline := strings.SplitN(string(cmd), "\x00", 2)[0]
 		uid, ok := processUID(pid)
-		if !ok {
+		if !ok || !uidSet[uid] {
 			continue
 		}
-		for _, app := range apps {
-			if uid != app.UID || !appProcessMatches(cmdline, app.Pkg) {
-				continue
-			}
-			protectAppPID(pid)
-			break
-		}
+		protectAppPID(pid)
 	}
 }
 
@@ -1833,7 +2207,22 @@ func stopWatchdog() {
 	_ = os.Remove(path("watchdog.pid"))
 }
 
-func daemonHealthy() bool { return pidAlive() && serverListening() }
+func daemonHealthy() bool {
+	if !pidAlive() {
+		return false
+	}
+	if b, e := os.ReadFile(path("tgws.pid")); e == nil {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid == os.Getpid() {
+			return true
+		}
+	}
+	// If the daemon wrote a fresh status snapshot within the last 5s, it is
+	// actively executing its loop; avoid an unnecessary TCP probe.
+	if st, err := os.Stat(path("status.json")); err == nil && time.Since(st.ModTime()) < 5*time.Second {
+		return true
+	}
+	return serverListening()
+}
 
 // waitForListener polls the kernel socket table until the daemon's listen
 // port appears. REDIRECT rules must only be installed after this returns
@@ -1875,31 +2264,27 @@ func rulesHealthy() bool {
 	if bin == "" {
 		return false
 	}
-	_, uids := installedApps()
-	if len(uids) == 0 {
-		// Desktop mode: a single root-excluding global jump scopes the whole
-		// OUTPUT chain to the Telegram-only REDIRECT chain.
-		if !isAndroidRuntime() && runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil {
-			for _, cidr := range telegramV4 {
-				if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
-					return false
-				}
-			}
-			return true
-		}
-		return false
-	}
-	for _, uid := range uids {
-		if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
-			return false
-		}
-	}
 	for _, cidr := range telegramV4 {
 		if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
 			return false
 		}
 	}
-	return true
+	// Universal jump check (with root exclusion or global jump)
+	if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
+		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil {
+		return true
+	}
+	// UID-scoped fallback check
+	_, uids := installedApps()
+	if len(uids) > 0 {
+		for _, uid := range uids {
+			if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func watchdog() {
@@ -1907,6 +2292,7 @@ func watchdog() {
 	pid := os.Getpid()
 	_ = os.WriteFile(path("watchdog.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600)
 	protectProcess(pid)
+	discoverActiveTelegramClients()
 	protectTargetAppProcesses()
 	logf("watchdog: started, checking every 30s; %s", procSummary(pid))
 	tickCount := 0
@@ -1927,6 +2313,7 @@ func watchdog() {
 			continue
 		}
 		protectProcess(pid)
+		discoverActiveTelegramClients()
 		protectTargetAppProcesses()
 		daemonOK, rulesOK := daemonHealthy(), rulesHealthy()
 		if daemonOK != lastDaemonOK || rulesOK != lastRulesOK {
@@ -2016,112 +2403,74 @@ func processMemoryBytes() (current, peak int64) {
 	return current, peak
 }
 
-func currentStatus() Status {
-	apps, _ := installedApps()
-	dc := map[string]int{}
-	statsMu.Lock()
-	for k, v := range dcCounts {
-		dc[k] = v
+// fillGCStats overlays this process's GC telemetry on the snapshot. During the
+// on-device CPU incident these numbers separate a GC death spiral (gcNum
+// climbing fast, gcCpuPercent far above the runtime's 25% pacing target,
+// heapLiveBytes pinned near the limit) from a dial storm, where the counters
+// barely move while ws and fail race.
+//
+// runtime/metrics rather than runtime.ReadMemStats: the latter stops the world
+// to take its sample, which is exactly the cost being measured here, and its
+// pause bookkeeping reads back as zero on newer toolchains.
+func fillGCStats(s *Status) {
+	samples := []metrics.Sample{
+		{Name: "/gc/cycles/total:gc-cycles"},
+		{Name: "/cpu/classes/gc/total:cpu-seconds"},
+		{Name: "/cpu/classes/total:cpu-seconds"},
+		{Name: "/gc/heap/live:bytes"},
+		{Name: "/gc/pauses:seconds"},
 	}
-	statsMu.Unlock()
-	memNow, memPeak := processMemoryBytes()
-	up := atomic.LoadInt64(&trafficUpBytes)
-	down := atomic.LoadInt64(&trafficDownBytes)
-	hits, misses, idle := int64(0), int64(0), 0
-	if globalWsPool != nil {
-		hits, misses, idle = globalWsPool.Stats()
+	metrics.Read(samples)
+	var gcCPU, totalCPU float64
+	for _, sample := range samples {
+		switch sample.Name {
+		case "/gc/cycles/total:gc-cycles":
+			s.GCNum = uint32(sample.Value.Uint64())
+		case "/gc/heap/live:bytes":
+			s.HeapLiveBytes = int64(sample.Value.Uint64())
+		case "/cpu/classes/gc/total:cpu-seconds":
+			gcCPU = sample.Value.Float64()
+		case "/cpu/classes/total:cpu-seconds":
+			totalCPU = sample.Value.Float64()
+		case "/gc/pauses:seconds":
+			// Pauses arrive bucketed, so the mean is an estimate rounded up to
+			// each bucket's upper edge. The overflow bucket is ignored: a pause
+			// longer than the largest measurable one is a different problem.
+			h := sample.Value.Float64Histogram()
+			var count uint64
+			var weighted float64
+			for i, c := range h.Counts {
+				if c == 0 || i+1 >= len(h.Buckets) {
+					continue
+				}
+				edge := h.Buckets[i+1]
+				if math.IsInf(edge, 1) {
+					continue
+				}
+				count += c
+				weighted += float64(c) * edge
+			}
+			if count > 0 {
+				s.GCPauseAvgMs = weighted / float64(count) * float64(time.Second/time.Millisecond)
+			}
+		}
 	}
-	return Status{
-		Enabled:           readEnabled(),
-		Running:           true,
-		Uptime:            int64(time.Since(startAt).Seconds()),
-		Port:              defaultPort,
-		Apps:              apps,
-		Active:            atomic.LoadInt64(&active),
-		WS:                atomic.LoadInt64(&wsCount),
-		Fail:              atomic.LoadInt64(&failCnt),
-		DC:                dc,
-		MemNowBytes:       memNow,
-		MemPeakBytes:      memPeak,
-		TrafficUpBytes:    up,
-		TrafficDownBytes:  down,
-		TrafficTotalBytes: up + down,
-		Log:               tailLog(60),
-		CFPriority:        readCFPriority(),
-		CFBalance:         readCFBalance(),
-		CustomCFDomain:    readCustomCFDomain(),
-		CustomCFWorker:    readCustomCFWorker(),
-		DCOverrides:       readDCOverridesRaw(),
-		PoolSize:          readPoolSize(),
-		PoolHits:          hits,
-		PoolMisses:        misses,
-		PoolIdle:          idle,
-		DoHEnabled:        readDoHEnabled(),
-		LastCFPoP: func() string {
-			if p := lastCFPoP.Load(); p != nil {
-				return *p
-			}
-			return ""
-		}(),
-		LastCFRay: func() string {
-			if p := lastCFRay.Load(); p != nil {
-				return *p
-			}
-			return ""
-		}(),
-		ForceTestDC:    readForceTestDC(),
-		H2MediaEnabled: readH2MediaEnabled(),
-		DC203DirectTCP: readDC203DirectTCP(),
-		Redirector:     localRedirectorHealthy(),
+	if totalCPU > 0 {
+		s.GCCPUPercent = gcCPU / totalCPU * 100
 	}
 }
-func status() Status {
-	if b, e := os.ReadFile(path("tgws.pid")); e == nil {
-		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-		if pid == os.Getpid() {
-			return currentStatus()
-		}
-	}
-	apps, _ := installedApps()
-	if b, e := os.ReadFile(path("status.json")); e == nil {
-		var s Status
-		if json.Unmarshal(b, &s) == nil {
-			s.Enabled = readEnabled()
-			s.Running = pidAlive()
-			s.Apps = apps
-			s.Log = tailLog(60)
-			s.CFPriority = readCFPriority()
-			s.CFBalance = readCFBalance()
-			s.CustomCFDomain = readCustomCFDomain()
-			s.CustomCFWorker = readCustomCFWorker()
-			s.DCOverrides = readDCOverridesRaw()
-			s.PoolSize = readPoolSize()
-			s.DoHEnabled = readDoHEnabled()
-			s.ForceTestDC = readForceTestDC()
-			s.H2MediaEnabled = readH2MediaEnabled()
-			s.DC203DirectTCP = readDC203DirectTCP()
-			if p := lastCFPoP.Load(); p != nil {
-				s.LastCFPoP = *p
-			}
-			if p := lastCFRay.Load(); p != nil {
-				s.LastCFRay = *p
-			}
-			if globalWsPool != nil {
-				s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
-			}
-			return s
-		}
-	}
-	return Status{
+
+// buildStatus assembles the invariant part of every status snapshot: flags
+// read from the config files, the app list, the log tail and this process's
+// Cloudflare telemetry. Callers overlay the live metrics on top — from
+// process globals inside the daemon, or from the persisted status.json when
+// a CLI process reports on a running daemon. A new status field is added
+// here exactly once.
+func buildStatus(apps []App) Status {
+	s := Status{
 		Enabled:        readEnabled(),
-		Running:        pidAlive(),
-		Uptime:         int64(time.Since(startAt).Seconds()),
 		Port:           defaultPort,
 		Apps:           apps,
-		Active:         atomic.LoadInt64(&active),
-		WS:             atomic.LoadInt64(&wsCount),
-		Fail:           atomic.LoadInt64(&failCnt),
-		DC:             map[string]int{},
 		Log:            tailLog(60),
 		CFPriority:     readCFPriority(),
 		CFBalance:      readCFBalance(),
@@ -2147,6 +2496,91 @@ func status() Status {
 			return ""
 		}(),
 	}
+	if globalWsPool != nil {
+		s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
+	}
+	return s
+}
+
+func currentStatus() Status {
+	apps, _ := installedApps()
+	s := buildStatus(apps)
+	dc := map[string]int{}
+	statsMu.Lock()
+	for k, v := range dcCounts {
+		dc[k] = v
+	}
+	statsMu.Unlock()
+	memNow, memPeak := processMemoryBytes()
+	up := atomic.LoadInt64(&trafficUpBytes)
+	down := atomic.LoadInt64(&trafficDownBytes)
+	s.Running = true
+	s.Uptime = int64(time.Since(startAt).Seconds())
+	s.Active = atomic.LoadInt64(&active)
+	s.WS = atomic.LoadInt64(&wsCount)
+	s.Fail = atomic.LoadInt64(&failCnt)
+	s.DC = dc
+	s.MemNowBytes = memNow
+	s.MemPeakBytes = memPeak
+	s.TrafficUpBytes = up
+	s.TrafficDownBytes = down
+	s.TrafficTotalBytes = up + down
+	fillGCStats(&s)
+	return s
+}
+func status() Status {
+	if b, e := os.ReadFile(path("tgws.pid")); e == nil {
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		if pid == os.Getpid() {
+			return currentStatus()
+		}
+	}
+	apps, _ := installedApps()
+	if b, e := os.ReadFile(path("status.json")); e == nil {
+		var file Status
+		if json.Unmarshal(b, &file) == nil {
+			s := buildStatus(apps)
+			s.Running = pidAlive()
+			// Live metrics come from the daemon's persisted snapshot: this
+			// process may be a CLI invocation whose own counters are empty.
+			s.Uptime = file.Uptime
+			s.Active = file.Active
+			s.WS = file.WS
+			s.Fail = file.Fail
+			s.DC = file.DC
+			s.MemNowBytes = file.MemNowBytes
+			s.MemPeakBytes = file.MemPeakBytes
+			s.TrafficUpBytes = file.TrafficUpBytes
+			s.TrafficDownBytes = file.TrafficDownBytes
+			s.TrafficTotalBytes = file.TrafficTotalBytes
+			s.GCNum = file.GCNum
+			s.GCCPUPercent = file.GCCPUPercent
+			s.GCPauseAvgMs = file.GCPauseAvgMs
+			s.HeapLiveBytes = file.HeapLiveBytes
+			if globalWsPool == nil {
+				s.PoolHits, s.PoolMisses, s.PoolIdle = file.PoolHits, file.PoolMisses, file.PoolIdle
+			}
+			// The redirector state belongs to the daemon, not this process.
+			s.Redirector = file.Redirector
+			// Telemetry captured by this process (if any) is fresher than
+			// the file; otherwise fall back to the persisted values.
+			if s.LastCFPoP == "" {
+				s.LastCFPoP = file.LastCFPoP
+			}
+			if s.LastCFRay == "" {
+				s.LastCFRay = file.LastCFRay
+			}
+			return s
+		}
+	}
+	s := buildStatus(apps)
+	s.Running = pidAlive()
+	s.Uptime = int64(time.Since(startAt).Seconds())
+	s.Active = atomic.LoadInt64(&active)
+	s.WS = atomic.LoadInt64(&wsCount)
+	s.Fail = atomic.LoadInt64(&failCnt)
+	s.DC = map[string]int{}
+	return s
 }
 func writeStatus() {
 	s := currentStatus()
@@ -2162,59 +2596,39 @@ func writeStatus() {
 		_ = os.Remove(tmp)
 	}
 }
-func apiMain(arg string) {
-	b, e := base64.StdEncoding.DecodeString(arg)
-	if e != nil {
-		emitErr(e)
-		return
-	}
-	var q apiRequest
-	if e = json.Unmarshal(b, &q); e != nil {
-		emitErr(e)
-		return
-	}
+func executeAPICommand(q apiRequest) (any, error) {
 	switch q.Cmd {
 	case "status":
-		emitOK(status())
+		return status(), nil
 	case "resume":
-		// Returning to WebUI is an explicit opportunity to reassert interception
-		// without restarting a healthy daemon. This addresses cases where the
-		// process/listener remain alive but fresh Telegram flows stop being
-		// redirected after the app has been backgrounded.
 		if !readEnabled() {
-			emitOK(status())
-			return
+			return status(), nil
 		}
 		if err := ensureServer(); err != nil {
-			emitErr(err)
-			return
+			return nil, err
 		}
 		if !waitForListener(4 * time.Second) {
-			emitErr(fmt.Errorf("tgws failed to listen on port %d", defaultPort))
-			return
+			return nil, fmt.Errorf("tgws failed to listen on port %d", defaultPort)
 		}
 		if err := setupRules(); err != nil {
-			emitErr(err)
-			return
+			return nil, err
 		}
 		protectTargetAppProcesses()
 		if err := ensureWatchdog(); err != nil {
 			logf("resume: failed to start watchdog: %v", err)
 		}
 		logf("WebUI resume: redirection rules reapplied without restarting live daemon")
-		emitOK(status())
+		return status(), nil
 	case "set", "setConfig":
 		if q.Enabled != nil {
 			if err := writeEnabled(*q.Enabled); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 			if *q.Enabled {
 				if err := ensureServer(); err != nil {
 					_ = writeEnabled(false)
 					updateModuleDescription("status: failed ⚠️")
-					emitErr(err)
-					return
+					return nil, err
 				}
 				// REDIRECT rules go in only after the listener is up, otherwise
 				// a slow start would blackhole Telegram traffic into a dead port.
@@ -2222,15 +2636,13 @@ func apiMain(arg string) {
 					_ = writeEnabled(false)
 					stopServer()
 					updateModuleDescription("status: failed ⚠️")
-					emitErr(fmt.Errorf("tgws failed to listen on port %d", defaultPort))
-					return
+					return nil, fmt.Errorf("tgws failed to listen on port %d", defaultPort)
 				}
 				if err := setupRules(); err != nil {
 					_ = writeEnabled(false)
 					cleanupRules()
 					updateModuleDescription("status: failed ⚠️")
-					emitErr(err)
-					return
+					return nil, err
 				}
 				protectTargetAppProcesses()
 				if err := ensureWatchdog(); err != nil {
@@ -2245,74 +2657,89 @@ func apiMain(arg string) {
 		}
 		if q.CFPriority != nil {
 			if err := writeCFPriority(*q.CFPriority); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 			updateModuleDescription(currentStatusDesc())
 		}
 		if q.CFBalance != nil {
 			if err := writeCFBalance(*q.CFBalance); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.CustomCFDomain != nil {
 			if err := writeCustomCFDomain(*q.CustomCFDomain); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.CustomCFWorker != nil {
 			if err := writeCustomCFWorker(*q.CustomCFWorker); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.DCOverrides != nil {
 			if err := writeDCOverrides(*q.DCOverrides); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.PoolSize != nil {
 			if err := writePoolSize(*q.PoolSize); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.DoHEnabled != nil {
 			if err := writeDoHEnabled(*q.DoHEnabled); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.ForceTestDC != nil {
 			if err := writeForceTestDC(*q.ForceTestDC); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.H2MediaEnabled != nil {
 			if err := writeH2MediaEnabled(*q.H2MediaEnabled); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
 		if q.DC203DirectTCP != nil {
 			if err := writeDC203DirectTCP(*q.DC203DirectTCP); err != nil {
-				emitErr(err)
-				return
+				return nil, err
 			}
 		}
-		emitOK(status())
+		return status(), nil
 	case "clearlogs":
 		for _, name := range []string{"tgws.log", "daemon.log", "supervisor.log", "watchdog.log"} {
 			_ = os.Truncate(path(name), 0)
 		}
-		emitOK(map[string]any{"cleared": true})
+		return map[string]any{"cleared": true}, nil
 	default:
-		emitErr(fmt.Errorf("unknown command: %s", q.Cmd))
+		return nil, fmt.Errorf("unknown command: %s", q.Cmd)
 	}
+}
+
+func executeAPIPayload(arg string) ([]byte, error) {
+	b, err := base64.StdEncoding.DecodeString(arg)
+	if err != nil {
+		b = []byte(arg)
+	}
+	var q apiRequest
+	if err := json.Unmarshal(b, &q); err != nil {
+		return json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+	}
+	res, err := executeAPICommand(q)
+	if err != nil {
+		return json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+	}
+	return json.Marshal(map[string]any{"ok": true, "data": res})
+}
+
+func apiMain(arg string) {
+	out, err := executeAPIPayload(arg)
+	if err != nil {
+		emitErr(err)
+		return
+	}
+	fmt.Println(string(out))
 }
 func emitOK(v any) {
 	b, _ := json.Marshal(map[string]any{"ok": true, "data": v})
@@ -2323,6 +2750,56 @@ func emitErr(e error) {
 	fmt.Println(string(b))
 }
 
+// loopbackPprofAddr validates the TELEWEB_PPROF value and returns the address
+// to bind, or "" when profiling stays off. A pprof endpoint hands out heap
+// dumps and CPU profiles, so it is refused anywhere but on loopback.
+func loopbackPprofAddr(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil || port == "" {
+		return ""
+	}
+	if strings.EqualFold(host, "localhost") {
+		host = "127.0.0.1"
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return ""
+	}
+	return net.JoinHostPort(ip.String(), port)
+}
+
+// maybeStartPprof serves net/http/pprof on TELEWEB_PPROF, e.g.
+// TELEWEB_PPROF=127.0.0.1:6060. Off unless the variable is set; used to tell a
+// GC spiral from a dial storm on the device without rebuilding.
+func maybeStartPprof() {
+	addr := loopbackPprofAddr(os.Getenv("TELEWEB_PPROF"))
+	if addr == "" {
+		if raw := os.Getenv("TELEWEB_PPROF"); raw != "" {
+			logf("pprof: TELEWEB_PPROF=%q ignored: profiling only binds a loopback address", raw)
+		}
+		return
+	}
+	go func() {
+		logf("pprof: listening on %s", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			logf("pprof: server exited: %v", err)
+		}
+	}()
+}
+
+func initMemoryTuning() {
+	// No forced GOMEMLIMIT: clamping the heap at 48 MB drove the GC into a
+	// death spiral whenever media buffers or the socket pool pushed the live
+	// heap past the limit (observed as ~220% user CPU on-device). An explicit
+	// GOMEMLIMIT environment variable is still honoured by the runtime itself.
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
+}
+
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2330,6 +2807,7 @@ func main() {
 			os.Exit(2)
 		}
 	}()
+	initMemoryTuning()
 	ensureDir()
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -2475,6 +2953,7 @@ func serve() {
 	}
 	_ = os.WriteFile(path("tgws.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
 	protectProcess(os.Getpid())
+	maybeStartPprof()
 	// Load last-known-good routes before accepting any client sockets. Otherwise
 	// a burst of connections at boot can race the cache load and trigger a full scan.
 	loadRouteCache()
@@ -2512,6 +2991,17 @@ func serve() {
 		defer t.Stop()
 		for range t.C {
 			writeStatus()
+		}
+	}()
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			// When there are no active flows, return unused heap pages to OS.
+			// This prevents RSS from lingering at peak watermarks on legacy Android kernels.
+			if atomic.LoadInt64(&active) == 0 {
+				debug.FreeOSMemory()
+			}
 		}
 	}()
 	for {
@@ -2566,6 +3056,16 @@ var (
 	}()
 
 	prefix149_160 = telegramParsedSubnets[0].prefix
+
+	telegramV6Subnets = []telegramSubnet{
+		{prefix: netip.MustParsePrefix("2001:b88:0::/48"), dc: 1},
+		{prefix: netip.MustParsePrefix("2001:67c:4e8:f002::/64"), dc: 2},
+		{prefix: netip.MustParsePrefix("2001:b88:2::/48"), dc: 3},
+		{prefix: netip.MustParsePrefix("2001:67c:4e8:f004::/64"), dc: 4},
+		{prefix: netip.MustParsePrefix("2001:b88:3::/48"), dc: 5},
+		{prefix: netip.MustParsePrefix("2001:67c:4e8::/48"), dc: 2},
+		{prefix: netip.MustParsePrefix("2001:b88::/32"), dc: 2},
+	}
 )
 
 type telegramSubnet struct {
@@ -2578,6 +3078,14 @@ func dcFor(ip netip.Addr) int {
 	// ::ffff:149.154.167.51. Normalize these before IPv4 DC matching.
 	ip = ip.Unmap()
 	if !ip.Is4() {
+		if dc, _, ok := lookupLearnedDC(ip.String()); ok {
+			return dc
+		}
+		for _, sub := range telegramV6Subnets {
+			if sub.dc != 0 && sub.prefix.Contains(ip) {
+				return sub.dc
+			}
+		}
 		return 0
 	}
 	if d := knownDCMap[ip.String()]; d != 0 {
@@ -2740,8 +3248,16 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		isMedia = mediaForIP(orig.Addr())
 		logf("conn #%d %s: DC not recognized in init, fallback by IP -> DC%d (test=%t) media=%t", id, orig, dc, isTestDC, isMedia)
 	}
-	if orig.Addr().String() == cdn203IP || dc == 203 {
+	if cdn203Dispatch(orig, dc) {
 		handleCDN203(c, orig, init, id)
+		return
+	}
+	if dc == 203 {
+		// DC203 in the init marks a CDN203 media session. A DC203 tag aimed
+		// at a destination outside the CDN203 aggregate means the client
+		// forged the tag to obtain a raw TCP tunnel to an arbitrary host.
+		atomic.AddInt64(&failCnt, 1)
+		logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst", id, orig)
 		return
 	}
 	if dc < 1 || dc > 5 {
@@ -2807,6 +3323,18 @@ func isCDN203IP(ip netip.Addr) bool {
 	return ip.Is4() && (cdn203Prefix.Contains(ip) || ip.String() == cdn203IP)
 }
 
+// cdn203Dispatch reports whether a connection must take the CDN203 path: the
+// client dialed the dedicated CDN203 endpoint, or sent a DC203 init tag while
+// aiming at an address inside the CDN203 aggregate. A DC203 tag combined with
+// a destination outside the aggregate is a forgery (open-proxy attempt) and
+// must be refused by the caller.
+func cdn203Dispatch(orig netip.AddrPort, dc int) bool {
+	if orig.Addr().String() == cdn203IP {
+		return true
+	}
+	return dc == 203 && isCDN203IP(orig.Addr())
+}
+
 // cdn203Fails is a negative cache of CDN endpoints whose direct dial recently
 // failed. When an endpoint is known-unreachable (e.g. the ISP blocks the CDN
 // range), client connections are closed immediately instead of piling up one
@@ -2848,12 +3376,40 @@ func cdn203MarkReachable(dst string) {
 	delete(cdn203Fails, dst)
 }
 
+// directDialFails is a negative cache of direct Telegram IP endpoints whose dial
+// recently failed. When an ISP/DPI blocks direct Telegram IPs, subsequent dials
+// are failed fast instead of piling up dozens of parallel 1.2-second dial timeouts
+// from churning clients.
+var (
+	directDialFailMu sync.Mutex
+	directDialFails  = map[string]time.Time{}
+)
+
+const directDialFailBackoff = 60 * time.Second
+
+func directDialBlockedRecently(ipStr string) bool {
+	directDialFailMu.Lock()
+	defer directDialFailMu.Unlock()
+	t, ok := directDialFails[ipStr]
+	return ok && time.Now().Before(t)
+}
+
+func directDialMarkFail(ipStr string) {
+	directDialFailMu.Lock()
+	defer directDialFailMu.Unlock()
+	directDialFails[ipStr] = time.Now().Add(directDialFailBackoff)
+}
+
+func directDialMarkReachable(ipStr string) {
+	directDialFailMu.Lock()
+	defer directDialFailMu.Unlock()
+	delete(directDialFails, ipStr)
+}
+
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
 	statsMu.Unlock()
-	atomic.AddInt64(&wsCount, 1)
-	defer atomic.AddInt64(&wsCount, -1)
 
 	worker := customCFWorkerCached()
 	if worker != "" {
@@ -2861,6 +3417,8 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		ws, err := dialCFWorker(ctx, 203, cdn203IP, worker, false)
 		cancel()
 		if err == nil {
+			atomic.AddInt64(&wsCount, 1)
+			defer atomic.AddInt64(&wsCount, -1)
 			logf("conn #%d %s -> CDN203 via Cloudflare Worker %s", id, orig, worker)
 			defer ws.Close()
 			pipeWSTunnel(c, ws, init, id, 203, false)
@@ -2874,6 +3432,12 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	// :443 and :80).
 	if !dc203DirectTCPCached() {
 		logf("conn #%d CDN203 direct TCP disabled by configuration", id)
+		return
+	}
+	if !isCDN203IP(orig.Addr()) {
+		// Defense in depth: a forged DC203 tag must never turn this function
+		// into a raw TCP tunnel to an arbitrary destination.
+		logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst", id, orig)
 		return
 	}
 	dst := net.JoinHostPort(orig.Addr().String(), strconv.Itoa(int(orig.Port())))
@@ -3286,6 +3850,13 @@ func androidDNSResolver() *net.Resolver {
 	}}
 }
 
+func systemDNSResolver() *net.Resolver {
+	if isAndroidRuntime() {
+		return androidDNSResolver()
+	}
+	return net.DefaultResolver
+}
+
 func wsHostsForDC(dc int, isMedia bool) []string {
 	if dc < 1 || dc > 5 {
 		return nil
@@ -3514,8 +4085,13 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 		f.raw = f.raw[n:]
 		f.plain = f.plain[n:]
 		if len(f.raw) == 0 {
-			f.raw = f.raw[:0]
-			f.plain = f.plain[:0]
+			if cap(f.raw) > 128*1024 {
+				f.raw = nil
+				f.plain = nil
+			} else {
+				f.raw = f.raw[:0]
+				f.plain = f.plain[:0]
+			}
 		} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
 			newRaw := make([]byte, len(f.raw))
 			copy(newRaw, f.raw)
@@ -3773,6 +4349,22 @@ func sweepRouteCaches() {
 		}
 	}
 	h2FailsMu.Unlock()
+
+	directDialFailMu.Lock()
+	for ipStr, until := range directDialFails {
+		if until.Before(now) {
+			delete(directDialFails, ipStr)
+		}
+	}
+	directDialFailMu.Unlock()
+
+	cdn203FailMu.Lock()
+	for dst, until := range cdn203Fails {
+		if until.Before(now) {
+			delete(cdn203Fails, dst)
+		}
+	}
+	cdn203FailMu.Unlock()
 }
 
 // Repeated early remote EOFs indicate a frontend that accepts the WebSocket
@@ -3915,7 +4507,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 			return "main"
 		}())
 	}
-	resolver := androidDNSResolver()
+	resolver := systemDNSResolver()
 
 	cfPriority := cfPriorityCached()
 	cfBalance := cfBalanceCached()
@@ -3976,17 +4568,23 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 			}
 		}
 
-		// 3. Fast path: cached Cloudflare route
+		// 3. Fast path: cached Cloudflare route, while its stamp is fresh.
+		// A stale entry is skipped so this dial re-evaluates every route;
+		// the race stores the winner again with a new stamp.
 		if cached, ok := cfHostCache.Load(key); ok {
 			if host, ok := cached.(string); ok && host != "" && !routeCoolingDown(host) {
-				h := host
-				candCached := dialCandidate{
-					name: fmt.Sprintf("cf-cached (%s)", h),
-					dial: func(c context.Context) (*wsConn, error) {
-						return dialCFHost(c, resolver, h)
-					},
+				if routeCacheFresh(key, host) {
+					h := host
+					candCached := dialCandidate{
+						name: fmt.Sprintf("cf-cached (%s)", h),
+						dial: func(c context.Context) (*wsConn, error) {
+							return dialCFHost(c, resolver, h)
+						},
+					}
+					candidates = append(candidates, candCached)
+				} else {
+					logf("DC%d media=%t cached route %s is stale; re-evaluating all routes", dc, isMedia, host)
 				}
-				candidates = append(candidates, candCached)
 			}
 		}
 
@@ -4020,11 +4618,17 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 		// stall the start of the dial race by two DNS round trips.
 		resolved := make([][]netip.Addr, len(hosts))
 		var dnsWG sync.WaitGroup
+		dnsCtx := ctx
+		if len(directIPs) > 0 {
+			var dnsCancel context.CancelFunc
+			dnsCtx, dnsCancel = context.WithTimeout(ctx, 350*time.Millisecond)
+			defer dnsCancel()
+		}
 		for i, h := range hosts {
 			dnsWG.Add(1)
 			go func(i int, h string) {
 				defer dnsWG.Done()
-				if ips, err := resolver.LookupNetIP(ctx, "ip4", h); err == nil {
+				if ips, err := resolver.LookupNetIP(dnsCtx, "ip4", h); err == nil {
 					resolved[i] = ips
 				}
 			}(i, h)
@@ -4041,15 +4645,21 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 
 	for _, ip := range directIPs {
 		ipAddr := ip
+		ipStr := ipAddr.String()
+		if directDialBlockedRecently(ipStr) {
+			continue
+		}
 		candDirect := dialCandidate{
 			name: fmt.Sprintf("direct (%s@%s)", targetHost, ipAddr),
 			dial: func(c context.Context) (*wsConn, error) {
 				attemptCtx, cancel := context.WithTimeout(c, 2500*time.Millisecond)
 				defer cancel()
-				raw, err := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ipAddr.String(), "443"), 1200*time.Millisecond)
+				raw, err := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ipStr, "443"), 1200*time.Millisecond)
 				if err != nil {
+					directDialMarkFail(ipStr)
 					return nil, err
 				}
+				directDialMarkReachable(ipStr)
 				setConnSockOpts(raw)
 				return finishTelegramWSPath(attemptCtx, raw, targetHost, wsUpgradePath)
 			},
@@ -4310,7 +4920,29 @@ func prepareUTLSForHTTP1(conn *utls.UConn) error {
 		if alpn, ok := extension.(*utls.ALPNExtension); ok {
 			alpn.AlpnProtocols = []string{"http/1.1"}
 			found = true
-			break
+		}
+		if sc, ok := extension.(*utls.SupportedCurvesExtension); ok {
+			var filtered []utls.CurveID
+			for _, c := range sc.Curves {
+				// Strip Post-Quantum groups (e.g. X25519Kyber768Draft00, X25519MLKEM768) that trigger TSPU blocks
+				if c == utls.X25519 || c == utls.CurveP256 || c == utls.CurveP384 || c == utls.CurveP521 {
+					filtered = append(filtered, c)
+				}
+			}
+			if len(filtered) > 0 {
+				sc.Curves = filtered
+			}
+		}
+		if ks, ok := extension.(*utls.KeyShareExtension); ok {
+			var filtered []utls.KeyShare
+			for _, k := range ks.KeyShares {
+				if k.Group == utls.X25519 || k.Group == utls.CurveP256 {
+					filtered = append(filtered, k)
+				}
+			}
+			if len(filtered) > 0 {
+				ks.KeyShares = filtered
+			}
 		}
 	}
 	if !found {
@@ -4346,6 +4978,7 @@ func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, h
 		InsecureSkipVerify:          shouldSkipTLSVerify(host, sni),
 		NextProtos:                  []string{"http/1.1"},
 		DynamicRecordSizingDisabled: true,
+		CurvePreferences:            []utls.CurveID{utls.X25519, utls.CurveP256},
 	}
 	uConn := utls.UClient(raw, uConfig, utls.HelloChrome_Auto)
 	if err := prepareUTLSForHTTP1(uConn); err != nil {
@@ -4449,24 +5082,29 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		host = worker[:idx]
 		query = worker[idx+1:]
 	}
+	customPath := ""
 	if slash := strings.IndexByte(host, '/'); slash != -1 {
+		customPath = host[slash:]
 		host = host[:slash]
 	}
 
-	if isWorkerInCooldown(host) {
-		return nil, fmt.Errorf("worker %s is in rate limit cooldown", host)
+	if isWorkerInCooldown(host, dc) {
+		return nil, fmt.Errorf("worker %s (DC%d) is in rate limit cooldown", host, dc)
 	}
 
 	basePath := "/apiws"
 	if isTest {
 		basePath = "/apiws_test"
 	}
+	if customPath != "" {
+		basePath = customPath
+	}
 	path := fmt.Sprintf("%s?dst=%s&dc=%d", basePath, dstIP, dc)
 	if query != "" {
 		path += "&" + query
 	}
 
-	resolver := androidDNSResolver()
+	resolver := systemDNSResolver()
 	ips, err := resolver.LookupNetIP(ctx, "ip4", host)
 	if err != nil {
 		return nil, fmt.Errorf("worker DNS %s: %w", host, err)
@@ -4474,6 +5112,9 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 
 	var lastErr error
 	for _, ip := range ips {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if !ip.Is4() {
 			continue
 		}
@@ -4481,6 +5122,9 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		raw, e := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"), 1500*time.Millisecond)
 		if e != nil {
 			cancel()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			lastErr = e
 			continue
 		}
@@ -4489,15 +5133,23 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		ws, e := finishWorkerWS(attemptCtx, raw, host, path)
 		cancel()
 		if e == nil {
-			clearWorkerCooldown(host)
+			clearWorkerCooldown(host, dc)
 			return ws, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 		var rle *RateLimitError
 		if errors.As(e, &rle) {
-			markWorkerCooldown(host, rle.RetryAfter)
+			if shouldPenalizeRoute(ctx) {
+				markWorkerCooldownDC(host, dc, rle.RetryAfter)
+			}
 			return nil, e
 		}
 		lastErr = e
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	return nil, fmt.Errorf("worker %s: %v", host, lastErr)
 }

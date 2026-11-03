@@ -290,26 +290,6 @@ func (p *WsPool) Stats() (hits, misses int64, idle int) {
 	return p.hits.Load(), p.misses.Load(), p.IdleCount()
 }
 
-func (p *WsPool) Close() {
-	if p == nil {
-		return
-	}
-	p.cancel()
-	p.queues.Range(func(_, value any) bool {
-		q := value.(chan *poolEntry)
-		for {
-			select {
-			case entry := <-q:
-				if entry != nil && entry.ws != nil {
-					_ = entry.ws.Close()
-				}
-			default:
-				return true
-			}
-		}
-	})
-}
-
 func readPoolSize() int {
 	b, err := os.ReadFile(path("pool_size"))
 	if err != nil {

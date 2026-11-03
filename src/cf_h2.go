@@ -63,6 +63,7 @@ func getH2Client(host string) *http.Client {
 			// override in the H2 path), so certificate verification stays on.
 			InsecureSkipVerify: false,
 			NextProtos:         []string{"h2", "http/1.1"},
+			CurvePreferences:   []tls.CurveID{tls.X25519, tls.CurveP256},
 		},
 		ForceAttemptHTTP2:   true,
 		MaxIdleConns:        32,
@@ -216,6 +217,33 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 	return respData
 }
 
+// h2PostFn is the packet POST function; kept as a variable so tests can
+// substitute a fake and observe concurrent in-flight requests.
+var h2PostFn = h2PostPacket
+
+// dispatchH2Post acquires an in-flight slot, then asynchronously performs the
+// POST and hands the reply to replyCh. The slot is held for the whole
+// lifetime of the request; when the bridge is cancelled while waiting for a
+// slot the packet is not dispatched and the caller should stop dispatching.
+func dispatchH2Post(h2InFlight chan struct{}, bridgeCtx context.Context, client *http.Client, apiURL, host string, replyCh chan<- h2Reply, seq uint64, body []byte) bool {
+	select {
+	case h2InFlight <- struct{}{}:
+	case <-bridgeCtx.Done():
+		return false
+	}
+	go func() {
+		defer func() { <-h2InFlight }()
+		postCtx, postCancel := context.WithTimeout(bridgeCtx, 15*time.Second)
+		defer postCancel()
+		data := h2PostFn(postCtx, client, apiURL, host, body)
+		select {
+		case replyCh <- h2Reply{seq: seq, data: data}:
+		case <-bridgeCtx.Done():
+		}
+	}()
+	return true
+}
+
 func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bool {
 	// Cloudflare does not front Telegram Test DCs; only production DCs 1-5
 	if isTest || !h2MediaEnabledCached() {
@@ -287,6 +315,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 	}
 
 	logf("conn #%d DC%d media bridged via HTTP/2 host=%s (%s)", id, dc, selectedHost, apiURL)
+	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
 
 	// 4. Run HTTP/2 pipeline
 	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
@@ -306,13 +335,25 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 			if err := writeFull(c, encrypted); err != nil {
 				return err
 			}
-			atomic.AddInt64(&trafficDownBytes, int64(len(body)))
+			// Count the full encoded frame (length prefix + body) so the
+			// H2 path's download statistics match the WSS path, which
+			// accounts whole frames.
+			atomic.AddInt64(&trafficDownBytes, int64(len(encoded)))
 			lastActivity.Store(time.Now().UnixNano())
 			return nil
 		})
 		for {
 			select {
 			case r := <-replyCh:
+				if r.data == nil {
+					// A lost POST must not silently consume a sequence slot:
+					// the server has already advanced its CTR stream, so every
+					// later reply would decrypt into garbage. Tear the session
+					// down instead — the MTProto client reconnects on its own.
+					logf("H2 media bridge: request seq=%d lost; closing session to avoid CTR desync", r.seq)
+					bridgeCancel()
+					return
+				}
 				if err := seq.push(r.seq, r.data); err != nil {
 					bridgeCancel()
 					return
@@ -323,6 +364,18 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		}
 	}()
 
+	// Unblock client read loop immediately when the bridge is cancelled
+	go func() {
+		<-bridgeCtx.Done()
+		_ = c.SetReadDeadline(time.Now())
+	}()
+
+	// Bound concurrent H2 POSTs. Without a cap, a media upload fans out
+	// hundreds of parallel H2 streams (one goroutine + POST per packet) and
+	// Cloudflare throttles the whole bridge with 429s. Packets wait for a
+	// slot instead of being dropped.
+	h2InFlight := make(chan struct{}, 16)
+
 	postSeq := uint64(0)
 	// Read loop from client
 	buf := make([]byte, 32*1024)
@@ -330,6 +383,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		_ = c.SetReadDeadline(time.Now().Add(3 * time.Minute))
 		nr, err := c.Read(buf)
 		if nr > 0 {
+			atomic.AddInt64(&trafficUpBytes, int64(nr))
 			lastActivity.Store(time.Now().UnixNano())
 			prevPlain := len(framer.plain)
 			chunk := buf[:nr]
@@ -344,7 +398,11 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				packetBody := append([]byte(nil), framer.plain[:n]...)
 				framer.plain = framer.plain[n:]
 				if len(framer.plain) == 0 {
-					framer.plain = framer.plain[:0]
+					if cap(framer.plain) > 128*1024 {
+						framer.plain = nil
+					} else {
+						framer.plain = framer.plain[:0]
+					}
 				} else if cap(framer.plain) > 128*1024 && len(framer.plain) < 32*1024 {
 					// Shrink an oversized buffer like mtprotoPacketFramer.feed does.
 					compacted := make([]byte, len(framer.plain))
@@ -381,15 +439,9 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				// one sequence slot, even when its request ultimately fails.
 				seq := postSeq
 				postSeq++
-				go func(seq uint64, body []byte) {
-					postCtx, postCancel := context.WithTimeout(bridgeCtx, 45*time.Second)
-					defer postCancel()
-					data := h2PostPacket(postCtx, client, apiURL, selectedHost, body)
-					select {
-					case replyCh <- h2Reply{seq: seq, data: data}:
-					case <-bridgeCtx.Done():
-					}
-				}(seq, rawMTProto)
+				if !dispatchH2Post(h2InFlight, bridgeCtx, client, apiURL, selectedHost, replyCh, seq, rawMTProto) {
+					return true
+				}
 			}
 		}
 

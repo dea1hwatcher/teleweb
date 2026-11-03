@@ -19,6 +19,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -133,6 +135,23 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 			t.Errorf("dcFor(%s)=%d, want %d", raw, got, want)
 		}
 	}
+
+	v6Cases := map[string]int{
+		"2001:b88:0::1":        1,
+		"2001:b88::1":          1,
+		"2001:67c:4e8:f002::1": 2,
+		"2001:b88:2::1":        3,
+		"2001:67c:4e8:f004::1": 4,
+		"2001:b88:3::1":        5,
+		"2001:67c:4e8::1":      2,
+		"2001:b88:1::1":        2,
+		"2600::1":              0, // Non-Telegram IPv6
+	}
+	for raw, want := range v6Cases {
+		if got := dcFor(netip.MustParseAddr(raw)); got != want {
+			t.Errorf("dcFor(%s)=%d, want %d", raw, got, want)
+		}
+	}
 }
 
 func TestMediaIPClassification(t *testing.T) {
@@ -147,6 +166,88 @@ func TestMediaIPClassification(t *testing.T) {
 		if got := mediaForIP(netip.MustParseAddr(raw)); got != want {
 			t.Errorf("mediaForIP(%s)=%t, want %t", raw, got, want)
 		}
+	}
+}
+
+func TestInitMemoryTuningDoesNotClampHeap(t *testing.T) {
+	t.Setenv("GOGC", "100") // keep the global GC target untouched
+	before := debug.SetMemoryLimit(-1)
+	initMemoryTuning()
+	if after := debug.SetMemoryLimit(-1); after != before {
+		t.Fatalf("initMemoryTuning changed the heap limit: %d -> %d", before, after)
+	}
+}
+
+func TestLoopbackPprofAddr(t *testing.T) {
+	cases := map[string]string{
+		"":                  "",
+		"127.0.0.1:6060":    "127.0.0.1:6060",
+		"localhost:6060":    "127.0.0.1:6060",
+		"[::1]:6060":        "[::1]:6060",
+		"0.0.0.0:6060":      "",
+		"192.168.1.10:6060": "",
+		"8.8.8.8:0":         "",
+		"6060":              "",
+		"127.0.0.1":         "",
+	}
+	for raw, want := range cases {
+		if got := loopbackPprofAddr(raw); got != want {
+			t.Errorf("loopbackPprofAddr(%q)=%q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestFillGCStatsReportsCollectionProgress(t *testing.T) {
+	// A few real collections, so every field has something to report.
+	for i := 0; i < 4; i++ {
+		drain := make([]byte, 1<<20)
+		for j := range drain {
+			drain[j] = byte(j)
+		}
+		runtime.GC()
+		_ = drain
+	}
+	var s Status
+	fillGCStats(&s)
+	if s.GCNum < 4 {
+		t.Fatalf("gcNum = %d, want the four forced collections to be counted", s.GCNum)
+	}
+	if s.HeapLiveBytes <= 0 {
+		t.Fatalf("heapLiveBytes = %d, want the live heap reported", s.HeapLiveBytes)
+	}
+	if s.GCPauseAvgMs <= 0 || s.GCPauseAvgMs > 5000 {
+		t.Fatalf("gcPauseAvgMs = %f, want the mean stop-the-world pause in milliseconds", s.GCPauseAvgMs)
+	}
+	if s.GCCPUPercent < 0 || s.GCCPUPercent > 100 {
+		t.Fatalf("gcCpuPercent = %f, want a share of the CPU time available", s.GCCPUPercent)
+	}
+}
+
+func TestGCMetricsReachACLIStatusReader(t *testing.T) {
+	// The daemon persists its snapshot and a CLI process rebuilds the status
+	// from that file; a metric the second leg forgets never reaches the device.
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() { baseDir = oldDir })
+	runtime.GC()
+	writeStatus()
+	b, err := os.ReadFile(path("status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted Status
+	if err := json.Unmarshal(b, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.GCNum == 0 || persisted.HeapLiveBytes == 0 {
+		t.Fatalf("daemon snapshot has no GC metrics: %+v", persisted)
+	}
+	got := status()
+	if got.GCNum < persisted.GCNum || got.GCCPUPercent != persisted.GCCPUPercent ||
+		got.GCPauseAvgMs != persisted.GCPauseAvgMs || got.HeapLiveBytes != persisted.HeapLiveBytes {
+		t.Fatalf("status() lost the GC metrics: got num=%d cpu=%f pause=%f heap=%d, want num>=%d cpu=%f pause=%f heap=%d",
+			got.GCNum, got.GCCPUPercent, got.GCPauseAvgMs, got.HeapLiveBytes,
+			persisted.GCNum, persisted.GCCPUPercent, persisted.GCPauseAvgMs, persisted.HeapLiveBytes)
 	}
 }
 
@@ -717,6 +818,44 @@ func TestNoteRouteHTTPFailureEscalatesWithinSeries(t *testing.T) {
 	routeHealthMu.Unlock()
 	if !second.After(first) {
 		t.Fatalf("expected escalated backoff within a series: first=%s second=%s", first, second)
+	}
+}
+
+func TestRouteCacheFreshnessTTL(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() { baseDir = oldDir })
+
+	key, host := "ttl", "kws2.ttl.example"
+	saveRouteCache(key, host)
+	t.Cleanup(func() {
+		routeCacheMu.Lock()
+		delete(routeCacheDisk, key)
+		routeCacheMu.Unlock()
+		cfHostCache.Delete(key)
+	})
+
+	if !routeCacheFresh(key, host) {
+		t.Fatal("a just-saved route must count as fresh")
+	}
+	if routeCacheFresh(key, "kws2.other.example") {
+		t.Fatal("a different host must not match the cached entry")
+	}
+
+	// Age the stamp past the TTL: the fast path must stop front-loading it.
+	routeCacheMu.Lock()
+	entry := routeCacheDisk[key]
+	entry.UpdatedAt = time.Now().Add(-routeCacheTTL - time.Minute)
+	routeCacheDisk[key] = entry
+	routeCacheMu.Unlock()
+	if routeCacheFresh(key, host) {
+		t.Fatal("an entry older than the TTL must be stale")
+	}
+
+	// A winning dial re-stamps the same host in memory (no file rewrite).
+	saveRouteCache(key, host)
+	if !routeCacheFresh(key, host) {
+		t.Fatal("re-saving the same host must refresh the freshness stamp")
 	}
 }
 
@@ -1515,7 +1654,10 @@ func TestDCLearnAndPersistence(t *testing.T) {
 	baseDir = tmp
 	defer func() { baseDir = oldBase }()
 
-	ip := "198.51.100.99"
+	// learnDC only accepts addresses inside Telegram aggregates; use an
+	// unassigned DC4 address (149.154.166.0/24, not in knownDCMap or the
+	// static media list) to exercise the learning path.
+	ip := "149.154.166.200"
 	learnedDCs.Delete(ip)
 	defer learnedDCs.Delete(ip)
 
@@ -1709,7 +1851,10 @@ func TestWsPool_Lifecycle(t *testing.T) {
 	defer cancel()
 
 	pool := newWsPool(ctx, 3)
-	defer pool.Close()
+	defer func() {
+		pool.cancel()
+		pool.drainAll()
+	}()
 
 	// 1. Initial Get on empty pool should miss
 	ws := pool.Get(2, false, false)
@@ -2072,7 +2217,10 @@ func TestWsPool_BufferedDataCheck(t *testing.T) {
 	defer cancel()
 
 	pool := newWsPool(ctx, 2)
-	defer pool.Close()
+	defer func() {
+		pool.cancel()
+		pool.drainAll()
+	}()
 
 	c1, c2 := net.Pipe()
 	defer c2.Close()
@@ -2486,5 +2634,607 @@ func TestCachedFileReadInvalidation(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("expected load() to re-run after change, ran %d times", calls)
+	}
+}
+
+func TestMatchesTelegramKeyword(t *testing.T) {
+	cases := []struct {
+		pkg  string
+		want bool
+	}{
+		{"org.telegram.messenger", true},
+		{"org.telegram.messenger.web", true},
+		{"com.radolyn.ayugram", true},
+		{"org.swiftgram.messenger", true},
+		{"com.turrit.chat", true},
+		{"org.telegram.messenger.cherry", true},
+		{"com.cherrygram.messenger", true},
+		{"org.telegram.messenger.mdgram", true},
+		{"org.telegram.bgram", true},
+		{"ir.ilmili.telegraph", true},
+		{"org.catogram.messenger", true},
+		{"com.custom.client.forkgram", true},
+		{"me.app.nicegram", true},
+		{"com.android.chrome", false},
+		{"com.google.android.youtube", false},
+		{"com.whatsapp", false},
+		{"org.mozilla.firefox", false},
+	}
+	for _, tc := range cases {
+		if got := matchesTelegramKeyword(tc.pkg); got != tc.want {
+			t.Errorf("matchesTelegramKeyword(%q) = %t, want %t", tc.pkg, got, tc.want)
+		}
+	}
+}
+
+func TestHumanizePackageName(t *testing.T) {
+	cases := []struct {
+		pkg  string
+		want string
+	}{
+		{"org.telegram.messenger", "Telegram"},
+		{"com.turrit.chat", "Turrit"},
+		{"org.swiftgram.messenger", "Swiftgram"},
+		{"org.catogram.messenger", "Catogram"},
+		{"com.custom.client", "Custom"},
+	}
+	for _, tc := range cases {
+		if got := humanizePackageName(tc.pkg); got != tc.want {
+			t.Errorf("humanizePackageName(%q) = %q, want %q", tc.pkg, got, tc.want)
+		}
+	}
+}
+
+func TestParseProcNetTCPIP(t *testing.T) {
+	// 149.154.167.51:443 -> 33A79A95:01BB
+	addr, port, ok := parseProcNetTCPIP("33A79A95:01BB")
+	if !ok {
+		t.Fatal("expected ok = true for 33A79A95:01BB")
+	}
+	if addr.String() != "149.154.167.51" || port != 443 {
+		t.Fatalf("unexpected parsed addr: %s:%d, want 149.154.167.51:443", addr, port)
+	}
+
+	// 91.108.56.100:443 -> 64386C5B:01BB
+	addr2, port2, ok2 := parseProcNetTCPIP("64386C5B:01BB")
+	if !ok2 {
+		t.Fatal("expected ok = true for 64386C5B:01BB")
+	}
+	if addr2.String() != "91.108.56.100" || port2 != 443 {
+		t.Fatalf("unexpected parsed addr: %s:%d, want 91.108.56.100:443", addr2, port2)
+	}
+
+	// Invalid
+	if _, _, ok := parseProcNetTCPIP("invalid"); ok {
+		t.Fatal("expected ok = false for invalid format")
+	}
+}
+
+func TestParseProcNetTCPContent(t *testing.T) {
+	fakeProcNetTCP := `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:13AD 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000000000000000 100 0 0 10 0
+   1: 0200A8C0:D431 33A79A95:01BB 01 00000000:00000000 00:00000000 00000000 10123        0 54321 1 0000000000000000 100 0 0 10 0
+   2: 0200A8C0:D432 64386C5B:01BB 02 00000000:00000000 00:00000000 00000000 10456        0 54322 1 0000000000000000 100 0 0 10 0
+   3: 0200A8C0:D433 2EBEC28E:01BB 01 00000000:00000000 00:00000000 00000000 10789        0 54323 1 0000000000000000 100 0 0 10 0
+`
+	// Line 0: LISTEN (state 0A) -> ignored
+	// Line 1: ESTABLISHED (state 01) to 149.154.167.51 (Telegram DC2) with UID 10123 -> matched!
+	// Line 2: SYN_SENT (state 02) to 91.108.56.100 (Telegram DC5) with UID 10456 -> matched!
+	// Line 3: ESTABLISHED (state 01) to 142.190.190.46 (Non-Telegram IP) with UID 10789 -> ignored!
+
+	uids := parseProcNetTCPContent(fakeProcNetTCP)
+	if len(uids) != 2 {
+		t.Fatalf("expected 2 detected UIDs from Telegram sockets, got %d: %#v", len(uids), uids)
+	}
+	if uids[0] != 10123 || uids[1] != 10456 {
+		t.Fatalf("unexpected UIDs: %#v, want [10123, 10456]", uids)
+	}
+}
+
+func TestIsTelegramAPK(t *testing.T) {
+	// Create temporary synthetic APK with libtmessages
+	tgAPKPath := filepath.Join(t.TempDir(), "test_tg.apk")
+	tgFile, err := os.Create(tgAPKPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(tgFile)
+	w, err := zw.Create("lib/arm64-v8a/libtmessages.48.so")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.Write([]byte("fake ELF content"))
+	zw.Close()
+	tgFile.Close()
+
+	if !isTelegramAPK(tgAPKPath) {
+		t.Errorf("expected isTelegramAPK = true for APK with libtmessages.48.so")
+	}
+
+	// Create temporary synthetic APK without Telegram libraries
+	otherAPKPath := filepath.Join(t.TempDir(), "test_other.apk")
+	otherFile, err := os.Create(otherAPKPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw2 := zip.NewWriter(otherFile)
+	w2, err := zw2.Create("lib/arm64-v8a/libsomeother.so")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w2.Write([]byte("fake ELF content"))
+	zw2.Close()
+	otherFile.Close()
+
+	if isTelegramAPK(otherAPKPath) {
+		t.Errorf("expected isTelegramAPK = false for APK without Telegram libraries")
+	}
+}
+
+func TestExecuteAPIPayload_InProcess(t *testing.T) {
+	tmpDir := t.TempDir()
+	origBase := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	// 1. Base64 payload
+	b64Req := base64.StdEncoding.EncodeToString([]byte(`{"cmd":"status"}`))
+	out, err := executeAPIPayload(b64Req)
+	if err != nil {
+		t.Fatalf("executeAPIPayload(b64) error: %v", err)
+	}
+	var resp struct {
+		OK   bool   `json:"ok"`
+		Data Status `json:"data"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil || !resp.OK {
+		t.Fatalf("invalid status response: %s (err: %v)", string(out), err)
+	}
+
+	// 2. Direct raw JSON payload (no base64)
+	outRaw, err := executeAPIPayload(`{"cmd":"clearlogs"}`)
+	if err != nil {
+		t.Fatalf("executeAPIPayload(raw) error: %v", err)
+	}
+	var clearResp struct {
+		OK   bool           `json:"ok"`
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(outRaw, &clearResp); err != nil || !clearResp.OK || clearResp.Data["cleared"] != true {
+		t.Fatalf("invalid clearlogs response: %s (err: %v)", string(outRaw), err)
+	}
+}
+
+func TestIsTelegramEndpoint_PreparsedSubnets(t *testing.T) {
+	for _, ip := range []string{
+		"149.154.175.50",
+		"149.154.167.51",
+		"91.108.56.100",
+		"91.108.4.1",
+		"91.105.192.100",
+		"185.76.151.10",
+	} {
+		addr := netip.MustParseAddr(ip)
+		if !isTelegramEndpoint(addr) {
+			t.Errorf("expected isTelegramEndpoint(%s) = true", ip)
+		}
+	}
+
+	for _, ip := range []string{
+		"1.1.1.1",
+		"8.8.8.8",
+		"77.88.8.8",
+		"192.168.1.1",
+		"10.0.0.1",
+	} {
+		addr := netip.MustParseAddr(ip)
+		if isTelegramEndpoint(addr) {
+			t.Errorf("expected isTelegramEndpoint(%s) = false", ip)
+		}
+	}
+}
+
+func TestWorkerCooldown_DCScoped(t *testing.T) {
+	host := "test-worker.example.workers.dev"
+	clearWorkerCooldown(host, 1)
+	clearWorkerCooldown(host, 2)
+
+	if isWorkerInCooldown(host, 1) || isWorkerInCooldown(host, 2) {
+		t.Fatal("expected worker not in cooldown initially")
+	}
+
+	// Mark DC2 in cooldown
+	markWorkerCooldownDC(host, 2, 5*time.Minute)
+
+	if !isWorkerInCooldown(host, 2) {
+		t.Fatal("expected DC2 in cooldown")
+	}
+	if isWorkerInCooldown(host, 1) {
+		t.Fatal("expected DC1 NOT in cooldown when only DC2 was quarantined")
+	}
+
+	clearWorkerCooldown(host, 2)
+	if isWorkerInCooldown(host, 2) {
+		t.Fatal("expected DC2 cleared from cooldown")
+	}
+}
+
+func TestIsTelegramDomain(t *testing.T) {
+	for _, domain := range []string{
+		"api.telegram.org",
+		"web.telegram.org",
+		"vesta.web.telegram.org",
+		"t.me",
+		"a.t.me",
+		"telegra.ph",
+		"telesco.pe",
+		"cdn.telegram-cdn.org",
+	} {
+		if !isTelegramDomain(domain) {
+			t.Errorf("expected isTelegramDomain(%s) = true", domain)
+		}
+	}
+
+	for _, domain := range []string{
+		"google.com",
+		"cloudflare.com",
+		"nottelegram.org",
+		"fake-t.me.evil.com",
+	} {
+		if isTelegramDomain(domain) {
+			t.Errorf("expected isTelegramDomain(%s) = false", domain)
+		}
+	}
+}
+
+func TestIsTelegramEndpoint_IPv6(t *testing.T) {
+	for _, ip := range []string{
+		"2001:b88::1",
+		"2001:b88:1000::5",
+		"2001:67c:4e8::2",
+	} {
+		addr := netip.MustParseAddr(ip)
+		if !isTelegramEndpointV6(addr) {
+			t.Errorf("expected isTelegramEndpointV6(%s) = true", ip)
+		}
+	}
+
+	for _, ip := range []string{
+		"2001:4860:4860::8888",
+		"2606:4700:4700::1111",
+		"::1",
+	} {
+		addr := netip.MustParseAddr(ip)
+		if isTelegramEndpointV6(addr) {
+			t.Errorf("expected isTelegramEndpointV6(%s) = false", ip)
+		}
+	}
+}
+
+func TestTailLog_BoundedTail(t *testing.T) {
+	origBase := baseDir
+	tmpDir := t.TempDir()
+	baseDir = tmpDir
+	defer func() { baseDir = origBase }()
+
+	// 1. Non-existent log file
+	if got := tailLog(10); got != "" {
+		t.Fatalf("expected empty string for non-existent log, got %q", got)
+	}
+
+	// 2. Small log file (< 32KB)
+	var smallLines []string
+	for i := 1; i <= 20; i++ {
+		smallLines = append(smallLines, fmt.Sprintf("line %02d: log entry", i))
+	}
+	logPath := path("tgws.log")
+	if err := os.WriteFile(logPath, []byte(strings.Join(smallLines, "\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailLog(5)
+	expected := strings.Join(smallLines[len(smallLines)-5:], "\n")
+	if got != expected {
+		t.Fatalf("tailLog(5) small mismatch:\nwant:\n%s\ngot:\n%s", expected, got)
+	}
+
+	// 3. Large log file (> 64KB)
+	var largeLines []string
+	for i := 1; i <= 2000; i++ {
+		largeLines = append(largeLines, fmt.Sprintf("line %04d: extended log entry with extra filler data 1234567890", i))
+	}
+	if err := os.WriteFile(logPath, []byte(strings.Join(largeLines, "\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	gotLarge := tailLog(10)
+	expectedLarge := strings.Join(largeLines[len(largeLines)-10:], "\n")
+	if gotLarge != expectedLarge {
+		t.Fatalf("tailLog(10) large mismatch:\nwant:\n%s\ngot:\n%s", expectedLarge, gotLarge)
+	}
+}
+
+func TestInitMemoryTuning(t *testing.T) {
+	initMemoryTuning()
+}
+
+func TestDirectDialNegativeCache(t *testing.T) {
+	testIP := "149.154.167.220"
+	directDialMarkReachable(testIP)
+	if directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s not to be blocked initially", testIP)
+	}
+
+	directDialMarkFail(testIP)
+	if !directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s to be blocked after directDialMarkFail", testIP)
+	}
+
+	directDialMarkReachable(testIP)
+	if directDialBlockedRecently(testIP) {
+		t.Fatalf("expected %s to be unblocked after directDialMarkReachable", testIP)
+	}
+}
+
+func TestIsTelegramTarget(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"149.154.167.51:443", true},
+		{"91.108.4.1:80", true},
+		{"91.105.192.100:443", true},
+		{"185.76.151.10:443", true},
+		{"104.16.123.96:443", false}, // Cloudflare
+		{"1.1.1.1:53", false},        // Cloudflare DNS
+		{"8.8.8.8:53", false},        // Google DNS
+		{"invalid-host", false},
+	}
+	for _, tc := range cases {
+		got := isTelegramTarget(tc.addr)
+		if got != tc.want {
+			t.Errorf("isTelegramTarget(%q) = %v; want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestIsLocalAddrInUse(t *testing.T) {
+	if !isLocalAddrInUse(errors.New("bind: address already in use")) {
+		t.Error("expected true for standard bind address already in use")
+	}
+	if !isLocalAddrInUse(errors.New("bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.")) {
+		t.Error("expected true for Windows WSAEADDRINUSE text")
+	}
+	if !isLocalAddrInUse(errors.New("WSAEADDRINUSE 10048")) {
+		t.Error("expected true for 10048 code")
+	}
+	if isLocalAddrInUse(errors.New("connection refused")) {
+		t.Error("expected false for connection refused")
+	}
+	if isLocalAddrInUse(nil) {
+		t.Error("expected false for nil error")
+	}
+}
+
+func TestIsPidAlive(t *testing.T) {
+	if !isPidAlive(os.Getpid()) {
+		t.Fatal("own process must be reported alive")
+	}
+	// An impossible pid must be dead on every supported platform: on Windows
+	// os.FindProcess alone reported every pid as alive.
+	if isPidAlive(1 << 30) {
+		t.Fatal("impossible pid reported alive")
+	}
+}
+
+func TestIsTelegramEndpoint(t *testing.T) {
+	cases := map[string]bool{
+		"149.154.167.51":        true,
+		"149.154.175.50":        true,
+		"91.108.56.100":         true,
+		"91.105.192.100":        true,
+		"185.76.151.10":         true,
+		"8.8.8.8":               false,
+		"149.154.176.1":         false,
+		"::ffff:149.154.167.51": true,
+		"2001:67c:4e8::1":       false,
+	}
+	for raw, want := range cases {
+		if got := isTelegramEndpoint(netip.MustParseAddr(raw)); got != want {
+			t.Errorf("isTelegramEndpoint(%s)=%t, want %t", raw, got, want)
+		}
+	}
+	// The CDN203 endpoint must stay inside the intercepted aggregates even
+	// without a dedicated address check.
+	if !isTelegramEndpoint(netip.MustParseAddr(cdn203IP)) {
+		t.Fatalf("CDN203 endpoint %s is not covered by telegramSubnets", cdn203IP)
+	}
+}
+
+func TestCDN203Dispatch(t *testing.T) {
+	cases := []struct {
+		orig string
+		dc   int
+		want bool
+	}{
+		{"91.105.192.100:443", 2, true},    // dedicated CDN203 endpoint, any DC tag
+		{"91.105.192.100:443", 203, true},  // dedicated endpoint + DC203 tag
+		{"91.105.192.55:443", 203, true},   // inside the 91.105.192.0/23 aggregate + DC203 tag
+		{"91.105.194.1:443", 203, false},   // just outside the /23 aggregate
+		{"8.8.8.8:443", 203, false},        // forged: DC203 tag aimed at an arbitrary host
+		{"149.154.167.51:443", 203, false}, // genuine Telegram DC, but not CDN203
+		{"8.8.8.8:443", 2, false},
+	}
+	for _, tc := range cases {
+		if got := cdn203Dispatch(netip.MustParseAddrPort(tc.orig), tc.dc); got != tc.want {
+			t.Errorf("cdn203Dispatch(%s, dc=%d) = %t, want %t", tc.orig, tc.dc, got, tc.want)
+		}
+	}
+}
+
+func TestServeConnRefusesForgedCDN203(t *testing.T) {
+	origDir := baseDir
+	baseDir = t.TempDir()
+	origLog := logFile
+	logMu.Lock()
+	logFile = nil
+	logMu.Unlock()
+	defer func() {
+		baseDir = origDir
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		logMu.Unlock()
+	}()
+
+	makeInit := func(dcIndex int16) []byte {
+		init := make([]byte, 64)
+		for i := range init {
+			init[i] = byte(i*13 + 7)
+		}
+		key := init[8:40]
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream := cipher.NewCTR(block, init[40:56])
+		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
+		keystream := make([]byte, 8)
+		stream.XORKeyStream(keystream, make([]byte, 8))
+		plainTail := make([]byte, 8)
+		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
+		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
+		for i := 0; i < 8; i++ {
+			init[56+i] = plainTail[i] ^ keystream[i]
+		}
+		return init
+	}
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	go serveConn(c2, netip.MustParseAddrPort("8.8.8.8:443"))
+	go func() { _, _ = c1.Write(makeInit(203)) }()
+
+	// A forged DC203 tag must be refused before any dial attempt: the
+	// connection is closed promptly instead of being bridged or timing out
+	// on a 5-second dial to the attacker-chosen destination.
+	_ = c1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 16)
+	if _, err := c1.Read(buf); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected immediate EOF for forged CDN203, got %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := learnedDCs.Load("8.8.8.8"); ok {
+		t.Fatal("forged endpoint leaked into the learned DC map")
+	}
+}
+
+func TestLearnDCRejectsNonTelegram(t *testing.T) {
+	origDir := baseDir
+	baseDir = t.TempDir()
+	origLog := logFile
+	logMu.Lock()
+	logFile = nil
+	logMu.Unlock()
+	defer func() {
+		baseDir = origDir
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		logMu.Unlock()
+	}()
+
+	learnDC("8.8.8.8", 203, false)
+	if _, ok := learnedDCs.Load("8.8.8.8"); ok {
+		t.Fatal("non-Telegram IP must not enter the learned DC map")
+	}
+	learnDC("2001:db8::1", 2, false)
+	if _, ok := learnedDCs.Load("2001:db8::1"); ok {
+		t.Fatal("non-Telegram IPv6 must not enter the learned DC map")
+	}
+	// 149.154.175.52 is a known DC1 media endpoint.
+	learnDC("149.154.175.52", 1, true)
+	if _, ok := learnedDCs.Load("149.154.175.52"); !ok {
+		t.Fatal("genuine media endpoint must be learned")
+	}
+	learnDC("91.105.192.100", 203, false)
+	if _, ok := learnedDCs.Load("91.105.192.100"); !ok {
+		t.Fatal("CDN203 endpoint must be learnable")
+	}
+	// Persist synchronously while baseDir still points at the temp dir so
+	// the goroutines spawned by learnDC find nothing left to write.
+	persistLearnedDCs()
+	learnedDCs.Delete("149.154.175.52")
+	learnedDCs.Delete("91.105.192.100")
+}
+
+func TestH2DispatchSemaphoreBounds(t *testing.T) {
+	origPost := h2PostFn
+	defer func() { h2PostFn = origPost }()
+
+	var cur, maxSeen atomic.Int64
+	release := make(chan struct{})
+	h2PostFn = func(ctx context.Context, client *http.Client, apiURL, host string, body []byte) []byte {
+		n := cur.Add(1)
+		for {
+			m := maxSeen.Load()
+			if n <= m || maxSeen.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		<-release
+		cur.Add(-1)
+		return []byte{0, 0, 0, 0}
+	}
+
+	h2InFlight := make(chan struct{}, 16)
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	defer bridgeCancel()
+	replyCh := make(chan h2Reply, 128)
+
+	const total = 100
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < total; i++ {
+			if !dispatchH2Post(h2InFlight, bridgeCtx, nil, "http://test", "test-host", replyCh, uint64(i), []byte{1, 2, 3, 4}) {
+				return
+			}
+		}
+	}()
+
+	// While every POST is parked, at most 16 may be in flight; the dispatch
+	// loop blocks on the semaphore instead of piling up goroutines.
+	time.Sleep(200 * time.Millisecond)
+	if got := maxSeen.Load(); got != 16 {
+		t.Fatalf("expected the semaphore to saturate at 16, saw %d", got)
+	}
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("dispatch loop did not finish after releasing POSTs")
+	}
+
+	// All replies must eventually be delivered with their sequence numbers.
+	got := map[uint64]bool{}
+	for len(got) < total {
+		select {
+		case r := <-replyCh:
+			got[r.seq] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out after receiving %d/%d replies", len(got), total)
+		}
+	}
+	// No request may still hold a slot.
+	if n := cur.Load(); n != 0 {
+		t.Fatalf("%d requests still in flight after completion", n)
 	}
 }

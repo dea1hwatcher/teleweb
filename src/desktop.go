@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -32,10 +35,10 @@ func selfDialRegister(port uint16) {
 	selfDialMu.Unlock()
 }
 
+// selfDialExpire extends the retention of port for a grace period after close,
+// ensuring delayed SYN retransmits from the kernel are not mistaken for client traffic.
 func selfDialExpire(port uint16) {
-	selfDialMu.Lock()
-	selfDialPorts[port] = time.Now().Add(selfDialGrace)
-	selfDialMu.Unlock()
+	selfDialRegister(port)
 }
 
 func isSelfDialPort(port uint16) bool {
@@ -69,50 +72,81 @@ func (s *selfPortConn) Close() error {
 	return s.Conn.Close()
 }
 
-func trackSelfDial(c net.Conn) net.Conn {
-	if c == nil {
-		return c
+// isTelegramTarget reports whether addr names a Telegram endpoint that the
+// platform redirector will intercept; such dials must reserve their local port
+// first so the redirector never captures the daemon's own connection.
+func isTelegramTarget(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
 	}
-	if ta, ok := c.LocalAddr().(*net.TCPAddr); ok && ta.Port > 0 {
-		port := uint16(ta.Port)
-		selfDialRegister(port)
-		return &selfPortConn{Conn: c, port: port}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
 	}
-	return c
+	return isTelegramEndpoint(ip)
+}
+
+func isLocalAddrInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "address already in use") ||
+		strings.Contains(s, "only one usage of each socket address") ||
+		strings.Contains(s, "10048")
 }
 
 // trackedDial reserves and registers the local port before the SYN leaves, so
 // the Windows redirector never mistakes our own outbound connection for
 // client traffic even in the first packet. The timeout budgets the WHOLE
-// call (all retry attempts included): an unreachable destination must fail
-// within the caller's deadline, not quadruple it.
+// call: an unreachable destination fails immediately without retrying or
+// cascading into WinDivert loopback.
 func trackedDial(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
 	overall, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	d := net.Dialer{KeepAlive: 30 * time.Second}
+	// External destinations (Cloudflare, Workers, DoH) are never intercepted by
+	// WinDivert because its filter only captures telegramSubnets. Dialing them
+	// through standard ephemeral ports skips the Listen/Close/selfDial overhead.
+	if !isTelegramTarget(addr) {
+		d := net.Dialer{
+			KeepAlive: 30 * time.Second,
+			Control: func(network, address string, c syscall.RawConn) error {
+				return setDialSockOpts(c)
+			},
+		}
+		return d.DialContext(overall, network, addr)
+	}
+
 	for attempt := 0; attempt < 3; attempt++ {
 		l, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
-			break
+			return nil, err
 		}
 		port := uint16(l.Addr().(*net.TCPAddr).Port)
 		_ = l.Close()
+
 		selfDialRegister(port)
-		d.LocalAddr = &net.TCPAddr{Port: int(port)}
+		d := net.Dialer{
+			LocalAddr: &net.TCPAddr{Port: int(port)},
+			Control: func(network, address string, c syscall.RawConn) error {
+				return setDialSockOpts(c)
+			},
+		}
 		c, err := d.DialContext(overall, network, addr)
 		if err == nil {
 			return &selfPortConn{Conn: c, port: port}, nil
 		}
 		selfDialExpire(port)
 		if overall.Err() != nil {
-			break
+			return nil, err
+		}
+		if !isLocalAddrInUse(err) {
+			// Remote endpoint is unreachable/refused/reset; do not retry.
+			return nil, err
 		}
 	}
-	c, err := d.DialContext(overall, network, addr)
-	if err != nil {
-		return nil, err
-	}
-	return trackSelfDial(c), nil
+	return nil, fmt.Errorf("trackedDial: local port conflict across attempts for %s", addr)
 }
 
 // runDesktop is the long-lived foreground supervisor used by systemd on Linux
@@ -142,17 +176,21 @@ func runDesktop() error {
 }
 
 // cmdRun blocks until a termination signal, then tears everything down.
+// It installs its own signal handler instead of startSignalLogger: that
+// helper exits on the first signal, which would race this graceful teardown
+// and leave the REDIRECT rules pointing at a dead port.
 func cmdRun() {
 	ensureDir()
-	startSignalLogger()
+	// Register before startup so a signal arriving mid-boot is queued and
+	// still triggers the teardown below.
+	ch := make(chan os.Signal, 1)
+	notifySignals(ch)
 	fmt.Println("TeleWEB desktop runtime starting; Ctrl+C to stop")
 	if err := runDesktop(); err != nil {
 		logf("run: %v", err)
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	ch := make(chan os.Signal, 1)
-	notifySignals(ch)
 	sig := <-ch
 	logf("run: signal %v received, stopping", sig)
 	stopWatchdog()

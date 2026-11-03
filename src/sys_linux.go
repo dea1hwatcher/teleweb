@@ -131,3 +131,16 @@ func originalDestination(c net.Conn) (netip.AddrPort, error) {
 	}
 	return addr, nil
 }
+
+func setReuseAddr(raw syscall.RawConn) error {
+	var err error
+	controlErr := raw.Control(func(fd uintptr) {
+		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+	})
+	if controlErr != nil {
+		return controlErr
+	}
+	return err
+}
+
+func setDialSockOpts(c syscall.RawConn) error { return setReuseAddr(c) }

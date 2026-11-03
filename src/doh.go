@@ -50,11 +50,12 @@ func getDoHClient() *http.Client {
 	dohClientOnce.Do(func() {
 		tr := &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				d := net.Dialer{Resolver: androidDNSResolver(), Timeout: 3 * time.Second}
+				d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 3 * time.Second}
 				return d.DialContext(ctx, network, addr)
 			},
 			TLSClientConfig: &tls.Config{
-				RootCAs: getSystemRootCAs(),
+				RootCAs:          getSystemRootCAs(),
+				CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256},
 				// Certificate verification stays ON: DoH exists precisely to
 				// defeat spoofing, and these endpoints involve no SNI games.
 			},

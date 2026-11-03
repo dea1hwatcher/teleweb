@@ -45,6 +45,9 @@ func isPidAlive(pid int) bool {
 	if pid <= 1 {
 		return false
 	}
+	if pid == os.Getpid() {
+		return true
+	}
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
 		return false
@@ -98,4 +101,26 @@ func serverListening() bool {
 	return true
 }
 
+func setReuseAddr(raw syscall.RawConn) error {
+	var err error
+	controlErr := raw.Control(func(fd uintptr) {
+		err = windows.SetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_REUSEADDR, 1)
+	})
+	if controlErr != nil {
+		return controlErr
+	}
+	return err
+}
+
 var errAdminRequired = errors.New("administrator privileges are required for transparent interception on Windows (run from an elevated console)")
+
+func setDialSockOpts(c syscall.RawConn) error {
+	_ = setReuseAddr(c)
+	return c.Control(func(fd uintptr) {
+		// Set SO_LINGER with zero timeout so aborted/cancelled dials terminate
+		// immediately with RST instead of having the Windows TCP stack retransmit
+		// SYN packets for tens of seconds in the background.
+		l := windows.Linger{Onoff: 1, Linger: 0}
+		_ = windows.SetsockoptLinger(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_LINGER, &l)
+	})
+}

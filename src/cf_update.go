@@ -136,11 +136,12 @@ func fetchCFDomainsFromURL(ctx context.Context, client *http.Client, targetURL s
 func refreshCFDomains(ctx context.Context) error {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			d := net.Dialer{Resolver: androidDNSResolver(), Timeout: 5 * time.Second}
+			d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 5 * time.Second}
 			return d.DialContext(ctx, network, addr)
 		},
 		TLSClientConfig: &tls.Config{
-			RootCAs: getSystemRootCAs(),
+			RootCAs:          getSystemRootCAs(),
+			CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256},
 			// GitHub raw endpoints use their real hostname: verify certificates.
 		},
 		IdleConnTimeout: 90 * time.Second,

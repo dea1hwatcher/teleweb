@@ -69,3 +69,6 @@ func serverListening() bool {
 	_ = c.Close()
 	return true
 }
+
+func setReuseAddr(raw syscall.RawConn) error  { return nil }
+func setDialSockOpts(c syscall.RawConn) error { return nil }
