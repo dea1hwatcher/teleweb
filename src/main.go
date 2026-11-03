@@ -2375,112 +2375,17 @@ func processMemoryBytes() (current, peak int64) {
 	return current, peak
 }
 
-func currentStatus() Status {
-	apps, _ := installedApps()
-	dc := map[string]int{}
-	statsMu.Lock()
-	for k, v := range dcCounts {
-		dc[k] = v
-	}
-	statsMu.Unlock()
-	memNow, memPeak := processMemoryBytes()
-	up := atomic.LoadInt64(&trafficUpBytes)
-	down := atomic.LoadInt64(&trafficDownBytes)
-	hits, misses, idle := int64(0), int64(0), 0
-	if globalWsPool != nil {
-		hits, misses, idle = globalWsPool.Stats()
-	}
-	return Status{
-		Enabled:           readEnabled(),
-		Running:           true,
-		Uptime:            int64(time.Since(startAt).Seconds()),
-		Port:              defaultPort,
-		Apps:              apps,
-		Active:            atomic.LoadInt64(&active),
-		WS:                atomic.LoadInt64(&wsCount),
-		Fail:              atomic.LoadInt64(&failCnt),
-		DC:                dc,
-		MemNowBytes:       memNow,
-		MemPeakBytes:      memPeak,
-		TrafficUpBytes:    up,
-		TrafficDownBytes:  down,
-		TrafficTotalBytes: up + down,
-		Log:               tailLog(60),
-		CFPriority:        readCFPriority(),
-		CFBalance:         readCFBalance(),
-		CustomCFDomain:    readCustomCFDomain(),
-		CustomCFWorker:    readCustomCFWorker(),
-		DCOverrides:       readDCOverridesRaw(),
-		PoolSize:          readPoolSize(),
-		PoolHits:          hits,
-		PoolMisses:        misses,
-		PoolIdle:          idle,
-		DoHEnabled:        readDoHEnabled(),
-		LastCFPoP: func() string {
-			if p := lastCFPoP.Load(); p != nil {
-				return *p
-			}
-			return ""
-		}(),
-		LastCFRay: func() string {
-			if p := lastCFRay.Load(); p != nil {
-				return *p
-			}
-			return ""
-		}(),
-		ForceTestDC:    readForceTestDC(),
-		H2MediaEnabled: readH2MediaEnabled(),
-		DC203DirectTCP: readDC203DirectTCP(),
-		Redirector:     localRedirectorHealthy(),
-	}
-}
-func status() Status {
-	if b, e := os.ReadFile(path("tgws.pid")); e == nil {
-		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-		if pid == os.Getpid() {
-			return currentStatus()
-		}
-	}
-	apps, _ := installedApps()
-	if b, e := os.ReadFile(path("status.json")); e == nil {
-		var s Status
-		if json.Unmarshal(b, &s) == nil {
-			s.Enabled = readEnabled()
-			s.Running = pidAlive()
-			s.Apps = apps
-			s.Log = tailLog(60)
-			s.CFPriority = readCFPriority()
-			s.CFBalance = readCFBalance()
-			s.CustomCFDomain = readCustomCFDomain()
-			s.CustomCFWorker = readCustomCFWorker()
-			s.DCOverrides = readDCOverridesRaw()
-			s.PoolSize = readPoolSize()
-			s.DoHEnabled = readDoHEnabled()
-			s.ForceTestDC = readForceTestDC()
-			s.H2MediaEnabled = readH2MediaEnabled()
-			s.DC203DirectTCP = readDC203DirectTCP()
-			if p := lastCFPoP.Load(); p != nil {
-				s.LastCFPoP = *p
-			}
-			if p := lastCFRay.Load(); p != nil {
-				s.LastCFRay = *p
-			}
-			if globalWsPool != nil {
-				s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
-			}
-			return s
-		}
-	}
-	return Status{
+// buildStatus assembles the invariant part of every status snapshot: flags
+// read from the config files, the app list, the log tail and this process's
+// Cloudflare telemetry. Callers overlay the live metrics on top — from
+// process globals inside the daemon, or from the persisted status.json when
+// a CLI process reports on a running daemon. A new status field is added
+// here exactly once.
+func buildStatus(apps []App) Status {
+	s := Status{
 		Enabled:        readEnabled(),
-		Running:        pidAlive(),
-		Uptime:         int64(time.Since(startAt).Seconds()),
 		Port:           defaultPort,
 		Apps:           apps,
-		Active:         atomic.LoadInt64(&active),
-		WS:             atomic.LoadInt64(&wsCount),
-		Fail:           atomic.LoadInt64(&failCnt),
-		DC:             map[string]int{},
 		Log:            tailLog(60),
 		CFPriority:     readCFPriority(),
 		CFBalance:      readCFBalance(),
@@ -2506,6 +2411,86 @@ func status() Status {
 			return ""
 		}(),
 	}
+	if globalWsPool != nil {
+		s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
+	}
+	return s
+}
+
+func currentStatus() Status {
+	apps, _ := installedApps()
+	s := buildStatus(apps)
+	dc := map[string]int{}
+	statsMu.Lock()
+	for k, v := range dcCounts {
+		dc[k] = v
+	}
+	statsMu.Unlock()
+	memNow, memPeak := processMemoryBytes()
+	up := atomic.LoadInt64(&trafficUpBytes)
+	down := atomic.LoadInt64(&trafficDownBytes)
+	s.Running = true
+	s.Uptime = int64(time.Since(startAt).Seconds())
+	s.Active = atomic.LoadInt64(&active)
+	s.WS = atomic.LoadInt64(&wsCount)
+	s.Fail = atomic.LoadInt64(&failCnt)
+	s.DC = dc
+	s.MemNowBytes = memNow
+	s.MemPeakBytes = memPeak
+	s.TrafficUpBytes = up
+	s.TrafficDownBytes = down
+	s.TrafficTotalBytes = up + down
+	return s
+}
+func status() Status {
+	if b, e := os.ReadFile(path("tgws.pid")); e == nil {
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		if pid == os.Getpid() {
+			return currentStatus()
+		}
+	}
+	apps, _ := installedApps()
+	if b, e := os.ReadFile(path("status.json")); e == nil {
+		var file Status
+		if json.Unmarshal(b, &file) == nil {
+			s := buildStatus(apps)
+			s.Running = pidAlive()
+			// Live metrics come from the daemon's persisted snapshot: this
+			// process may be a CLI invocation whose own counters are empty.
+			s.Uptime = file.Uptime
+			s.Active = file.Active
+			s.WS = file.WS
+			s.Fail = file.Fail
+			s.DC = file.DC
+			s.MemNowBytes = file.MemNowBytes
+			s.MemPeakBytes = file.MemPeakBytes
+			s.TrafficUpBytes = file.TrafficUpBytes
+			s.TrafficDownBytes = file.TrafficDownBytes
+			s.TrafficTotalBytes = file.TrafficTotalBytes
+			if globalWsPool == nil {
+				s.PoolHits, s.PoolMisses, s.PoolIdle = file.PoolHits, file.PoolMisses, file.PoolIdle
+			}
+			// The redirector state belongs to the daemon, not this process.
+			s.Redirector = file.Redirector
+			// Telemetry captured by this process (if any) is fresher than
+			// the file; otherwise fall back to the persisted values.
+			if s.LastCFPoP == "" {
+				s.LastCFPoP = file.LastCFPoP
+			}
+			if s.LastCFRay == "" {
+				s.LastCFRay = file.LastCFRay
+			}
+			return s
+		}
+	}
+	s := buildStatus(apps)
+	s.Running = pidAlive()
+	s.Uptime = int64(time.Since(startAt).Seconds())
+	s.Active = atomic.LoadInt64(&active)
+	s.WS = atomic.LoadInt64(&wsCount)
+	s.Fail = atomic.LoadInt64(&failCnt)
+	s.DC = map[string]int{}
+	return s
 }
 func writeStatus() {
 	s := currentStatus()
