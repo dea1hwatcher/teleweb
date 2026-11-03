@@ -788,21 +788,31 @@ var packageNames = []struct{ Pkg, Name string }{
 	{"org.catogram.messenger", "Catogram"},
 }
 
-var telegramKeywords = []string{
-	"gram", "tgnet", "tg", "tele", "extera", "nekox", "neko", "plus", "ime",
-	"turrit", "telegraph", "teleplus", "mobogram", "ayugram", "cherrygram",
-	"kotato", "forkgram", "catogram", "nemogram", "swiftgram", "mdgram",
-	"bgram", "octogram", "unigram", "tdlib",
-}
-
-func matchesTelegramKeyword(pkg string) bool {
-	low := strings.ToLower(pkg)
-	for _, kw := range telegramKeywords {
-		if strings.Contains(low, kw) {
-			return true
-		}
+var curatedClientNames = func() map[string]string {
+	m := make(map[string]string, len(packageNames))
+	for _, p := range packageNames {
+		m[p.Pkg] = p.Name
 	}
-	return false
+	return m
+}()
+
+// telegramClientName decides whether a package belongs in the detected
+// clients list. A curated name always qualifies; anything else has to prove
+// itself with Telegram's native libraries inside its APK.
+//
+// The old substring keyword guess over package names is gone: "gram", "tele",
+// "ime", "plus" and "tg" matched Instagram, the telecom and telephony
+// services, the realme/OnePlus system packages and a large part of any
+// Android install, and every match became a UI entry, a freezer target and an
+// apps.json record with two base64 icons.
+func telegramClientName(pkg, apkPath string) (string, bool) {
+	if name, ok := curatedClientNames[pkg]; ok {
+		return name, true
+	}
+	if isTelegramAPK(apkPath) {
+		return humanizePackageName(pkg), true
+	}
+	return "", false
 }
 
 func humanizePackageName(pkg string) string {
@@ -955,17 +965,38 @@ func resolveUIDToPackage(uid int) string {
 		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err == nil {
-			target := fmt.Sprintf("uid:%d", uid)
-			for _, line := range strings.Split(string(out), "\n") {
-				if strings.Contains(line, target) && strings.HasPrefix(line, "package:") {
-					fields := strings.Fields(line)
-					return strings.TrimPrefix(fields[0], "package:")
-				}
+			if pkg := packageFromPMListing(string(out), uid); pkg != "" {
+				return pkg
 			}
 		}
 	}
 	return ""
 }
+
+// packageFromPMListing returns the package that owns uid in
+// `pm list packages -U` output. The uid is compared as a whole field: looking
+// for it as a substring made "uid:10234" match the line of uid:102345 and
+// report another app's package name as the detected client.
+func packageFromPMListing(out string, uid int) string {
+	target := "uid:" + strconv.Itoa(uid)
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "package:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		for _, field := range fields[1:] {
+			if field == target {
+				return strings.TrimPrefix(fields[0], "package:")
+			}
+		}
+	}
+	return ""
+}
+
+// rejectedLiveUIDs remembers UIDs that a live-traffic probe showed not to be
+// Telegram clients, so the watchdog's 30 second tick does not resolve and
+// open the same APK over and over.
+var rejectedLiveUIDs = map[int]bool{}
 
 func discoverActiveTelegramClients() {
 	activeUIDs := scanActiveTelegramSockets()
@@ -982,23 +1013,26 @@ func discoverActiveTelegramClients() {
 
 	dirty := false
 	for _, uid := range activeUIDs {
-		if known[uid] {
+		if known[uid] || rejectedLiveUIDs[uid] {
 			continue
 		}
 		pkg := resolveUIDToPackage(uid)
 		if pkg == "" {
-			pkg = fmt.Sprintf("unknown.telegram.uid%d", uid)
+			rejectedLiveUIDs[uid] = true
+			continue
 		}
-		name := humanizePackageName(pkg)
-		normalIco, monetIco := extractAPKIcons(findPackageAPK(pkg))
-		app := App{
-			Name:       name,
-			Pkg:        pkg,
-			UID:        uid,
-			IconNormal: normalIco,
-			IconMonet:  monetIco,
+		apkPath := findPackageAPK(pkg)
+		name, wanted := telegramClientName(pkg, apkPath)
+		if !wanted {
+			// Something else in this UID's traffic reached a Telegram address
+			// — a browser on t.me, a mail checker. Not a client, and inventing
+			// "unknown.telegram.uidN" for it only grew apps.json and the
+			// base64 icons carried in every status write.
+			rejectedLiveUIDs[uid] = true
+			continue
 		}
-		appCache = append(appCache, app)
+		normalIco, monetIco := extractAPKIcons(apkPath)
+		appCache = append(appCache, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
 		uidCache = append(uidCache, uid)
 		known[uid] = true
 		dirty = true
@@ -1009,14 +1043,16 @@ func discoverActiveTelegramClients() {
 	}
 }
 
+// pmUIDRe parses the uid field of `pm list packages -U` output.
+var pmUIDRe = regexp.MustCompile(`uid:(\d+)`)
+
 func packageUID(pkg string) int {
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err == nil {
-			re := regexp.MustCompile(`uid:(\d+)`)
-			m := re.FindSubmatch(out)
+			m := pmUIDRe.FindSubmatch(out)
 			if len(m) > 1 {
 				n, _ := strconv.Atoi(string(m[1]))
 				if n > 0 {
@@ -1262,58 +1298,92 @@ func extractAPKIcons(apkPath string) (normalB64 string, monetB64 string) {
 
 	return normalB64, monetB64
 }
+
+// pmPackage is one entry of a package manager listing.
+type pmPackage struct {
+	pkg     string
+	uid     int
+	apkPath string
+}
+
+// parsePMPackagesListing reads both shapes of `pm list packages`:
+//
+//	package:com.example.fork uid:10234
+//	/data/app/~~abcd==/com.example.fork-EF12==/base.apk=com.example.fork uid:10234
+//
+// The -f form carries the APK path, which is what the scan needs to prove a
+// package is a Telegram client. Installed paths contain '=' themselves, so
+// the package name starts after the last one.
+func parsePMPackagesListing(out string) []pmPackage {
+	var res []pmPackage
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		var rest, apkPath string
+		if strings.HasPrefix(line, "package:") {
+			rest = strings.TrimPrefix(line, "package:")
+		} else {
+			sep := strings.LastIndex(line, "=")
+			if sep < 0 {
+				continue
+			}
+			apkPath = line[:sep]
+			rest = line[sep+1:]
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 || fields[0] == "" {
+			continue
+		}
+		uid := 0
+		for _, field := range fields[1:] {
+			if m := pmUIDRe.FindStringSubmatch(field); len(m) == 2 {
+				uid, _ = strconv.Atoi(m[1])
+			}
+		}
+		if uid <= 0 {
+			continue
+		}
+		res = append(res, pmPackage{pkg: fields[0], uid: uid, apkPath: apkPath})
+	}
+	return res
+}
+
 func discoverApps() ([]App, []int) {
 	var apps []App
 	var uids []int
 	seen := map[int]bool{}
-	nameByPkg := map[string]string{}
-	for _, p := range packageNames {
-		nameByPkg[p.Pkg] = p.Name
-	}
-	// Android's package manager can return all package UIDs in one call.
-	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U"}, {"pm", "list", "packages", "-U"}} {
+	// A single listing per form. With -f the APK path comes out of the listing
+	// itself, so the scan stopped shelling out to `pm path` once for every
+	// installed package - several hundred subprocesses on a phone.
+	for _, cmd := range [][]string{
+		{"cmd", "package", "list", "packages", "-f", "-U"},
+		{"pm", "list", "packages", "-f", "-U"},
+		{"cmd", "package", "list", "packages", "-U"},
+		{"pm", "list", "packages", "-U"},
+	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "package:") {
+		for _, entry := range parsePMPackagesListing(string(out)) {
+			if seen[entry.uid] {
 				continue
 			}
-			fields := strings.Fields(line)
-			pkg := strings.TrimPrefix(fields[0], "package:")
-			// Resolve the APK path once per package: findPackageAPK shells
-			// out to pm, and it was previously looked up 2–3 times per
-			// package (isTelegramAPK probe + icon extraction).
-			apkPath := findPackageAPK(pkg)
-			name, wanted := nameByPkg[pkg]
+			apkPath := entry.apkPath
+			if apkPath == "" {
+				// This pm build or listing form carried no paths: resolve the
+				// path per package instead.
+				apkPath = findPackageAPK(entry.pkg)
+			}
+			name, wanted := telegramClientName(entry.pkg, apkPath)
 			if !wanted {
-				if matchesTelegramKeyword(pkg) {
-					name = humanizePackageName(pkg)
-					wanted = true
-				} else if isTelegramAPK(apkPath) {
-					name = humanizePackageName(pkg)
-					wanted = true
-				}
-			}
-			if !wanted {
-				continue
-			}
-			m := regexp.MustCompile(`uid:(\d+)`).FindStringSubmatch(line)
-			if len(m) < 2 {
-				continue
-			}
-			uid, _ := strconv.Atoi(m[1])
-			if uid <= 0 || seen[uid] {
 				continue
 			}
 			normalIco, monetIco := extractAPKIcons(apkPath)
-			apps = append(apps, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
-			uids = append(uids, uid)
-			seen[uid] = true
+			apps = append(apps, App{Name: name, Pkg: entry.pkg, UID: entry.uid, IconNormal: normalIco, IconMonet: monetIco})
+			uids = append(uids, entry.uid)
+			seen[entry.uid] = true
 		}
 		if len(apps) > 0 {
 			return apps, uids
@@ -1343,13 +1413,20 @@ func loadCachedApps() ([]App, []int) {
 	}
 	var uids []int
 	seen := map[int]bool{}
+	kept := apps[:0]
 	for _, a := range apps {
+		// Older builds invented a package name whenever a live-traffic UID
+		// could not be resolved. Those are not clients.
+		if strings.HasPrefix(a.Pkg, "unknown.telegram.uid") {
+			continue
+		}
+		kept = append(kept, a)
 		if a.UID > 0 && !seen[a.UID] {
 			uids = append(uids, a.UID)
 			seen[a.UID] = true
 		}
 	}
-	return apps, uids
+	return kept, uids
 }
 
 func saveCachedApps(apps []App) {
@@ -2584,6 +2661,12 @@ func status() Status {
 }
 func writeStatus() {
 	s := currentStatus()
+	// The persisted snapshot is only ever read back for live counters: status()
+	// rebuilds the app list from apps.json and the log tail from the log file.
+	// Writing them anyway meant marshalling two base64 icons per detected
+	// client every five seconds, on the phone's own CPU.
+	s.Apps = nil
+	s.Log = ""
 	b, err := json.Marshal(s)
 	if err != nil {
 		return
