@@ -105,7 +105,6 @@ func isLocalAddrInUse(err error) bool {
 func trackedDial(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
 	overall, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
 	// External destinations (Cloudflare, Workers, DoH) are never intercepted by
 	// WinDivert because its filter only captures telegramSubnets. Dialing them
 	// through standard ephemeral ports skips the Listen/Close/selfDial overhead.

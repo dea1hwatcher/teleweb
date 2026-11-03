@@ -171,7 +171,9 @@ func isTelegramDomain(domain string) bool {
 }
 
 // isTelegramEndpoint reports whether ip falls into a Telegram DC aggregate
-// that the transparent mode intercepts as well.
+// that the transparent mode intercepts as well. Every aggregate, including the
+// CDN203 /23, comes from telegramSubnets, so this stays in sync with both the
+// iptables REDIRECT list and the WinDivert filter by construction.
 func isTelegramEndpoint(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	if !ip.Is4() {

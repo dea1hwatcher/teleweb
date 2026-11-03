@@ -2938,3 +2938,38 @@ func TestIsLocalAddrInUse(t *testing.T) {
 		t.Error("expected false for nil error")
 	}
 }
+
+func TestIsPidAlive(t *testing.T) {
+	if !isPidAlive(os.Getpid()) {
+		t.Fatal("own process must be reported alive")
+	}
+	// An impossible pid must be dead on every supported platform: on Windows
+	// os.FindProcess alone reported every pid as alive.
+	if isPidAlive(1 << 30) {
+		t.Fatal("impossible pid reported alive")
+	}
+}
+
+func TestIsTelegramEndpoint(t *testing.T) {
+	cases := map[string]bool{
+		"149.154.167.51":        true,
+		"149.154.175.50":        true,
+		"91.108.56.100":         true,
+		"91.105.192.100":        true,
+		"185.76.151.10":         true,
+		"8.8.8.8":               false,
+		"149.154.176.1":         false,
+		"::ffff:149.154.167.51": true,
+		"2001:67c:4e8::1":       false,
+	}
+	for raw, want := range cases {
+		if got := isTelegramEndpoint(netip.MustParseAddr(raw)); got != want {
+			t.Errorf("isTelegramEndpoint(%s)=%t, want %t", raw, got, want)
+		}
+	}
+	// The CDN203 endpoint must stay inside the intercepted aggregates even
+	// without a dedicated address check.
+	if !isTelegramEndpoint(netip.MustParseAddr(cdn203IP)) {
+		t.Fatalf("CDN203 endpoint %s is not covered by telegramSubnets", cdn203IP)
+	}
+}
