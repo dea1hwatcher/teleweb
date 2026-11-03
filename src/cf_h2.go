@@ -333,7 +333,9 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 
 	postSeq := uint64(0)
 	// Read loop from client
-	buf := make([]byte, 32*1024)
+	bufPtr := ioBufPool.Get().(*[]byte)
+	defer ioBufPool.Put(bufPtr)
+	buf := *bufPtr
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(3 * time.Minute))
 		nr, err := c.Read(buf)
