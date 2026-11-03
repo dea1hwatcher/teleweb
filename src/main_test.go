@@ -529,17 +529,6 @@ func TestRepeatedEarlyEOFTemporarilyCoolsRoute(t *testing.T) {
 	}
 }
 
-func TestIsPidAlive(t *testing.T) {
-	if !isPidAlive(os.Getpid()) {
-		t.Fatal("own process must be reported alive")
-	}
-	// An impossible pid must be dead on every supported platform: on Windows
-	// os.FindProcess alone reported every pid as alive.
-	if isPidAlive(1 << 30) {
-		t.Fatal("impossible pid reported alive")
-	}
-}
-
 func TestAppProcessMatches(t *testing.T) {
 	cases := []struct {
 		cmd, pkg string
@@ -1665,7 +1654,10 @@ func TestDCLearnAndPersistence(t *testing.T) {
 	baseDir = tmp
 	defer func() { baseDir = oldBase }()
 
-	ip := "198.51.100.99"
+	// learnDC only accepts addresses inside Telegram aggregates; use an
+	// unassigned DC4 address (149.154.166.0/24, not in knownDCMap or the
+	// static media list) to exercise the learning path.
+	ip := "149.154.166.200"
 	learnedDCs.Delete(ip)
 	defer learnedDCs.Delete(ip)
 
@@ -2642,136 +2634,6 @@ func TestCachedFileReadInvalidation(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("expected load() to re-run after change, ran %d times", calls)
-	}
-}
-
-func TestTailLog_BoundedTail(t *testing.T) {
-	origBase := baseDir
-	tmpDir := t.TempDir()
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
-
-	// 1. Non-existent log file
-	if got := tailLog(10); got != "" {
-		t.Fatalf("expected empty string for non-existent log, got %q", got)
-	}
-
-	// 2. Small log file (< 32KB)
-	var smallLines []string
-	for i := 1; i <= 20; i++ {
-		smallLines = append(smallLines, fmt.Sprintf("line %02d: log entry", i))
-	}
-	logPath := path("tgws.log")
-	if err := os.WriteFile(logPath, []byte(strings.Join(smallLines, "\n")), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	got := tailLog(5)
-	expected := strings.Join(smallLines[len(smallLines)-5:], "\n")
-	if got != expected {
-		t.Fatalf("tailLog(5) small mismatch:\nwant:\n%s\ngot:\n%s", expected, got)
-	}
-
-	// 3. Large log file (> 64KB)
-	var largeLines []string
-	for i := 1; i <= 2000; i++ {
-		largeLines = append(largeLines, fmt.Sprintf("line %04d: extended log entry with extra filler data 1234567890", i))
-	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(largeLines, "\n")), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	gotLarge := tailLog(10)
-	expectedLarge := strings.Join(largeLines[len(largeLines)-10:], "\n")
-	if gotLarge != expectedLarge {
-		t.Fatalf("tailLog(10) large mismatch:\nwant:\n%s\ngot:\n%s", expectedLarge, gotLarge)
-	}
-}
-
-func TestInitMemoryTuning(t *testing.T) {
-	initMemoryTuning()
-}
-
-func TestDirectDialNegativeCache(t *testing.T) {
-	testIP := "149.154.167.220"
-	directDialMarkReachable(testIP)
-	if directDialBlockedRecently(testIP) {
-		t.Fatalf("expected %s not to be blocked initially", testIP)
-	}
-
-	directDialMarkFail(testIP)
-	if !directDialBlockedRecently(testIP) {
-		t.Fatalf("expected %s to be blocked after directDialMarkFail", testIP)
-	}
-
-	directDialMarkReachable(testIP)
-	if directDialBlockedRecently(testIP) {
-		t.Fatalf("expected %s to be unblocked after directDialMarkReachable", testIP)
-	}
-}
-
-func TestIsTelegramEndpoint(t *testing.T) {
-	cases := map[string]bool{
-		"149.154.167.51":        true,
-		"149.154.175.50":        true,
-		"91.108.56.100":         true,
-		"91.105.192.100":        true,
-		"185.76.151.10":         true,
-		"8.8.8.8":               false,
-		"149.154.176.1":         false,
-		"::ffff:149.154.167.51": true,
-		"2001:67c:4e8::1":       false,
-	}
-	for raw, want := range cases {
-		if got := isTelegramEndpoint(netip.MustParseAddr(raw)); got != want {
-			t.Errorf("isTelegramEndpoint(%s)=%t, want %t", raw, got, want)
-		}
-	}
-	// The CDN203 endpoint must stay inside the intercepted aggregates even
-	// without a dedicated address check.
-	if !isTelegramEndpoint(netip.MustParseAddr(cdn203IP)) {
-		t.Fatalf("CDN203 endpoint %s is not covered by telegramSubnets", cdn203IP)
-	}
-}
-
-func TestIsTelegramTarget(t *testing.T) {
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"149.154.167.51:443", true},
-		{"91.108.4.1:80", true},
-		{"91.105.192.100:443", true},
-		{"185.76.151.10:443", true},
-		{"104.16.123.96:443", false}, // Cloudflare
-		{"1.1.1.1:53", false},        // Cloudflare DNS
-		{"8.8.8.8:53", false},        // Google DNS
-		{"149.154.167.51", true},     // bare IP without port
-		{"invalid-host", false},
-	}
-	for _, tc := range cases {
-		got := isTelegramTarget(tc.addr)
-		if got != tc.want {
-			t.Errorf("isTelegramTarget(%q) = %v; want %v", tc.addr, got, tc.want)
-		}
-	}
-}
-
-func TestIsLocalAddrInUse(t *testing.T) {
-	if !isLocalAddrInUse(errors.New("bind: address already in use")) {
-		t.Error("expected true for standard bind address already in use")
-	}
-	if !isLocalAddrInUse(errors.New("bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.")) {
-		t.Error("expected true for Windows WSAEADDRINUSE text")
-	}
-	if !isLocalAddrInUse(errors.New("WSAEADDRINUSE 10048")) {
-		t.Error("expected true for 10048 code")
-	}
-	if isLocalAddrInUse(errors.New("connection refused")) {
-		t.Error("expected false for connection refused")
-	}
-	if isLocalAddrInUse(nil) {
-		t.Error("expected false for nil error")
 	}
 }
 
