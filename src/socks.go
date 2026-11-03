@@ -143,18 +143,6 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 	serveConn(c, netip.AddrPortFrom(ip, port))
 }
 
-var telegramParsedSubnetsV6 = func() []netip.Prefix {
-	cidrs := []string{
-		"2001:b88::/32",
-		"2001:67c:4e8::/48",
-	}
-	out := make([]netip.Prefix, len(cidrs))
-	for i, c := range cidrs {
-		out[i] = netip.MustParsePrefix(c)
-	}
-	return out
-}()
-
 func isTelegramDomain(domain string) bool {
 	d := strings.ToLower(strings.TrimSpace(domain))
 	d = strings.TrimSuffix(d, ".")
@@ -195,7 +183,7 @@ func isTelegramEndpointV6(ip netip.Addr) bool {
 	if !ip.Is6() {
 		return false
 	}
-	for _, prefix := range telegramParsedSubnetsV6 {
+	for _, prefix := range telegramV6Prefixes {
 		if prefix.Contains(ip) {
 			return true
 		}

@@ -33,13 +33,14 @@ const (
 )
 
 type WsPool struct {
-	queues    sync.Map // poolSlot -> chan *poolEntry
-	refilling sync.Map // poolSlot -> *atomic.Int32
-	ctx       context.Context
-	cancel    context.CancelFunc
-	size      atomic.Int32
-	hits      atomic.Int64
-	misses    atomic.Int64
+	queues       sync.Map // poolSlot -> chan *poolEntry
+	refilling    sync.Map // poolSlot -> *atomic.Int32
+	ctx          context.Context
+	cancel       context.CancelFunc
+	size         atomic.Int32
+	hits         atomic.Int64
+	misses       atomic.Int64
+	lastActivity atomic.Int64
 }
 
 var (
@@ -61,6 +62,7 @@ func newWsPool(parentCtx context.Context, size int) *WsPool {
 		ctx:    ctx,
 		cancel: cancel,
 	}
+	p.lastActivity.Store(time.Now().UnixNano())
 	p.size.Store(int32(size))
 	return p
 }
@@ -93,6 +95,7 @@ func (p *WsPool) Get(dc int, isMedia bool, isTest bool) *wsConn {
 	if p == nil || p.size.Load() <= 0 {
 		return nil
 	}
+	p.lastActivity.Store(time.Now().UnixNano())
 	slot := poolSlot{dc: dc, isMedia: isMedia, isTest: isTest}
 	q, _ := p.getQueue(slot)
 	now := time.Now()
@@ -175,6 +178,7 @@ func (p *WsPool) Warmup(activeDCs []int) {
 	if p == nil || p.size.Load() <= 0 {
 		return
 	}
+	p.lastActivity.Store(time.Now().UnixNano())
 	for _, dc := range activeDCs {
 		if dc >= 1 && dc <= 5 {
 			go p.Refill(dc, false, false)
@@ -242,7 +246,13 @@ func (p *WsPool) rotate() {
 			}
 		}
 
-		if len(q) < sz {
+		// When the pool has been completely idle (> 10 minutes without any client
+		// activity), do not speculatively dial fresh connections in the background.
+		// Stale connections are pruned above, but the device is allowed to stay in
+		// deep sleep until the next client connection wakes it up.
+		const poolIdleTimeout = 10 * time.Minute
+		isIdle := time.Since(time.Unix(0, p.lastActivity.Load())) > poolIdleTimeout
+		if !isIdle && len(q) < sz {
 			go p.Refill(slot.dc, slot.isMedia, slot.isTest)
 		}
 		return true

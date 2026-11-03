@@ -3641,3 +3641,170 @@ func TestDCDomainAffinity(t *testing.T) {
 		seen[c] = true
 	}
 }
+
+func TestLearnedDCs_LRUEviction(t *testing.T) {
+	// Clean up map for test
+	var keys []string
+	learnedDCs.Range(func(k, _ any) bool {
+		keys = append(keys, k.(string))
+		return true
+	})
+	for _, k := range keys {
+		learnedDCs.Delete(k)
+	}
+	defer func() {
+		for _, k := range keys {
+			learnedDCs.Delete(k)
+		}
+	}()
+
+	// Fill with 256 genuine Telegram IPs (149.154.160.0/20 is valid Telegram aggregate)
+	now := time.Now().Unix()
+	for i := 0; i < 256; i++ {
+		ip := fmt.Sprintf("149.154.160.%d", i)
+		learnedDCs.Store(ip, learnedDCEntry{DC: 2, IsMedia: false, UpdatedAt: now - int64(300-i)})
+	}
+
+	// Learning a 257th IP must trigger LRU eviction down to 192, and store the new IP
+	newIP := "149.154.161.1"
+	learnDC(newIP, 4, true)
+
+	if dc, isMedia, ok := lookupLearnedDC(newIP); !ok || dc != 4 || !isMedia {
+		t.Fatalf("expected new IP %s to be learned after eviction, got dc=%d media=%t ok=%t", newIP, dc, isMedia, ok)
+	}
+
+	// Total count must now be 193 (192 remaining + 1 new)
+	count := 0
+	learnedDCs.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 193 {
+		t.Fatalf("expected count 193 after LRU eviction, got %d", count)
+	}
+
+	// Oldest IP (149.154.160.0) must have been evicted
+	if _, _, ok := lookupLearnedDC("149.154.160.0"); ok {
+		t.Fatalf("expected oldest IP 149.154.160.0 to be evicted")
+	}
+}
+
+func TestWorkerCooldowns_SweepAndOpportunisticCleanup(t *testing.T) {
+	host1 := "expired-worker1.invalid"
+	host2 := "expired-worker2.invalid"
+	activeHost := "active-worker.invalid"
+
+	// 1. Opportunistic cleanup on isWorkerInCooldown
+	workerCooldowns.Store(host1, workerCooldownState{
+		until:   time.Now().Add(-10 * time.Second),
+		strikes: 1,
+	})
+	if isWorkerInCooldown(host1) {
+		t.Fatalf("expected isWorkerInCooldown to return false for expired cooldown")
+	}
+	if _, ok := workerCooldowns.Load(host1); ok {
+		t.Fatalf("expected host1 to be opportunistically deleted from workerCooldowns")
+	}
+
+	// 2. sweepRouteCaches cleanup
+	workerCooldowns.Store(host2, workerCooldownState{
+		until:   time.Now().Add(-10 * time.Second),
+		strikes: 1,
+	})
+	workerCooldowns.Store(activeHost, workerCooldownState{
+		until:   time.Now().Add(5 * time.Minute),
+		strikes: 1,
+	})
+
+	sweepRouteCaches()
+
+	if _, ok := workerCooldowns.Load(host2); ok {
+		t.Fatalf("expected expired host2 to be deleted by sweepRouteCaches")
+	}
+	if _, ok := workerCooldowns.Load(activeHost); !ok {
+		t.Fatalf("expected activeHost to remain in workerCooldowns")
+	}
+	workerCooldowns.Delete(activeHost)
+}
+
+func TestWsPool_DeepSleepIdleNoRefill(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	p := newWsPool(ctx, 2)
+	// Simulate 15 minutes of inactivity (deep sleep)
+	p.lastActivity.Store(time.Now().Add(-15 * time.Minute).UnixNano())
+
+	// Call rotate
+	p.rotate()
+
+	// Check that no refill was dispatched for slots
+	p.refilling.Range(func(key, val any) bool {
+		rf := val.(*atomic.Int32)
+		if rf.Load() != 0 {
+			t.Fatalf("expected refilling flag 0 for slot %v, got %d", key, rf.Load())
+		}
+		return true
+	})
+}
+
+func TestMTProtoPacketFramer_InitialFreed(t *testing.T) {
+	var init [64]byte
+	for i := range init {
+		init[i] = byte(i + 1)
+	}
+	init[0] = 0xef
+	init[4] = 0xef
+	init[5] = 0xef
+	init[6] = 0xef
+	block, err := aes.NewCipher(init[8:40])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctr := cipher.NewCTR(block, init[40:56])
+	ctr.XORKeyStream(make([]byte, 56), make([]byte, 56))
+	plainTail := make([]byte, 8)
+	binary.LittleEndian.PutUint32(plainTail[:4], 0xEFEFEFEF)
+	plainTail[4], plainTail[5] = 0x12, 0x34
+	ctr.XORKeyStream(init[56:], plainTail)
+
+	f, err := newMTProtoPacketFramer(init[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.initial == nil {
+		t.Fatalf("expected initial slice to be preserved before first frame")
+	}
+
+	// Prepare encrypted packet
+	packets := []byte{1, 1, 2, 3, 4}
+	block, _ = aes.NewCipher(init[8:40])
+	stream := cipher.NewCTR(block, init[40:56])
+	stream.XORKeyStream(make([]byte, 64), make([]byte, 64))
+	encrypted := make([]byte, len(packets))
+	stream.XORKeyStream(encrypted, packets)
+
+	pipeR, pipeW := net.Pipe()
+	defer pipeR.Close()
+	defer pipeW.Close()
+	ws := &wsConn{conn: pipeW}
+
+	go func() {
+		b := make([]byte, 1024)
+		for {
+			if _, err := pipeR.Read(b); err != nil {
+				return
+			}
+		}
+	}()
+
+	if err := f.feed(encrypted, ws); err != nil {
+		t.Fatal(err)
+	}
+	if !f.headerSent {
+		t.Fatalf("expected headerSent to be true")
+	}
+	if f.initial != nil {
+		t.Fatalf("expected f.initial to be nil after header was sent, got %d bytes", len(f.initial))
+	}
+}
