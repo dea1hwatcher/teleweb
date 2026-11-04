@@ -251,7 +251,7 @@ func natJanitor(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			cutoff := time.Now().Add(-180 * time.Second).UnixNano()
+			cutoff := time.Now().Add(-360 * time.Second).UnixNano()
 			natTable.mu.Lock()
 			for k, e := range natTable.flows {
 				if e.lastSeen.Load() < cutoff {

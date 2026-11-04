@@ -536,14 +536,13 @@ func cfgFileSig(name string) uint64 {
 
 func cachedFileRead(name string, load func() any) any {
 	sig := cfgFileSig(name)
-	now := time.Now()
 	cfgFileCache.mu.Lock()
 	defer cfgFileCache.mu.Unlock()
-	if e, ok := cfgFileCache.entries[name]; ok && now.Before(e.expires) && e.sig == sig {
+	if e, ok := cfgFileCache.entries[name]; ok && e.sig == sig {
 		return e.value
 	}
 	v := load()
-	cfgFileCache.entries[name] = cfgFileEntry{sig: sig, value: v, expires: now.Add(2 * time.Second)}
+	cfgFileCache.entries[name] = cfgFileEntry{sig: sig, value: v}
 	return v
 }
 
@@ -1087,7 +1086,11 @@ func discoverActiveTelegramClients() {
 }
 
 // pmUIDRe parses the uid field of `pm list packages -U` output.
-var pmUIDRe = regexp.MustCompile(`uid:(\d+)`)
+var (
+	pmUIDRe         = regexp.MustCompile(`uid:(\d+)`)
+	dumpsysUserIdRe = regexp.MustCompile(`userId=(\d+)`)
+	dumpsysAppIdRe  = regexp.MustCompile(`appId=(\d+)`)
+)
 
 func packageUID(pkg string) int {
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
@@ -1107,8 +1110,8 @@ func packageUID(pkg string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	out, _ := exec.CommandContext(ctx, "dumpsys", "package", pkg).CombinedOutput()
 	cancel()
-	for _, pat := range []string{`userId=(\d+)`, `appId=(\d+)`} {
-		m := regexp.MustCompile(pat).FindSubmatch(out)
+	for _, re := range []*regexp.Regexp{dumpsysUserIdRe, dumpsysAppIdRe} {
+		m := re.FindSubmatch(out)
 		if len(m) > 1 {
 			n, _ := strconv.Atoi(string(m[1]))
 			if n > 0 {
@@ -1790,6 +1793,8 @@ func markWorkerCooldownDC(host string, dc int, retryAfter time.Duration) {
 			delay = 15 * time.Minute
 		}
 		retryAfter = delay
+	} else if retryAfter > 15*time.Minute {
+		retryAfter = 15 * time.Minute
 	}
 	workerCooldowns.Store(key, workerCooldownState{
 		until:   time.Now().Add(retryAfter),
@@ -2656,6 +2661,61 @@ func buildStatus(apps []App) Status {
 	return s
 }
 
+func currentStatusMetrics() Status {
+	dc := map[string]int{}
+	statsMu.Lock()
+	for k, v := range dcCounts {
+		dc[k] = v
+	}
+	statsMu.Unlock()
+	memNow, memPeak := processMemoryBytes()
+	up := atomic.LoadInt64(&trafficUpBytes)
+	down := atomic.LoadInt64(&trafficDownBytes)
+	s := Status{
+		Enabled:        readEnabled(),
+		Port:           defaultPort,
+		Running:        true,
+		Uptime:         int64(time.Since(startAt).Seconds()),
+		Active:         atomic.LoadInt64(&active),
+		WS:             atomic.LoadInt64(&wsCount),
+		Fail:           atomic.LoadInt64(&failCnt),
+		DC:             dc,
+		MemNowBytes:    memNow,
+		MemPeakBytes:   memPeak,
+		TrafficUpBytes: up,
+		TrafficDownBytes: down,
+		TrafficTotalBytes: up + down,
+		Redirector:     localRedirectorHealthy(),
+		CFPriority:     readCFPriority(),
+		CFBalance:      readCFBalance(),
+		CustomCFDomain: readCustomCFDomain(),
+		CustomCFWorker: readCustomCFWorker(),
+		DCOverrides:    readDCOverridesRaw(),
+		PoolSize:       readPoolSize(),
+		DoHEnabled:     readDoHEnabled(),
+		ForceTestDC:    readForceTestDC(),
+		H2MediaEnabled: readH2MediaEnabled(),
+		DC203DirectTCP: readDC203DirectTCP(),
+		LastCFPoP: func() string {
+			if p := lastCFPoP.Load(); p != nil {
+				return *p
+			}
+			return ""
+		}(),
+		LastCFRay: func() string {
+			if p := lastCFRay.Load(); p != nil {
+				return *p
+			}
+			return ""
+		}(),
+	}
+	if globalWsPool != nil {
+		s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
+	}
+	fillGCStats(&s)
+	return s
+}
+
 func currentStatus() Status {
 	apps, _ := installedApps()
 	s := buildStatus(apps)
@@ -2737,13 +2797,7 @@ func status() Status {
 	return s
 }
 func writeStatus() {
-	s := currentStatus()
-	// The persisted snapshot is only ever read back for live counters: status()
-	// rebuilds the app list from apps.json and the log tail from the log file.
-	// Writing them anyway meant marshalling two base64 icons per detected
-	// client every five seconds, on the phone's own CPU.
-	s.Apps = nil
-	s.Log = ""
+	s := currentStatusMetrics()
 	b, err := json.Marshal(s)
 	if err != nil {
 		return
@@ -3767,11 +3821,13 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 			switch op {
 			case 2:
 				if len(payload) > 0 {
+					_ = c.SetWriteDeadline(time.Now().Add(15 * time.Second))
 					if readErr = writeFull(c, payload); readErr != nil {
 						logf("conn #%d DC%d write WSS->client finished: %v (up=%d down=%d)", id, dc, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 						closeBoth()
 						return
 					}
+					_ = c.SetWriteDeadline(time.Time{})
 					atomic.AddInt64(&downBytes, int64(len(payload)))
 					atomic.AddInt64(&trafficDownBytes, int64(len(payload)))
 				}
@@ -4543,10 +4599,24 @@ func sweepRouteCaches() {
 	}
 	h2FailsMu.Unlock()
 
+	h2SuccessMu.Lock()
+	for host, until := range h2Success {
+		if until.Before(now) {
+			delete(h2Success, host)
+		}
+	}
+	h2SuccessMu.Unlock()
+
 	directDialFailMu.Lock()
 	for ipStr, until := range directDialFails {
 		if until.Before(now) {
 			delete(directDialFails, ipStr)
+		}
+	}
+	for len(directDialFails) > 256 {
+		for ipStr := range directDialFails {
+			delete(directDialFails, ipStr)
+			break
 		}
 	}
 	directDialFailMu.Unlock()
@@ -4555,6 +4625,12 @@ func sweepRouteCaches() {
 	for dst, until := range cdn203Fails {
 		if until.Before(now) {
 			delete(cdn203Fails, dst)
+		}
+	}
+	for len(cdn203Fails) > 256 {
+		for dst := range cdn203Fails {
+			delete(cdn203Fails, dst)
+			break
 		}
 	}
 	cdn203FailMu.Unlock()

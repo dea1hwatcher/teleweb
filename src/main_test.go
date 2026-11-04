@@ -3589,6 +3589,56 @@ func TestWorkerCooldowns_SweepAndOpportunisticCleanup(t *testing.T) {
 	workerCooldowns.Delete(activeHost)
 }
 
+func TestSweepRouteCaches_BoundedMapsAndH2Success(t *testing.T) {
+	directDialFailMu.Lock()
+	for i := 0; i < 300; i++ {
+		directDialFails[fmt.Sprintf("1.1.1.%d:443", i)] = time.Now().Add(time.Minute)
+	}
+	directDialFailMu.Unlock()
+
+	cdn203FailMu.Lock()
+	for i := 0; i < 300; i++ {
+		cdn203Fails[fmt.Sprintf("2.2.2.%d:443", i)] = time.Now().Add(time.Minute)
+	}
+	cdn203FailMu.Unlock()
+
+	h2SuccessMu.Lock()
+	h2Success["expired.host.test"] = time.Now().Add(-10 * time.Second)
+	h2Success["valid.host.test"] = time.Now().Add(5 * time.Minute)
+	h2SuccessMu.Unlock()
+
+	sweepRouteCaches()
+
+	directDialFailMu.Lock()
+	lenDD := len(directDialFails)
+	directDialFails = make(map[string]time.Time)
+	directDialFailMu.Unlock()
+
+	cdn203FailMu.Lock()
+	lenCDN := len(cdn203Fails)
+	cdn203Fails = make(map[string]time.Time)
+	cdn203FailMu.Unlock()
+
+	h2SuccessMu.Lock()
+	_, hasExpired := h2Success["expired.host.test"]
+	_, hasValid := h2Success["valid.host.test"]
+	delete(h2Success, "valid.host.test")
+	h2SuccessMu.Unlock()
+
+	if lenDD > 256 {
+		t.Fatalf("expected directDialFails bounded <= 256, got %d", lenDD)
+	}
+	if lenCDN > 256 {
+		t.Fatalf("expected cdn203Fails bounded <= 256, got %d", lenCDN)
+	}
+	if hasExpired {
+		t.Fatalf("expected expired.host.test to be swept from h2Success")
+	}
+	if !hasValid {
+		t.Fatalf("expected valid.host.test to remain in h2Success")
+	}
+}
+
 func TestWsPool_DeepSleepIdleNoRefill(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
