@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -107,6 +109,22 @@ type wdAddr [64]byte
 
 func (a *wdAddr) clearLoopback() { a[10] &^= 0x04 }
 
+func explainWinDivertError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		if errno == 433 {
+			return fmt.Errorf("WinDivertOpen failed (ERROR_NO_SUCH_DEVICE 433): driver is hung or held by another bypass tool (GoodbyeDPI, Zapret). Try closing them or rebooting: %w", err)
+		}
+		if uint32(errno) == 0x8032000A {
+			return fmt.Errorf("WinDivertOpen failed (FWP_E_IN_USE 0x8032000A): WFP filter object is still in use by Windows. Wait a few seconds or reboot: %w", err)
+		}
+	}
+	return fmt.Errorf("WinDivertOpen failed: %v (administrator rights and WinDivert.dll/.sys required)", err)
+}
+
 func wdOpenHandle(filter string) (uintptr, error) {
 	f, err := syscall.BytePtrFromString(filter)
 	if err != nil {
@@ -124,7 +142,7 @@ func wdOpenHandle(filter string) (uintptr, error) {
 		h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0)
 	}
 	if h == wdInvalid || h == 0 {
-		return 0, fmt.Errorf("WinDivertOpen failed: %v (administrator rights and WinDivert.dll/.sys required)", callErr)
+		return 0, explainWinDivertError(callErr)
 	}
 	return h, nil
 }
@@ -170,7 +188,6 @@ type natEntry struct {
 	clientPort uint16
 	natPort    uint16
 	lastSeen   atomic.Int64
-	closing    atomic.Bool
 }
 
 type natFlowKey struct {
@@ -187,20 +204,14 @@ var natTable = struct {
 	next  uint16
 }{flows: map[natFlowKey]*natEntry{}, ports: map[uint16]*natEntry{}, next: 20000}
 
-// natGetOrCreate maps one client flow to a local port used as the rewritten
-// source port. Ports are drawn from 20000-32000: below the Windows ephemeral
-// range (49152-65535 by default), so an injected loopback packet cannot land on
-// a socket the system already handed out, and clear of the listener port.
 func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry {
 	natTable.mu.Lock()
 	defer natTable.mu.Unlock()
 	if !isSYN {
-		// Non-SYN packets for untracked flows must never allocate a new port.
-		// Assigning a fresh port to an in-flight packet causes the local proxy
-		// to reply with TCP RST (no active handshake), breaking Telegram sessions.
-		return natTable.flows[flow]
-	}
-	if old := natTable.flows[flow]; old != nil {
+		if e := natTable.flows[flow]; e != nil {
+			return e
+		}
+	} else if old := natTable.flows[flow]; old != nil {
 		// New TCP connection initiated with SYN: purge the stale mapping so
 		// this connection receives a fresh local port and does not collide
 		// with a previous socket in TIME_WAIT.
@@ -212,9 +223,6 @@ func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry 
 		natTable.next++
 		if natTable.next >= 32000 {
 			natTable.next = 20000
-		}
-		if p == defaultPort {
-			continue
 		}
 		if _, busy := natTable.ports[p]; busy {
 			continue
@@ -250,24 +258,18 @@ func natLookupFlow(flow natFlowKey) *natEntry {
 	return natTable.flows[flow]
 }
 
-func (r *wdRedirector) janitor() {
+func natJanitor(stop <-chan struct{}) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	for {
 		select {
-		case <-r.stopCh:
+		case <-stop:
 			return
 		case <-t.C:
-			now := time.Now().UnixNano()
-			// Established TCP flows idle for >15m are evicted (RFC 5382 REQ-5).
-			// Terminated flows (FIN/RST observed) are purged after 30s.
-			cutoffEstablished := now - int64(15*time.Minute)
-			cutoffClosing := now - int64(30*time.Second)
-
+			cutoff := time.Now().Add(-360 * time.Second).UnixNano()
 			natTable.mu.Lock()
 			for k, e := range natTable.flows {
-				last := e.lastSeen.Load()
-				if (e.closing.Load() && last < cutoffClosing) || last < cutoffEstablished {
+				if e.lastSeen.Load() < cutoff {
 					delete(natTable.flows, k)
 					delete(natTable.ports, e.natPort)
 				}
@@ -280,6 +282,9 @@ func (r *wdRedirector) janitor() {
 // ------------------------------ Filters ------------------------------------
 
 func prefixLast(p netip.Prefix) netip.Addr {
+	if !p.Addr().Is4() {
+		return p.Addr()
+	}
 	a := p.Masked().Addr().As4()
 	bits := p.Bits()
 	for i := 0; i < 4; i++ {
@@ -291,7 +296,8 @@ func prefixLast(p netip.Prefix) netip.Addr {
 			a[i] = 0xff
 			continue
 		}
-		a[i] |= byte(0xff << b)
+		// b network bits remain in this octet, so the remaining (8 - b) host bits must be 1.
+		a[i] |= byte(0xff >> b)
 	}
 	return netip.AddrFrom4(a)
 }
@@ -341,9 +347,9 @@ func parseTCPv4(pkt []byte) (tcpMeta, bool) {
 // ------------------------------ Redirector ---------------------------------
 
 type wdRedirector struct {
-	hOut, hRet uintptr
-	running    atomic.Bool
-	stopCh     chan struct{}
+	hOut, hRet  uintptr
+	running     atomic.Bool
+	stopJanitor chan struct{}
 }
 
 var (
@@ -393,33 +399,60 @@ func startRedirector() error {
 		_, _, _ = wdClose.Call(hOut)
 		return err
 	}
-	r := &wdRedirector{hOut: hOut, hRet: hRet, stopCh: make(chan struct{})}
+	stopCh := make(chan struct{})
+	r := &wdRedirector{hOut: hOut, hRet: hRet, stopJanitor: stopCh}
 	r.running.Store(true)
 	activeRedirector = r
 	go r.outLoop()
 	go r.retLoop()
-	go r.janitor()
+	go natJanitor(stopCh)
 	logf("redirector: WinDivert active; Telegram TCP -> 127.0.0.1:%d", defaultPort)
 	return nil
+}
+
+func tryUnloadWinDivertService() {
+	// Attempt to stop the WinDivert service gracefully so the Windows kernel
+	// unloads the driver and unlocks the .sys file from disk.
+	if m, err := mgr.Connect(); err == nil {
+		defer m.Disconnect()
+		for _, name := range []string{"WinDivert", "WinDivert14", "Monkey"} {
+			if s, err := m.OpenService(name); err == nil {
+				_, _ = s.Control(svc.Stop)
+				s.Close()
+			}
+		}
+		return
+	}
+	for _, name := range []string{"WinDivert", "WinDivert14", "Monkey"} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = exec.CommandContext(ctx, "sc.exe", "stop", name).Run()
+		cancel()
+	}
 }
 
 func stopRedirector() {
 	redirectorMu.Lock()
 	defer redirectorMu.Unlock()
-	if activeRedirector == nil {
-		return
+	if activeRedirector != nil {
+		activeRedirector.running.Store(false)
+		if activeRedirector.stopJanitor != nil {
+			close(activeRedirector.stopJanitor)
+		}
+		_, _, _ = wdClose.Call(activeRedirector.hOut)
+		_, _, _ = wdClose.Call(activeRedirector.hRet)
+		activeRedirector = nil
+		logf("redirector: WinDivert stopped")
 	}
-	activeRedirector.running.Store(false)
-	if activeRedirector.stopCh != nil {
-		close(activeRedirector.stopCh)
-	}
-	_, _, _ = wdClose.Call(activeRedirector.hOut)
-	_, _, _ = wdClose.Call(activeRedirector.hRet)
-	activeRedirector = nil
-	logf("redirector: WinDivert stopped")
+	tryUnloadWinDivertService()
 }
 
 func (r *wdRedirector) outLoop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logStack(fmt.Sprintf("FATAL panic in WinDivert outLoop: %v", rec))
+			r.running.Store(false)
+		}
+	}()
 	pkt := make([]byte, 65535)
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hOut, pkt)
@@ -438,8 +471,12 @@ func (r *wdRedirector) outLoop() {
 		}
 		isSYN := (m.flags & 0x12) == 0x02 // SYN set, ACK clear
 		flow := natFlowKey{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
+		// Fast path: established flows are resolved under a read lock. A SYN
+		// (new or retransmitted) may carry a stale TIME_WAIT mapping, so it
+		// falls through to natGetOrCreate which purges and rebinds a fresh
+		// local port for the new connection.
 		e := natLookupFlow(flow)
-		if e == nil {
+		if e == nil || isSYN {
 			e = natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
 			if e == nil {
 				_ = wdSendPacket(r.hOut, p, &addr)
@@ -447,9 +484,6 @@ func (r *wdRedirector) outLoop() {
 			}
 		}
 		e.lastSeen.Store(time.Now().UnixNano())
-		if (m.flags & 0x05) != 0 { // FIN (0x01) or RST (0x04)
-			e.closing.Store(true)
-		}
 		p[12], p[13], p[14], p[15] = 127, 0, 0, 1
 		p[16], p[17], p[18], p[19] = 127, 0, 0, 1
 		binary.BigEndian.PutUint16(p[m.ihl:], e.natPort)
@@ -460,6 +494,12 @@ func (r *wdRedirector) outLoop() {
 }
 
 func (r *wdRedirector) retLoop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logStack(fmt.Sprintf("FATAL panic in WinDivert retLoop: %v", rec))
+			r.running.Store(false)
+		}
+	}()
 	pkt := make([]byte, 65535)
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hRet, pkt)
@@ -482,8 +522,9 @@ func (r *wdRedirector) retLoop() {
 			continue
 		}
 		e.lastSeen.Store(time.Now().UnixNano())
-		if (m.flags & 0x05) != 0 { // FIN (0x01) or RST (0x04)
-			e.closing.Store(true)
+		if !e.orig.Addr().Is4() {
+			_ = wdSendPacket(r.hRet, p, &addr)
+			continue
 		}
 		o := e.orig.Addr().As4()
 		copy(p[12:16], o[:])

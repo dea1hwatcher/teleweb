@@ -84,7 +84,7 @@ func isTelegramTarget(addr string) bool {
 	if err != nil {
 		return false
 	}
-	return isTelegramEndpoint(ip)
+	return isTelegramAggregate(ip)
 }
 
 func isLocalAddrInUse(err error) bool {

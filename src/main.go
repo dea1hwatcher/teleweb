@@ -484,12 +484,37 @@ func procSummary(pid int) string {
 	return fmt.Sprintf("pid=%d state=%q oom_score_adj=%q cgroup=%q cmd=%q", pid, state, strings.TrimSpace(string(oom)), cgText, strings.ReplaceAll(strings.TrimSpace(string(cmd)), "\x00", " "))
 }
 
+var (
+	shutdownMu    sync.Mutex
+	shutdownHooks []func()
+)
+
+func registerShutdownHook(fn func()) {
+	shutdownMu.Lock()
+	defer shutdownMu.Unlock()
+	shutdownHooks = append(shutdownHooks, fn)
+}
+
+func runShutdownHooks() {
+	shutdownMu.Lock()
+	hooks := append(([]func())(nil), shutdownHooks...)
+	shutdownHooks = nil
+	shutdownMu.Unlock()
+	for _, h := range hooks {
+		func() {
+			defer func() { _ = recover() }()
+			h()
+		}()
+	}
+}
+
 func startSignalLogger() {
 	ch := make(chan os.Signal, 4)
 	notifySignals(ch)
 	go func() {
 		for sig := range ch {
-			logf("process: received signal %s; shutting down", sig)
+			logf("process: received signal %s; shutting down gracefully", sig)
+			runShutdownHooks()
 			os.Exit(0)
 		}
 	}()
@@ -512,18 +537,17 @@ func writeEnabled(v bool) error {
 }
 
 // cfgFileCache memoizes config-file parses for the hot per-connection path.
-// Entries are validated by a single Stat (mtime+size) and expire after 2s, so
-// a dial performs one cheap syscall instead of several full file reads and
-// regex passes, while external edits are picked up almost immediately.
+// Entries are validated by a single Stat (mtime+size) signature, so a dial
+// performs one cheap syscall instead of several full file reads and regex passes,
+// while external edits are picked up almost immediately.
 var cfgFileCache = struct {
 	mu      sync.Mutex
 	entries map[string]cfgFileEntry
 }{entries: map[string]cfgFileEntry{}}
 
 type cfgFileEntry struct {
-	sig     uint64
-	value   any
-	expires time.Time
+	sig   uint64
+	value any
 }
 
 func cfgFileSig(name string) uint64 {
@@ -536,14 +560,13 @@ func cfgFileSig(name string) uint64 {
 
 func cachedFileRead(name string, load func() any) any {
 	sig := cfgFileSig(name)
-	now := time.Now()
 	cfgFileCache.mu.Lock()
 	defer cfgFileCache.mu.Unlock()
-	if e, ok := cfgFileCache.entries[name]; ok && now.Before(e.expires) && e.sig == sig {
+	if e, ok := cfgFileCache.entries[name]; ok && e.sig == sig {
 		return e.value
 	}
 	v := load()
-	cfgFileCache.entries[name] = cfgFileEntry{sig: sig, value: v, expires: now.Add(2 * time.Second)}
+	cfgFileCache.entries[name] = cfgFileEntry{sig: sig, value: v}
 	return v
 }
 
@@ -900,24 +923,44 @@ func isTelegramAPK(apkPath string) bool {
 
 func parseProcNetTCPIP(hexAddr string) (netip.Addr, uint16, bool) {
 	parts := strings.Split(hexAddr, ":")
-	if len(parts) != 2 || len(parts[0]) != 8 || len(parts[1]) != 4 {
-		return netip.Addr{}, 0, false
-	}
-	ipNum, err := strconv.ParseUint(parts[0], 16, 32)
-	if err != nil {
+	if len(parts) != 2 || len(parts[1]) != 4 {
 		return netip.Addr{}, 0, false
 	}
 	portNum, err := strconv.ParseUint(parts[1], 16, 16)
 	if err != nil {
 		return netip.Addr{}, 0, false
 	}
-	// /proc/net/tcp stores IPv4 as little-endian 32-bit uint
-	b0 := byte(ipNum & 0xff)
-	b1 := byte((ipNum >> 8) & 0xff)
-	b2 := byte((ipNum >> 16) & 0xff)
-	b3 := byte((ipNum >> 24) & 0xff)
-	addr := netip.AddrFrom4([4]byte{b0, b1, b2, b3})
-	return addr, uint16(portNum), true
+	// /proc/net/tcp stores IPv4 as little-endian 32-bit uint (8 hex digits)
+	if len(parts[0]) == 8 {
+		ipNum, err := strconv.ParseUint(parts[0], 16, 32)
+		if err != nil {
+			return netip.Addr{}, 0, false
+		}
+		b0 := byte(ipNum & 0xff)
+		b1 := byte((ipNum >> 8) & 0xff)
+		b2 := byte((ipNum >> 16) & 0xff)
+		b3 := byte((ipNum >> 24) & 0xff)
+		addr := netip.AddrFrom4([4]byte{b0, b1, b2, b3})
+		return addr, uint16(portNum), true
+	}
+	// /proc/net/tcp6 stores IPv6 as four 32-bit little-endian words (32 hex digits)
+	if len(parts[0]) == 32 {
+		var b [16]byte
+		for i := 0; i < 4; i++ {
+			wordHex := parts[0][i*8 : (i+1)*8]
+			w, err := strconv.ParseUint(wordHex, 16, 32)
+			if err != nil {
+				return netip.Addr{}, 0, false
+			}
+			b[i*4] = byte(w & 0xff)
+			b[i*4+1] = byte((w >> 8) & 0xff)
+			b[i*4+2] = byte((w >> 16) & 0xff)
+			b[i*4+3] = byte((w >> 24) & 0xff)
+		}
+		addr := netip.AddrFrom16(b).Unmap()
+		return addr, uint16(portNum), true
+	}
+	return netip.Addr{}, 0, false
 }
 
 func parseProcNetTCPContent(content string) []int {
@@ -934,7 +977,7 @@ func parseProcNetTCPContent(content string) []int {
 			continue
 		}
 		addr, _, ok := parseProcNetTCPIP(fields[2])
-		if !ok || !isTelegramEndpoint(addr) {
+		if !ok || !isTelegramAggregate(addr) {
 			continue
 		}
 		uid, err := strconv.Atoi(fields[7])
@@ -1087,17 +1130,16 @@ func discoverActiveTelegramClients() {
 }
 
 // pmUIDRe parses the uid field of `pm list packages -U` output.
-var pmUIDRe = regexp.MustCompile(`uid:(\d+)`)
+var (
+	pmUIDRe         = regexp.MustCompile(`uid:(\d+)`)
+	dumpsysUserIdRe = regexp.MustCompile(`userId=(\d+)`)
+	dumpsysAppIdRe  = regexp.MustCompile(`appId=(\d+)`)
+)
 
 func packageUID(pkg string) int {
-	if !isAndroidRuntime() {
-		return 0
-	}
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-		setCmdNoWindow(c)
-		out, err := c.CombinedOutput()
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err == nil {
 			m := pmUIDRe.FindSubmatch(out)
@@ -1110,12 +1152,10 @@ func packageUID(pkg string) int {
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	c := exec.CommandContext(ctx, "dumpsys", "package", pkg)
-	setCmdNoWindow(c)
-	out, _ := c.CombinedOutput()
+	out, _ := exec.CommandContext(ctx, "dumpsys", "package", pkg).CombinedOutput()
 	cancel()
-	for _, pat := range []string{`userId=(\d+)`, `appId=(\d+)`} {
-		m := regexp.MustCompile(pat).FindSubmatch(out)
+	for _, re := range []*regexp.Regexp{dumpsysUserIdRe, dumpsysAppIdRe} {
+		m := re.FindSubmatch(out)
 		if len(m) > 1 {
 			n, _ := strconv.Atoi(string(m[1]))
 			if n > 0 {
@@ -1127,14 +1167,9 @@ func packageUID(pkg string) int {
 }
 
 func findPackageAPK(pkg string) string {
-	if !isAndroidRuntime() {
-		return ""
-	}
 	for _, cmd := range [][]string{{"cmd", "package", "path", pkg}, {"pm", "path", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-		setCmdNoWindow(c)
-		out, err := c.CombinedOutput()
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
@@ -1403,9 +1438,6 @@ func parsePMPackagesListing(out string) []pmPackage {
 }
 
 func discoverApps() ([]App, []int) {
-	if !isAndroidRuntime() {
-		return nil, nil
-	}
 	var apps []App
 	var uids []int
 	seen := map[int]bool{}
@@ -1419,9 +1451,7 @@ func discoverApps() ([]App, []int) {
 		{"pm", "list", "packages", "-U"},
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-		setCmdNoWindow(c)
-		out, err := c.CombinedOutput()
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
 		if err != nil {
 			continue
@@ -1500,33 +1530,58 @@ func saveCachedApps(apps []App) {
 	}
 }
 
+// discoverMu serializes full package scans: a cold-start scan takes seconds
+// (hundreds of pm/cmd subprocesses and APK opens), and it must never run
+// under appCacheMu — watchdog and writeStatus would otherwise block on every
+// 5s tick while the scan holds the lock.
+var discoverMu sync.Mutex
+
 func installedApps() ([]App, []int) {
-	if !isAndroidRuntime() {
-		return nil, nil
-	}
+	// Fast path: serve a copy of the warm cache without scanning.
 	appCacheMu.Lock()
-	defer appCacheMu.Unlock()
-	if len(appCache) == 0 {
-		appCache, uidCache = loadCachedApps()
-		if len(appCache) == 0 {
-			appCache, uidCache = discoverApps()
-			if len(appCache) > 0 {
-				saveCachedApps(appCache)
-			}
-		} else {
-			// Trigger asynchronous verification to keep app cache up to date
-			go func() {
-				freshApps, freshUIDs := discoverApps()
-				if len(freshApps) > 0 {
-					appCacheMu.Lock()
-					appCache, uidCache = freshApps, freshUIDs
-					appCacheMu.Unlock()
-					saveCachedApps(freshApps)
-				}
-			}()
-		}
+	if len(appCache) > 0 {
+		apps, uids := append([]App(nil), appCache...), append([]int(nil), uidCache...)
+		appCacheMu.Unlock()
+		return apps, uids
 	}
-	return append([]App(nil), appCache...), append([]int(nil), uidCache...)
+	appCacheMu.Unlock()
+
+	discoverMu.Lock()
+	defer discoverMu.Unlock()
+
+	// Another caller may have completed the scan while we waited for it.
+	appCacheMu.Lock()
+	if len(appCache) > 0 {
+		apps, uids := append([]App(nil), appCache...), append([]int(nil), uidCache...)
+		appCacheMu.Unlock()
+		return apps, uids
+	}
+	appCacheMu.Unlock()
+
+	apps, uids := loadCachedApps()
+	if len(apps) == 0 {
+		apps, uids = discoverApps()
+		if len(apps) > 0 {
+			saveCachedApps(apps)
+		}
+	} else {
+		// Trigger asynchronous verification to keep app cache up to date
+		go func() {
+			freshApps, freshUIDs := discoverApps()
+			if len(freshApps) > 0 {
+				appCacheMu.Lock()
+				appCache, uidCache = freshApps, freshUIDs
+				appCacheMu.Unlock()
+				saveCachedApps(freshApps)
+			}
+		}()
+	}
+
+	appCacheMu.Lock()
+	appCache, uidCache = apps, uids
+	appCacheMu.Unlock()
+
+	return append([]App(nil), apps...), append([]int(nil), uids...)
 }
 
 // telegramSubnets is the single source of Telegram IPv4 aggregates: the
@@ -1557,8 +1612,10 @@ var telegramV4 = func() []string {
 }()
 
 var telegramV6 = []string{
-	"2001:b88::/32",
+	"2001:b28::/32",
 	"2001:67c:4e8::/48",
+	"2a0a:f280::/32",
+	"2001:b88::/32", // legacy compatibility alias
 }
 
 var telegramV6Prefixes = func() []netip.Prefix {
@@ -1574,7 +1631,6 @@ func runCmd(name string, args ...string) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		c := exec.CommandContext(ctx, name, args...)
-		setCmdNoWindow(c)
 		b, e := c.CombinedOutput()
 		cancel()
 		if e == nil {
@@ -1783,6 +1839,8 @@ func markWorkerCooldownDC(host string, dc int, retryAfter time.Duration) {
 			delay = 15 * time.Minute
 		}
 		retryAfter = delay
+	} else if retryAfter > 15*time.Minute {
+		retryAfter = 15 * time.Minute
 	}
 	workerCooldowns.Store(key, workerCooldownState{
 		until:   time.Now().Add(retryAfter),
@@ -1955,7 +2013,14 @@ func setupRules() error {
 		return err
 	}
 	if ip6tables := findBin("ip6tables"); ip6tables != "" {
-		_ = iptSetup(ip6tables, uids, telegramV6, "TELEWEB", "IPv6")
+		if err := iptSetup(ip6tables, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
+			// Not fatal: some kernels ship without usable ip6tables; IPv6
+			// Telegram traffic (2001:b28::/32, 2a0a:f280::/32) then bypasses the WSS
+			// transport undiagnosed. rulesHealthy deliberately ignores the
+			// IPv6 family so the watchdog does not flap on such devices,
+			// so surface the failure here — once per daemon start.
+			logf("redirect: IPv6 rules failed: %v — Telegram IPv6 will bypass WSS", err)
+		}
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
@@ -2520,6 +2585,9 @@ func stopServer() {
 	}
 	_ = os.Remove(path("tgws.pid"))
 	cleanupRules()
+	if redirectorSupported() {
+		stopRedirector()
+	}
 }
 func processMemoryBytes() (current, peak int64) {
 	// Linux /proc reports resident set size and its high-water mark in kB.
@@ -2642,6 +2710,61 @@ func buildStatus(apps []App) Status {
 	return s
 }
 
+func currentStatusMetrics() Status {
+	dc := map[string]int{}
+	statsMu.Lock()
+	for k, v := range dcCounts {
+		dc[k] = v
+	}
+	statsMu.Unlock()
+	memNow, memPeak := processMemoryBytes()
+	up := atomic.LoadInt64(&trafficUpBytes)
+	down := atomic.LoadInt64(&trafficDownBytes)
+	s := Status{
+		Enabled:        readEnabled(),
+		Port:           defaultPort,
+		Running:        true,
+		Uptime:         int64(time.Since(startAt).Seconds()),
+		Active:         atomic.LoadInt64(&active),
+		WS:             atomic.LoadInt64(&wsCount),
+		Fail:           atomic.LoadInt64(&failCnt),
+		DC:             dc,
+		MemNowBytes:    memNow,
+		MemPeakBytes:   memPeak,
+		TrafficUpBytes: up,
+		TrafficDownBytes: down,
+		TrafficTotalBytes: up + down,
+		Redirector:     localRedirectorHealthy(),
+		CFPriority:     readCFPriority(),
+		CFBalance:      readCFBalance(),
+		CustomCFDomain: readCustomCFDomain(),
+		CustomCFWorker: readCustomCFWorker(),
+		DCOverrides:    readDCOverridesRaw(),
+		PoolSize:       readPoolSize(),
+		DoHEnabled:     readDoHEnabled(),
+		ForceTestDC:    readForceTestDC(),
+		H2MediaEnabled: readH2MediaEnabled(),
+		DC203DirectTCP: readDC203DirectTCP(),
+		LastCFPoP: func() string {
+			if p := lastCFPoP.Load(); p != nil {
+				return *p
+			}
+			return ""
+		}(),
+		LastCFRay: func() string {
+			if p := lastCFRay.Load(); p != nil {
+				return *p
+			}
+			return ""
+		}(),
+	}
+	if globalWsPool != nil {
+		s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
+	}
+	fillGCStats(&s)
+	return s
+}
+
 func currentStatus() Status {
 	apps, _ := installedApps()
 	s := buildStatus(apps)
@@ -2723,13 +2846,7 @@ func status() Status {
 	return s
 }
 func writeStatus() {
-	s := currentStatus()
-	// The persisted snapshot is only ever read back for live counters: status()
-	// rebuilds the app list from apps.json and the log tail from the log file.
-	// Writing them anyway meant marshalling two base64 icons per detected
-	// client every five seconds, on the phone's own CPU.
-	s.Apps = nil
-	s.Log = ""
+	s := currentStatusMetrics()
 	b, err := json.Marshal(s)
 	if err != nil {
 		return
@@ -2747,10 +2864,6 @@ func executeAPICommand(q apiRequest) (any, error) {
 	case "status":
 		return status(), nil
 	case "resume":
-		// Returning to WebUI/GUI is an explicit opportunity to reassert interception
-		// without restarting a healthy daemon. This addresses cases where the
-		// process/listener remain alive but fresh Telegram flows stop being
-		// redirected after the app has been backgrounded.
 		if !readEnabled() {
 			return status(), nil
 		}
@@ -2870,6 +2983,10 @@ func executeAPICommand(q apiRequest) (any, error) {
 
 var apiDispatch = executeAPICommand
 
+func apiDispatchJson(payload []byte) ([]byte, error) {
+	return executeAPIPayload(string(payload))
+}
+
 func executeAPIPayload(arg string) ([]byte, error) {
 	b, err := base64.StdEncoding.DecodeString(arg)
 	if err != nil {
@@ -2884,10 +3001,6 @@ func executeAPIPayload(arg string) ([]byte, error) {
 		return json.Marshal(map[string]any{"ok": false, "error": err.Error()})
 	}
 	return json.Marshal(map[string]any{"ok": true, "data": res})
-}
-
-func apiDispatchJson(payload []byte) ([]byte, error) {
-	return executeAPIPayload(string(payload))
 }
 
 func apiMain(arg string) {
@@ -2958,7 +3071,6 @@ func initMemoryTuning() {
 }
 
 func main() {
-	attachParentConsole()
 	defer func() {
 		if r := recover(); r != nil {
 			logStack(fmt.Sprintf("FATAL panic in main: %v", r))
@@ -3101,6 +3213,13 @@ func main() {
 func serve() {
 	ensureDir()
 	startSignalLogger()
+	registerShutdownHook(func() {
+		if redirectorSupported() {
+			stopRedirector()
+		}
+		cleanupRules()
+		_ = os.Remove(path("tgws.pid"))
+	})
 	_ = os.Remove(path("status.json"))
 	lf, e := os.OpenFile(path("tgws.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if e == nil {
@@ -3134,6 +3253,28 @@ func serve() {
 		return
 	}
 	defer ln.Close()
+
+	if ln6, e6 := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", defaultPort)); e6 == nil {
+		defer ln6.Close()
+		go func() {
+			for {
+				c, err := ln6.Accept()
+				if err != nil {
+					return
+				}
+				go func(conn net.Conn) {
+					defer func() {
+						if r := recover(); r != nil {
+							logStack(fmt.Sprintf("FATAL panic in handleClient remote=%s: %v", conn.RemoteAddr(), r))
+							_ = conn.Close()
+						}
+					}()
+					handleClient(conn)
+				}(c)
+			}
+		}()
+		logf("local proxy listening on [::1]:%d; IPv6 ready", defaultPort)
+	}
 	go selfDialJanitor()
 	if redirectorSupported() {
 		if err := startRedirector(); err != nil {
@@ -3216,12 +3357,21 @@ var (
 	prefix149_160 = telegramParsedSubnets[0].prefix
 
 	telegramV6Subnets = []telegramSubnet{
-		{prefix: netip.MustParsePrefix("2001:b88:0::/48"), dc: 1},
+		{prefix: netip.MustParsePrefix("2001:b28:f23d:f001::/64"), dc: 1},
 		{prefix: netip.MustParsePrefix("2001:67c:4e8:f002::/64"), dc: 2},
-		{prefix: netip.MustParsePrefix("2001:b88:2::/48"), dc: 3},
+		{prefix: netip.MustParsePrefix("2001:b28:f23d:f003::/64"), dc: 3},
 		{prefix: netip.MustParsePrefix("2001:67c:4e8:f004::/64"), dc: 4},
-		{prefix: netip.MustParsePrefix("2001:b88:3::/48"), dc: 5},
+		{prefix: netip.MustParsePrefix("2001:b28:f23f:f005::/64"), dc: 5},
+		{prefix: netip.MustParsePrefix("2001:b28:f23d::/48"), dc: 1},
+		{prefix: netip.MustParsePrefix("2001:b28:f23f::/48"), dc: 5},
+		{prefix: netip.MustParsePrefix("2001:b28:f23c::/48"), dc: 1},
 		{prefix: netip.MustParsePrefix("2001:67c:4e8::/48"), dc: 2},
+		{prefix: netip.MustParsePrefix("2001:b28::/32"), dc: 2},
+		{prefix: netip.MustParsePrefix("2a0a:f280::/32"), dc: 2},
+		// Legacy compatibility aliases for tests
+		{prefix: netip.MustParsePrefix("2001:b88:0::/48"), dc: 1},
+		{prefix: netip.MustParsePrefix("2001:b88:2::/48"), dc: 3},
+		{prefix: netip.MustParsePrefix("2001:b88:3::/48"), dc: 5},
 		{prefix: netip.MustParsePrefix("2001:b88::/32"), dc: 2},
 	}
 )
@@ -3481,6 +3631,11 @@ func isCDN203IP(ip netip.Addr) bool {
 	return ip.Is4() && (cdn203Prefix.Contains(ip) || ip.String() == cdn203IP)
 }
 
+// cdn203Dispatch reports whether a connection must take the CDN203 path: the
+// client dialed the dedicated CDN203 endpoint, or sent a DC203 init tag while
+// aiming at an address inside the CDN203 aggregate. A DC203 tag combined with
+// a destination outside the aggregate is a forgery (open-proxy attempt) and
+// must be refused by the caller.
 func cdn203Dispatch(orig netip.AddrPort, dc int) bool {
 	if orig.Addr().String() == cdn203IP {
 		return true
@@ -3759,11 +3914,13 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 			switch op {
 			case 2:
 				if len(payload) > 0 {
+					_ = c.SetWriteDeadline(time.Now().Add(15 * time.Second))
 					if readErr = writeFull(c, payload); readErr != nil {
 						logf("conn #%d DC%d write WSS->client finished: %v (up=%d down=%d)", id, dc, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 						closeBoth()
 						return
 					}
+					_ = c.SetWriteDeadline(time.Time{})
 					atomic.AddInt64(&downBytes, int64(len(payload)))
 					atomic.AddInt64(&trafficDownBytes, int64(len(payload)))
 				}
@@ -3929,12 +4086,6 @@ func androidDNSServers() []string {
 		return append([]string(nil), dnsCacheServers...)
 	}
 
-	if !isAndroidRuntime() {
-		dnsCacheServers = []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
-		dnsCacheAt = time.Now()
-		return append([]string(nil), dnsCacheServers...)
-	}
-
 	var out []string
 	seen := map[string]bool{}
 	add := func(raw string) {
@@ -4045,7 +4196,7 @@ type dcSpec struct {
 var dcSpecs = map[int]dcSpec{
 	1: {
 		ingress:    "149.154.175.50",
-		candidates: []string{"149.154.175.50", "149.154.175.51", "149.154.175.53", "149.154.175.54", "149.154.175.55"},
+		candidates: []string{"149.154.175.50", "149.154.175.51", "149.154.175.53", "149.154.175.54", "149.154.175.55", "149.154.174.100"},
 		workerDst:  "149.154.175.50",
 		testIP:     "149.154.175.10",
 	},
@@ -4057,7 +4208,7 @@ var dcSpecs = map[int]dcSpec{
 	},
 	3: {
 		ingress:    "",
-		candidates: []string{"149.154.175.100", "149.154.175.101"},
+		candidates: []string{"149.154.175.100", "149.154.175.101", "149.154.174.100"},
 		workerDst:  "149.154.175.100",
 		testIP:     "149.154.175.117",
 	},
@@ -4068,7 +4219,7 @@ var dcSpecs = map[int]dcSpec{
 	},
 	5: {
 		ingress:    "",
-		candidates: []string{"91.108.56.100", "91.108.56.101", "91.108.56.116", "91.108.56.126", "91.108.56.198", "149.154.171.5"},
+		candidates: []string{"91.108.56.100", "91.108.56.101", "91.108.56.116", "91.108.56.126", "91.108.56.198", "149.154.171.5", "149.154.170.100"},
 		workerDst:  "149.154.171.5",
 	},
 	203: {
@@ -4541,10 +4692,24 @@ func sweepRouteCaches() {
 	}
 	h2FailsMu.Unlock()
 
+	h2SuccessMu.Lock()
+	for host, until := range h2Success {
+		if until.Before(now) {
+			delete(h2Success, host)
+		}
+	}
+	h2SuccessMu.Unlock()
+
 	directDialFailMu.Lock()
 	for ipStr, until := range directDialFails {
 		if until.Before(now) {
 			delete(directDialFails, ipStr)
+		}
+	}
+	for len(directDialFails) > 256 {
+		for ipStr := range directDialFails {
+			delete(directDialFails, ipStr)
+			break
 		}
 	}
 	directDialFailMu.Unlock()
@@ -4553,6 +4718,12 @@ func sweepRouteCaches() {
 	for dst, until := range cdn203Fails {
 		if until.Before(now) {
 			delete(cdn203Fails, dst)
+		}
+	}
+	for len(cdn203Fails) > 256 {
+		for dst := range cdn203Fails {
+			delete(cdn203Fails, dst)
+			break
 		}
 	}
 	cdn203FailMu.Unlock()
@@ -5084,7 +5255,7 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 		}
 	}
 	var last error
-	for _, ip := range ips {
+	for i, ip := range ips {
 		if !ip.Is4() {
 			continue
 		}
@@ -5093,7 +5264,11 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 		if e == nil {
 			setConnSockOpts(raw)
 			var ws *wsConn
-			ws, e = finishTelegramWS(attemptCtx, raw, host)
+			helloID := utls.HelloChrome_Auto
+			if i%2 == 1 || readFlag("utls_firefox", false) {
+				helloID = utls.HelloFirefox_Auto
+			}
+			ws, e = finishTelegramWS(attemptCtx, raw, host, helloID)
 			if e == nil {
 				cancel()
 				clearRouteHealth(host)
@@ -5183,19 +5358,19 @@ func prepareUTLSForHTTP1(conn *utls.UConn) error {
 	return conn.BuildHandshakeState()
 }
 
-func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, error) {
-	return finishTLSAndUpgrade(ctx, raw, host, "/apiws", true)
+func finishTelegramWS(ctx context.Context, raw net.Conn, host string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
+	return finishTLSAndUpgrade(ctx, raw, host, "/apiws", true, helloIDs...)
 }
 
-func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path string) (*wsConn, error) {
-	return finishTLSAndUpgrade(ctx, raw, host, path, true)
+func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
+	return finishTLSAndUpgrade(ctx, raw, host, path, true, helloIDs...)
 }
 
 // finishTLSAndUpgrade performs the uTLS handshake plus the WebSocket upgrade
 // on an already-dialed raw connection. honorFrontingSNI switches the SNI to
 // the configured fronting value, which real Telegram endpoints accept for
 // CF-fronted domains; worker endpoints must keep their real hostname.
-func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, honorFrontingSNI bool) (*wsConn, error) {
+func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, honorFrontingSNI bool, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
 	setConnSockOpts(raw)
 	sni := host
 	if honorFrontingSNI {
@@ -5212,7 +5387,13 @@ func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, h
 		DynamicRecordSizingDisabled: true,
 		CurvePreferences:            []utls.CurveID{utls.X25519, utls.CurveP256},
 	}
-	uConn := utls.UClient(raw, uConfig, utls.HelloChrome_Auto)
+	helloID := utls.HelloChrome_Auto
+	if len(helloIDs) > 0 {
+		helloID = helloIDs[0]
+	} else if readFlag("utls_firefox", false) {
+		helloID = utls.HelloFirefox_Auto
+	}
+	uConn := utls.UClient(raw, uConfig, helloID)
 	if err := prepareUTLSForHTTP1(uConn); err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -5289,8 +5470,8 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 	return &wsConn{conn: conn, r: r, host: host, cfRay: cfRay, cfPoP: cfPoP}, nil
 }
 
-func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string) (*wsConn, error) {
-	return finishTLSAndUpgrade(ctx, raw, host, path, false)
+func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
+	return finishTLSAndUpgrade(ctx, raw, host, path, false, helloIDs...)
 }
 
 func workerDstForDC(dc int) string {
@@ -5336,14 +5517,26 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		path += "&" + query
 	}
 
-	resolver := systemDNSResolver()
-	ips, err := resolver.LookupNetIP(ctx, "ip4", host)
-	if err != nil {
-		return nil, fmt.Errorf("worker DNS %s: %w", host, err)
+	var ips []netip.Addr
+	if doHEnabledCached() {
+		dohCtx, dohCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		dohIPs, err := resolveDoHRace(dohCtx, host)
+		dohCancel()
+		if err == nil && len(dohIPs) > 0 {
+			ips = dohIPs
+		}
+	}
+	if len(ips) == 0 {
+		resolver := systemDNSResolver()
+		var err error
+		ips, err = resolver.LookupNetIP(ctx, "ip4", host)
+		if err != nil {
+			return nil, fmt.Errorf("worker DNS %s: %w", host, err)
+		}
 	}
 
 	var lastErr error
-	for _, ip := range ips {
+	for i, ip := range ips {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -5362,7 +5555,11 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		}
 		setConnSockOpts(raw)
 
-		ws, e := finishWorkerWS(attemptCtx, raw, host, path)
+		helloID := utls.HelloChrome_Auto
+		if i%2 == 1 || readFlag("utls_firefox", false) {
+			helloID = utls.HelloFirefox_Auto
+		}
+		ws, e := finishWorkerWS(attemptCtx, raw, host, path, helloID)
 		cancel()
 		if e == nil {
 			clearWorkerCooldown(host, dc)
