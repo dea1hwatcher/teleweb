@@ -188,6 +188,26 @@ type natEntry struct {
 	clientPort uint16
 	natPort    uint16
 	lastSeen   atomic.Int64
+	// established turns true once a packet carrying ACK but not SYN crosses the
+	// flow, which is the handshake completing. Established flows are kept for
+	// the RFC 5382 idle timeout instead of a couple of minutes: dropping a live
+	// mapping leaves the replies forwarded to the client unrewritten.
+	established atomic.Bool
+}
+
+// TCP control bits, as they appear in the flags octet.
+const (
+	tcpFlagSYN = 0x02
+	tcpFlagACK = 0x10
+)
+
+// touch records traffic on the flow and upgrades it to established when the
+// flags show a completed handshake.
+func (e *natEntry) touch(flags byte, now int64) {
+	e.lastSeen.Store(now)
+	if flags&tcpFlagACK != 0 && flags&tcpFlagSYN == 0 {
+		e.established.Store(true)
+	}
 }
 
 type natFlowKey struct {
@@ -258,6 +278,35 @@ func natLookupFlow(flow natFlowKey) *natEntry {
 	return natTable.flows[flow]
 }
 
+// Idle timeouts from RFC 5382: a connection that never finished its handshake
+// goes stale after four minutes, an established one only after two hours and
+// four minutes. The single 360 s cutoff that was here before dropped connections
+// that were alive but quiet, and a dropped mapping sends the replies to the
+// client unrewritten, which the client sees as a broken connection.
+const (
+	natIdleTimeout        = 4 * time.Minute
+	natEstablishedTimeout = 2*time.Hour + 4*time.Minute
+)
+
+// pruneFlows drops stale mappings. now is a parameter so the rules can be
+// exercised without waiting on a clock.
+func pruneFlows(now time.Time) {
+	idleCutoff := now.Add(-natIdleTimeout).UnixNano()
+	establishedCutoff := now.Add(-natEstablishedTimeout).UnixNano()
+	natTable.mu.Lock()
+	defer natTable.mu.Unlock()
+	for k, e := range natTable.flows {
+		cutoff := idleCutoff
+		if e.established.Load() {
+			cutoff = establishedCutoff
+		}
+		if e.lastSeen.Load() < cutoff {
+			delete(natTable.flows, k)
+			delete(natTable.ports, e.natPort)
+		}
+	}
+}
+
 func natJanitor(stop <-chan struct{}) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
@@ -266,15 +315,7 @@ func natJanitor(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			cutoff := time.Now().Add(-360 * time.Second).UnixNano()
-			natTable.mu.Lock()
-			for k, e := range natTable.flows {
-				if e.lastSeen.Load() < cutoff {
-					delete(natTable.flows, k)
-					delete(natTable.ports, e.natPort)
-				}
-			}
-			natTable.mu.Unlock()
+			pruneFlows(time.Now())
 		}
 	}
 }
@@ -469,7 +510,7 @@ func (r *wdRedirector) outLoop() {
 			_ = wdSendPacket(r.hOut, p, &addr)
 			continue
 		}
-		isSYN := (m.flags & 0x12) == 0x02 // SYN set, ACK clear
+		isSYN := (m.flags & (tcpFlagSYN | tcpFlagACK)) == tcpFlagSYN
 		flow := natFlowKey{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
 		// Fast path: established flows are resolved under a read lock. A SYN
 		// (new or retransmitted) may carry a stale TIME_WAIT mapping, so it
@@ -479,11 +520,17 @@ func (r *wdRedirector) outLoop() {
 		if e == nil || isSYN {
 			e = natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
 			if e == nil {
+				// Every local port is taken: the packet leaves unrewritten, so
+				// this connection bypasses the tunnel. logf collapses repeats.
+				natTable.mu.RLock()
+				flows := len(natTable.ports)
+				natTable.mu.RUnlock()
+				logf("redirector: NAT port range exhausted (%d flows); %s:%d -> %s:%d escapes the tunnel", flows, netip.AddrFrom4(m.srcIP), m.sport, netip.AddrFrom4(m.dstIP), m.dport)
 				_ = wdSendPacket(r.hOut, p, &addr)
 				continue
 			}
 		}
-		e.lastSeen.Store(time.Now().UnixNano())
+		e.touch(m.flags, time.Now().UnixNano())
 		p[12], p[13], p[14], p[15] = 127, 0, 0, 1
 		p[16], p[17], p[18], p[19] = 127, 0, 0, 1
 		binary.BigEndian.PutUint16(p[m.ihl:], e.natPort)
@@ -521,7 +568,7 @@ func (r *wdRedirector) retLoop() {
 			_ = wdSendPacket(r.hRet, p, &addr)
 			continue
 		}
-		e.lastSeen.Store(time.Now().UnixNano())
+		e.touch(m.flags, time.Now().UnixNano())
 		if !e.orig.Addr().Is4() {
 			_ = wdSendPacket(r.hRet, p, &addr)
 			continue
