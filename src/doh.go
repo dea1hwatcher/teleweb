@@ -46,12 +46,37 @@ var dohEndpoints = []string{
 	"https://dns.adguard-dns.com/dns-query",
 }
 
+// dohBootstrapIPs maps DoH hostnames to their canonical Anycast IPs so the DoH
+// transport can bootstrap even when the ISP's local DNS is poisoned, broken,
+// or completely blocks foreign DNS domain resolution.
+var dohBootstrapIPs = map[string][]string{
+	"cloudflare-dns.com":  {"1.1.1.1", "1.0.0.1"},
+	"dns.google":          {"8.8.8.8", "8.8.4.4"},
+	"dns.quad9.net":       {"9.9.9.9", "149.112.112.112"},
+	"dns.adguard-dns.com": {"94.140.14.14", "94.140.15.15"},
+}
+
 func getDoHClient() *http.Client {
 	dohClientOnce.Do(func() {
 		tr := &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 3 * time.Second}
-				return d.DialContext(ctx, network, addr)
+				conn, err := d.DialContext(ctx, network, addr)
+				if err == nil {
+					return conn, nil
+				}
+				// System DNS failed to resolve or dial the endpoint: fallback to hardcoded bootstrap IPs.
+				host, port, splitErr := net.SplitHostPort(addr)
+				if splitErr == nil {
+					if bootstrapIPs, ok := dohBootstrapIPs[host]; ok {
+						for _, ip := range bootstrapIPs {
+							if bConn, bErr := d.DialContext(ctx, network, net.JoinHostPort(ip, port)); bErr == nil {
+								return bConn, nil
+							}
+						}
+					}
+				}
+				return nil, err
 			},
 			TLSClientConfig: &tls.Config{
 				RootCAs:          getSystemRootCAs(),
