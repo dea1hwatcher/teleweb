@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -415,6 +416,57 @@ func localRedirectorHealthy() bool {
 	return activeRedirector != nil && activeRedirector.running.Load()
 }
 
+// hostHasGlobalIPv6 reports whether this machine holds a routable IPv6 address,
+// which is what decides whether the coverage gap below can actually be hit.
+func hostHasGlobalIPv6() bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip, ok := netip.AddrFromSlice(ipNet.IP)
+			if !ok {
+				continue
+			}
+			ip = ip.Unmap()
+			if ip.Is6() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsPrivate() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// v6CoverageNotice states what the WinDivert redirector does with Telegram's
+// IPv6 ranges. They cannot be intercepted the way IPv4 is: the filter language
+// offers no range test for an IPv6 field (its documented escape hatch for IPv6
+// is to capture all IPv6 traffic, which is not something to impose on every
+// machine), so those connections leave unproxied. Saying so at startup beats a
+// gap nobody can see.
+func v6CoverageNotice(hasIPv6 bool) string {
+	ranges := make([]string, 0, len(telegramV6Prefixes))
+	for _, p := range telegramV6Prefixes {
+		ranges = append(ranges, p.String())
+	}
+	detail := "this host has no global IPv6 address, so nothing can bypass it"
+	if hasIPv6 {
+		detail = "Telegram traffic to them leaves the machine unproxied"
+	}
+	return fmt.Sprintf("redirector: IPv4 only; %s is not intercepted (%s)", strings.Join(ranges, ", "), detail)
+}
+
 func startRedirector() error {
 	redirectorMu.Lock()
 	defer redirectorMu.Unlock()
@@ -448,6 +500,7 @@ func startRedirector() error {
 	go r.retLoop()
 	go natJanitor(stopCh)
 	logf("redirector: WinDivert active; Telegram TCP -> 127.0.0.1:%d", defaultPort)
+	logf("%s", v6CoverageNotice(hostHasGlobalIPv6()))
 	return nil
 }
 

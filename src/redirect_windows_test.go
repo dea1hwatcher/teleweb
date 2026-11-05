@@ -4,6 +4,7 @@ package main
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,6 +69,25 @@ func TestPrefixLast_Subnets(t *testing.T) {
 		if got.String() != tc.want {
 			t.Errorf("prefixLast(%s) = %s; want %s", tc.cidr, got, tc.want)
 		}
+	}
+}
+
+func TestV6CoverageNoticeNamesEveryRange(t *testing.T) {
+	withV6 := v6CoverageNotice(true)
+	for _, p := range telegramV6Prefixes {
+		if !strings.Contains(withV6, p.String()) {
+			t.Errorf("notice omits %s: %s", p, withV6)
+		}
+	}
+	if !strings.Contains(withV6, "not intercepted") || !strings.Contains(withV6, "unproxied") {
+		t.Errorf("notice does not spell out that the ranges bypass the tunnel: %s", withV6)
+	}
+	withoutV6 := v6CoverageNotice(false)
+	if withoutV6 == withV6 {
+		t.Error("a host without IPv6 reads the same notice as one that has it")
+	}
+	if !strings.Contains(withoutV6, "no global IPv6") {
+		t.Errorf("notice for a v4-only host does not explain why nothing can bypass: %s", withoutV6)
 	}
 }
 
