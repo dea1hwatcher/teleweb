@@ -2981,6 +2981,12 @@ func executeAPICommand(q apiRequest) (any, error) {
 	}
 }
 
+var apiDispatch = executeAPICommand
+
+func apiDispatchJson(payload []byte) ([]byte, error) {
+	return executeAPIPayload(string(payload))
+}
+
 func executeAPIPayload(arg string) ([]byte, error) {
 	b, err := base64.StdEncoding.DecodeString(arg)
 	if err != nil {
