@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -107,6 +109,22 @@ type wdAddr [64]byte
 
 func (a *wdAddr) clearLoopback() { a[10] &^= 0x04 }
 
+func explainWinDivertError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		if errno == 433 {
+			return fmt.Errorf("WinDivertOpen failed (ERROR_NO_SUCH_DEVICE 433): driver is hung or held by another bypass tool (GoodbyeDPI, Zapret). Try closing them or rebooting: %w", err)
+		}
+		if uint32(errno) == 0x8032000A {
+			return fmt.Errorf("WinDivertOpen failed (FWP_E_IN_USE 0x8032000A): WFP filter object is still in use by Windows. Wait a few seconds or reboot: %w", err)
+		}
+	}
+	return fmt.Errorf("WinDivertOpen failed: %v (administrator rights and WinDivert.dll/.sys required)", err)
+}
+
 func wdOpenHandle(filter string) (uintptr, error) {
 	f, err := syscall.BytePtrFromString(filter)
 	if err != nil {
@@ -124,7 +142,7 @@ func wdOpenHandle(filter string) (uintptr, error) {
 		h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0)
 	}
 	if h == wdInvalid || h == 0 {
-		return 0, fmt.Errorf("WinDivertOpen failed: %v (administrator rights and WinDivert.dll/.sys required)", callErr)
+		return 0, explainWinDivertError(callErr)
 	}
 	return h, nil
 }
@@ -391,6 +409,26 @@ func startRedirector() error {
 	return nil
 }
 
+func tryUnloadWinDivertService() {
+	// Attempt to stop the WinDivert service gracefully so the Windows kernel
+	// unloads the driver and unlocks the .sys file from disk.
+	if m, err := mgr.Connect(); err == nil {
+		defer m.Disconnect()
+		for _, name := range []string{"WinDivert", "WinDivert14", "Monkey"} {
+			if s, err := m.OpenService(name); err == nil {
+				_, _ = s.Control(svc.Stop)
+				s.Close()
+			}
+		}
+		return
+	}
+	for _, name := range []string{"WinDivert", "WinDivert14", "Monkey"} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = exec.CommandContext(ctx, "sc.exe", "stop", name).Run()
+		cancel()
+	}
+}
+
 func stopRedirector() {
 	redirectorMu.Lock()
 	defer redirectorMu.Unlock()
@@ -404,7 +442,8 @@ func stopRedirector() {
 	_, _, _ = wdClose.Call(activeRedirector.hOut)
 	_, _, _ = wdClose.Call(activeRedirector.hRet)
 	activeRedirector = nil
-	logf("redirector: WinDivert stopped")
+	tryUnloadWinDivertService()
+	logf("redirector: WinDivert stopped and driver service unloaded")
 }
 
 func (r *wdRedirector) outLoop() {

@@ -145,6 +145,13 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 		"2001:b88:3::1":        5,
 		"2001:67c:4e8::1":      2,
 		"2001:b88:1::1":        2,
+		// Official Telegram IPv6 endpoints
+		"2001:b28:f23d:f001::a": 1,
+		"2001:b28:f23d:f003::a": 3,
+		"2001:b28:f23f:f005::a": 5,
+		"2001:b28:f23c::1":      1,
+		"2001:b28::1":          2,
+		"2a0a:f280::1":          2,
 		"2600::1":              0, // Non-Telegram IPv6
 	}
 	for raw, want := range v6Cases {
@@ -1208,6 +1215,34 @@ func TestPrepareUTLSForHTTP1(t *testing.T) {
 	uConn := utls.UClient(c1, uConfig, utls.HelloChrome_Auto)
 	if err := prepareUTLSForHTTP1(uConn); err != nil {
 		t.Fatalf("prepareUTLSForHTTP1 failed: %v", err)
+	}
+
+	found := false
+	for _, ext := range uConn.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			found = true
+			if len(alpn.AlpnProtocols) != 1 || alpn.AlpnProtocols[0] != "http/1.1" {
+				t.Fatalf("unexpected ALPN protocols: %#v", alpn.AlpnProtocols)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ALPNExtension not found on UConn after prepareUTLSForHTTP1")
+	}
+}
+
+func TestPrepareUTLSForHTTP1_Firefox(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	uConfig := &utls.Config{
+		ServerName:         "test.example.com",
+		InsecureSkipVerify: true,
+	}
+	uConn := utls.UClient(c1, uConfig, utls.HelloFirefox_Auto)
+	if err := prepareUTLSForHTTP1(uConn); err != nil {
+		t.Fatalf("prepareUTLSForHTTP1 with Firefox failed: %v", err)
 	}
 
 	found := false
@@ -3035,6 +3070,9 @@ func TestIsTelegramEndpoint_IPv6(t *testing.T) {
 		"2001:b88::1",
 		"2001:b88:1000::5",
 		"2001:67c:4e8::2",
+		"2001:b28::1",
+		"2001:b28:f23d:f001::a",
+		"2a0a:f280::1",
 	} {
 		addr := netip.MustParseAddr(ip)
 		if !isTelegramEndpointV6(addr) {

@@ -1568,8 +1568,10 @@ var telegramV4 = func() []string {
 }()
 
 var telegramV6 = []string{
-	"2001:b88::/32",
+	"2001:b28::/32",
 	"2001:67c:4e8::/48",
+	"2a0a:f280::/32",
+	"2001:b88::/32", // legacy compatibility alias
 }
 
 var telegramV6Prefixes = func() []netip.Prefix {
@@ -3191,6 +3193,28 @@ func serve() {
 		return
 	}
 	defer ln.Close()
+
+	if ln6, e6 := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", defaultPort)); e6 == nil {
+		defer ln6.Close()
+		go func() {
+			for {
+				c, err := ln6.Accept()
+				if err != nil {
+					return
+				}
+				go func(conn net.Conn) {
+					defer func() {
+						if r := recover(); r != nil {
+							logStack(fmt.Sprintf("FATAL panic in handleClient remote=%s: %v", conn.RemoteAddr(), r))
+							_ = conn.Close()
+						}
+					}()
+					handleClient(conn)
+				}(c)
+			}
+		}()
+		logf("local proxy listening on [::1]:%d; IPv6 ready", defaultPort)
+	}
 	go selfDialJanitor()
 	if redirectorSupported() {
 		if err := startRedirector(); err != nil {
@@ -3273,12 +3297,21 @@ var (
 	prefix149_160 = telegramParsedSubnets[0].prefix
 
 	telegramV6Subnets = []telegramSubnet{
-		{prefix: netip.MustParsePrefix("2001:b88:0::/48"), dc: 1},
+		{prefix: netip.MustParsePrefix("2001:b28:f23d:f001::/64"), dc: 1},
 		{prefix: netip.MustParsePrefix("2001:67c:4e8:f002::/64"), dc: 2},
-		{prefix: netip.MustParsePrefix("2001:b88:2::/48"), dc: 3},
+		{prefix: netip.MustParsePrefix("2001:b28:f23d:f003::/64"), dc: 3},
 		{prefix: netip.MustParsePrefix("2001:67c:4e8:f004::/64"), dc: 4},
-		{prefix: netip.MustParsePrefix("2001:b88:3::/48"), dc: 5},
+		{prefix: netip.MustParsePrefix("2001:b28:f23f:f005::/64"), dc: 5},
+		{prefix: netip.MustParsePrefix("2001:b28:f23d::/48"), dc: 1},
+		{prefix: netip.MustParsePrefix("2001:b28:f23f::/48"), dc: 5},
+		{prefix: netip.MustParsePrefix("2001:b28:f23c::/48"), dc: 1},
 		{prefix: netip.MustParsePrefix("2001:67c:4e8::/48"), dc: 2},
+		{prefix: netip.MustParsePrefix("2001:b28::/32"), dc: 2},
+		{prefix: netip.MustParsePrefix("2a0a:f280::/32"), dc: 2},
+		// Legacy compatibility aliases for tests
+		{prefix: netip.MustParsePrefix("2001:b88:0::/48"), dc: 1},
+		{prefix: netip.MustParsePrefix("2001:b88:2::/48"), dc: 3},
+		{prefix: netip.MustParsePrefix("2001:b88:3::/48"), dc: 5},
 		{prefix: netip.MustParsePrefix("2001:b88::/32"), dc: 2},
 	}
 )
@@ -4103,7 +4136,7 @@ type dcSpec struct {
 var dcSpecs = map[int]dcSpec{
 	1: {
 		ingress:    "149.154.175.50",
-		candidates: []string{"149.154.175.50", "149.154.175.51", "149.154.175.53", "149.154.175.54", "149.154.175.55"},
+		candidates: []string{"149.154.175.50", "149.154.175.51", "149.154.175.53", "149.154.175.54", "149.154.175.55", "149.154.174.100"},
 		workerDst:  "149.154.175.50",
 		testIP:     "149.154.175.10",
 	},
@@ -4115,7 +4148,7 @@ var dcSpecs = map[int]dcSpec{
 	},
 	3: {
 		ingress:    "",
-		candidates: []string{"149.154.175.100", "149.154.175.101"},
+		candidates: []string{"149.154.175.100", "149.154.175.101", "149.154.174.100"},
 		workerDst:  "149.154.175.100",
 		testIP:     "149.154.175.117",
 	},
@@ -4126,7 +4159,7 @@ var dcSpecs = map[int]dcSpec{
 	},
 	5: {
 		ingress:    "",
-		candidates: []string{"91.108.56.100", "91.108.56.101", "91.108.56.116", "91.108.56.126", "91.108.56.198", "149.154.171.5"},
+		candidates: []string{"91.108.56.100", "91.108.56.101", "91.108.56.116", "91.108.56.126", "91.108.56.198", "149.154.171.5", "149.154.170.100"},
 		workerDst:  "149.154.171.5",
 	},
 	203: {
@@ -5162,7 +5195,7 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 		}
 	}
 	var last error
-	for _, ip := range ips {
+	for i, ip := range ips {
 		if !ip.Is4() {
 			continue
 		}
@@ -5171,7 +5204,11 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 		if e == nil {
 			setConnSockOpts(raw)
 			var ws *wsConn
-			ws, e = finishTelegramWS(attemptCtx, raw, host)
+			helloID := utls.HelloChrome_Auto
+			if i%2 == 1 || readFlag("utls_firefox", false) {
+				helloID = utls.HelloFirefox_Auto
+			}
+			ws, e = finishTelegramWS(attemptCtx, raw, host, helloID)
 			if e == nil {
 				cancel()
 				clearRouteHealth(host)
@@ -5261,19 +5298,19 @@ func prepareUTLSForHTTP1(conn *utls.UConn) error {
 	return conn.BuildHandshakeState()
 }
 
-func finishTelegramWS(ctx context.Context, raw net.Conn, host string) (*wsConn, error) {
-	return finishTLSAndUpgrade(ctx, raw, host, "/apiws", true)
+func finishTelegramWS(ctx context.Context, raw net.Conn, host string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
+	return finishTLSAndUpgrade(ctx, raw, host, "/apiws", true, helloIDs...)
 }
 
-func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path string) (*wsConn, error) {
-	return finishTLSAndUpgrade(ctx, raw, host, path, true)
+func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
+	return finishTLSAndUpgrade(ctx, raw, host, path, true, helloIDs...)
 }
 
 // finishTLSAndUpgrade performs the uTLS handshake plus the WebSocket upgrade
 // on an already-dialed raw connection. honorFrontingSNI switches the SNI to
 // the configured fronting value, which real Telegram endpoints accept for
 // CF-fronted domains; worker endpoints must keep their real hostname.
-func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, honorFrontingSNI bool) (*wsConn, error) {
+func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, honorFrontingSNI bool, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
 	setConnSockOpts(raw)
 	sni := host
 	if honorFrontingSNI {
@@ -5290,7 +5327,13 @@ func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, h
 		DynamicRecordSizingDisabled: true,
 		CurvePreferences:            []utls.CurveID{utls.X25519, utls.CurveP256},
 	}
-	uConn := utls.UClient(raw, uConfig, utls.HelloChrome_Auto)
+	helloID := utls.HelloChrome_Auto
+	if len(helloIDs) > 0 {
+		helloID = helloIDs[0]
+	} else if readFlag("utls_firefox", false) {
+		helloID = utls.HelloFirefox_Auto
+	}
+	uConn := utls.UClient(raw, uConfig, helloID)
 	if err := prepareUTLSForHTTP1(uConn); err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -5367,8 +5410,8 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 	return &wsConn{conn: conn, r: r, host: host, cfRay: cfRay, cfPoP: cfPoP}, nil
 }
 
-func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string) (*wsConn, error) {
-	return finishTLSAndUpgrade(ctx, raw, host, path, false)
+func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
+	return finishTLSAndUpgrade(ctx, raw, host, path, false, helloIDs...)
 }
 
 func workerDstForDC(dc int) string {
@@ -5421,7 +5464,7 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 	}
 
 	var lastErr error
-	for _, ip := range ips {
+	for i, ip := range ips {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -5440,7 +5483,11 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		}
 		setConnSockOpts(raw)
 
-		ws, e := finishWorkerWS(attemptCtx, raw, host, path)
+		helloID := utls.HelloChrome_Auto
+		if i%2 == 1 || readFlag("utls_firefox", false) {
+			helloID = utls.HelloFirefox_Auto
+		}
+		ws, e := finishWorkerWS(attemptCtx, raw, host, path, helloID)
 		cancel()
 		if e == nil {
 			clearWorkerCooldown(host, dc)
