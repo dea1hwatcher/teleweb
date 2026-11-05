@@ -340,7 +340,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 
 	// Single reply writer: response bodies are handed over out of band and
 	// reassembled in dispatch order before touching the shared CTR stream.
-	replyCh := make(chan h2Reply, 8)
+	replyCh := make(chan h2Reply, 16)
 	go func() {
 		seq := newH2ReplySequencer(func(body []byte) error {
 			encoded := encodeH2Reply(body, framer.proto)

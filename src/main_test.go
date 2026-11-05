@@ -2882,6 +2882,15 @@ func TestParseProcNetTCPIP(t *testing.T) {
 		t.Fatalf("unexpected parsed addr: %s:%d, want 91.108.56.100:443", addr2, port2)
 	}
 
+	// IPv6 from /proc/net/tcp6: 2001:b28:f23d:f001::1:443 -> 280B012001F03DF20000000001000000:01BB
+	addr6, port6, ok6 := parseProcNetTCPIP("280B012001F03DF20000000001000000:01BB")
+	if !ok6 {
+		t.Fatal("expected ok = true for IPv6 /proc/net/tcp6 entry")
+	}
+	if addr6.String() != "2001:b28:f23d:f001::1" || port6 != 443 {
+		t.Fatalf("unexpected parsed addr6: %s:%d, want 2001:b28:f23d:f001::1:443", addr6, port6)
+	}
+
 	// Invalid
 	if _, _, ok := parseProcNetTCPIP("invalid"); ok {
 		t.Fatal("expected ok = false for invalid format")
@@ -2894,18 +2903,20 @@ func TestParseProcNetTCPContent(t *testing.T) {
    1: 0200A8C0:D431 33A79A95:01BB 01 00000000:00000000 00:00000000 00000000 10123        0 54321 1 0000000000000000 100 0 0 10 0
    2: 0200A8C0:D432 64386C5B:01BB 02 00000000:00000000 00:00000000 00000000 10456        0 54322 1 0000000000000000 100 0 0 10 0
    3: 0200A8C0:D433 2EBEC28E:01BB 01 00000000:00000000 00:00000000 00000000 10789        0 54323 1 0000000000000000 100 0 0 10 0
+   4: 0000000000000000000000000100007F:13AD 280B012001F03DF20000000001000000:01BB 01 00000000:00000000 00:00000000 00000000 10999        0 54324 1 0000000000000000 100 0 0 10 0
 `
 	// Line 0: LISTEN (state 0A) -> ignored
 	// Line 1: ESTABLISHED (state 01) to 149.154.167.51 (Telegram DC2) with UID 10123 -> matched!
 	// Line 2: SYN_SENT (state 02) to 91.108.56.100 (Telegram DC5) with UID 10456 -> matched!
 	// Line 3: ESTABLISHED (state 01) to 142.190.190.46 (Non-Telegram IP) with UID 10789 -> ignored!
+	// Line 4: ESTABLISHED (state 01) to 2001:b28:f23d:f001::1 (Telegram IPv6) with UID 10999 -> matched!
 
 	uids := parseProcNetTCPContent(fakeProcNetTCP)
-	if len(uids) != 2 {
-		t.Fatalf("expected 2 detected UIDs from Telegram sockets, got %d: %#v", len(uids), uids)
+	if len(uids) != 3 {
+		t.Fatalf("expected 3 detected UIDs from Telegram sockets, got %d: %#v", len(uids), uids)
 	}
-	if uids[0] != 10123 || uids[1] != 10456 {
-		t.Fatalf("unexpected UIDs: %#v, want [10123, 10456]", uids)
+	if uids[0] != 10123 || uids[1] != 10456 || uids[2] != 10999 {
+		t.Fatalf("unexpected UIDs: %#v, want [10123, 10456, 10999]", uids)
 	}
 }
 

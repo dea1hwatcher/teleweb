@@ -484,12 +484,37 @@ func procSummary(pid int) string {
 	return fmt.Sprintf("pid=%d state=%q oom_score_adj=%q cgroup=%q cmd=%q", pid, state, strings.TrimSpace(string(oom)), cgText, strings.ReplaceAll(strings.TrimSpace(string(cmd)), "\x00", " "))
 }
 
+var (
+	shutdownMu    sync.Mutex
+	shutdownHooks []func()
+)
+
+func registerShutdownHook(fn func()) {
+	shutdownMu.Lock()
+	defer shutdownMu.Unlock()
+	shutdownHooks = append(shutdownHooks, fn)
+}
+
+func runShutdownHooks() {
+	shutdownMu.Lock()
+	hooks := append(([]func())(nil), shutdownHooks...)
+	shutdownHooks = nil
+	shutdownMu.Unlock()
+	for _, h := range hooks {
+		func() {
+			defer func() { _ = recover() }()
+			h()
+		}()
+	}
+}
+
 func startSignalLogger() {
 	ch := make(chan os.Signal, 4)
 	notifySignals(ch)
 	go func() {
 		for sig := range ch {
-			logf("process: received signal %s; shutting down", sig)
+			logf("process: received signal %s; shutting down gracefully", sig)
+			runShutdownHooks()
 			os.Exit(0)
 		}
 	}()
@@ -512,18 +537,17 @@ func writeEnabled(v bool) error {
 }
 
 // cfgFileCache memoizes config-file parses for the hot per-connection path.
-// Entries are validated by a single Stat (mtime+size) and expire after 2s, so
-// a dial performs one cheap syscall instead of several full file reads and
-// regex passes, while external edits are picked up almost immediately.
+// Entries are validated by a single Stat (mtime+size) signature, so a dial
+// performs one cheap syscall instead of several full file reads and regex passes,
+// while external edits are picked up almost immediately.
 var cfgFileCache = struct {
 	mu      sync.Mutex
 	entries map[string]cfgFileEntry
 }{entries: map[string]cfgFileEntry{}}
 
 type cfgFileEntry struct {
-	sig     uint64
-	value   any
-	expires time.Time
+	sig   uint64
+	value any
 }
 
 func cfgFileSig(name string) uint64 {
@@ -899,24 +923,44 @@ func isTelegramAPK(apkPath string) bool {
 
 func parseProcNetTCPIP(hexAddr string) (netip.Addr, uint16, bool) {
 	parts := strings.Split(hexAddr, ":")
-	if len(parts) != 2 || len(parts[0]) != 8 || len(parts[1]) != 4 {
-		return netip.Addr{}, 0, false
-	}
-	ipNum, err := strconv.ParseUint(parts[0], 16, 32)
-	if err != nil {
+	if len(parts) != 2 || len(parts[1]) != 4 {
 		return netip.Addr{}, 0, false
 	}
 	portNum, err := strconv.ParseUint(parts[1], 16, 16)
 	if err != nil {
 		return netip.Addr{}, 0, false
 	}
-	// /proc/net/tcp stores IPv4 as little-endian 32-bit uint
-	b0 := byte(ipNum & 0xff)
-	b1 := byte((ipNum >> 8) & 0xff)
-	b2 := byte((ipNum >> 16) & 0xff)
-	b3 := byte((ipNum >> 24) & 0xff)
-	addr := netip.AddrFrom4([4]byte{b0, b1, b2, b3})
-	return addr, uint16(portNum), true
+	// /proc/net/tcp stores IPv4 as little-endian 32-bit uint (8 hex digits)
+	if len(parts[0]) == 8 {
+		ipNum, err := strconv.ParseUint(parts[0], 16, 32)
+		if err != nil {
+			return netip.Addr{}, 0, false
+		}
+		b0 := byte(ipNum & 0xff)
+		b1 := byte((ipNum >> 8) & 0xff)
+		b2 := byte((ipNum >> 16) & 0xff)
+		b3 := byte((ipNum >> 24) & 0xff)
+		addr := netip.AddrFrom4([4]byte{b0, b1, b2, b3})
+		return addr, uint16(portNum), true
+	}
+	// /proc/net/tcp6 stores IPv6 as four 32-bit little-endian words (32 hex digits)
+	if len(parts[0]) == 32 {
+		var b [16]byte
+		for i := 0; i < 4; i++ {
+			wordHex := parts[0][i*8 : (i+1)*8]
+			w, err := strconv.ParseUint(wordHex, 16, 32)
+			if err != nil {
+				return netip.Addr{}, 0, false
+			}
+			b[i*4] = byte(w & 0xff)
+			b[i*4+1] = byte((w >> 8) & 0xff)
+			b[i*4+2] = byte((w >> 16) & 0xff)
+			b[i*4+3] = byte((w >> 24) & 0xff)
+		}
+		addr := netip.AddrFrom16(b).Unmap()
+		return addr, uint16(portNum), true
+	}
+	return netip.Addr{}, 0, false
 }
 
 func parseProcNetTCPContent(content string) []int {
@@ -933,7 +977,7 @@ func parseProcNetTCPContent(content string) []int {
 			continue
 		}
 		addr, _, ok := parseProcNetTCPIP(fields[2])
-		if !ok || !isTelegramEndpoint(addr) {
+		if !ok || !isTelegramAggregate(addr) {
 			continue
 		}
 		uid, err := strconv.Atoi(fields[7])
@@ -1971,7 +2015,7 @@ func setupRules() error {
 	if ip6tables := findBin("ip6tables"); ip6tables != "" {
 		if err := iptSetup(ip6tables, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
 			// Not fatal: some kernels ship without usable ip6tables; IPv6
-			// Telegram traffic (2001:b88::/32) then bypasses the WSS
+			// Telegram traffic (2001:b28::/32, 2a0a:f280::/32) then bypasses the WSS
 			// transport undiagnosed. rulesHealthy deliberately ignores the
 			// IPv6 family so the watchdog does not flap on such devices,
 			// so surface the failure here — once per daemon start.
@@ -2541,6 +2585,9 @@ func stopServer() {
 	}
 	_ = os.Remove(path("tgws.pid"))
 	cleanupRules()
+	if redirectorSupported() {
+		stopRedirector()
+	}
 }
 func processMemoryBytes() (current, peak int64) {
 	// Linux /proc reports resident set size and its high-water mark in kB.
@@ -3160,6 +3207,13 @@ func main() {
 func serve() {
 	ensureDir()
 	startSignalLogger()
+	registerShutdownHook(func() {
+		if redirectorSupported() {
+			stopRedirector()
+		}
+		cleanupRules()
+		_ = os.Remove(path("tgws.pid"))
+	})
 	_ = os.Remove(path("status.json"))
 	lf, e := os.OpenFile(path("tgws.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if e == nil {
@@ -5457,10 +5511,22 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		path += "&" + query
 	}
 
-	resolver := systemDNSResolver()
-	ips, err := resolver.LookupNetIP(ctx, "ip4", host)
-	if err != nil {
-		return nil, fmt.Errorf("worker DNS %s: %w", host, err)
+	var ips []netip.Addr
+	if doHEnabledCached() {
+		dohCtx, dohCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		dohIPs, err := resolveDoHRace(dohCtx, host)
+		dohCancel()
+		if err == nil && len(dohIPs) > 0 {
+			ips = dohIPs
+		}
+	}
+	if len(ips) == 0 {
+		resolver := systemDNSResolver()
+		var err error
+		ips, err = resolver.LookupNetIP(ctx, "ip4", host)
+		if err != nil {
+			return nil, fmt.Errorf("worker DNS %s: %w", host, err)
+		}
 	}
 
 	var lastErr error

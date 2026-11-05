@@ -224,9 +224,6 @@ func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry 
 		if natTable.next >= 32000 {
 			natTable.next = 20000
 		}
-		if p == defaultPort {
-			continue
-		}
 		if _, busy := natTable.ports[p]; busy {
 			continue
 		}
@@ -285,6 +282,9 @@ func natJanitor(stop <-chan struct{}) {
 // ------------------------------ Filters ------------------------------------
 
 func prefixLast(p netip.Prefix) netip.Addr {
+	if !p.Addr().Is4() {
+		return p.Addr()
+	}
 	a := p.Masked().Addr().As4()
 	bits := p.Bits()
 	for i := 0; i < 4; i++ {
@@ -296,7 +296,8 @@ func prefixLast(p netip.Prefix) netip.Addr {
 			a[i] = 0xff
 			continue
 		}
-		a[i] |= byte(0xff << b)
+		// b network bits remain in this octet, so the remaining (8 - b) host bits must be 1.
+		a[i] |= byte(0xff >> b)
 	}
 	return netip.AddrFrom4(a)
 }
@@ -432,21 +433,26 @@ func tryUnloadWinDivertService() {
 func stopRedirector() {
 	redirectorMu.Lock()
 	defer redirectorMu.Unlock()
-	if activeRedirector == nil {
-		return
+	if activeRedirector != nil {
+		activeRedirector.running.Store(false)
+		if activeRedirector.stopJanitor != nil {
+			close(activeRedirector.stopJanitor)
+		}
+		_, _, _ = wdClose.Call(activeRedirector.hOut)
+		_, _, _ = wdClose.Call(activeRedirector.hRet)
+		activeRedirector = nil
+		logf("redirector: WinDivert stopped")
 	}
-	activeRedirector.running.Store(false)
-	if activeRedirector.stopJanitor != nil {
-		close(activeRedirector.stopJanitor)
-	}
-	_, _, _ = wdClose.Call(activeRedirector.hOut)
-	_, _, _ = wdClose.Call(activeRedirector.hRet)
-	activeRedirector = nil
 	tryUnloadWinDivertService()
-	logf("redirector: WinDivert stopped and driver service unloaded")
 }
 
 func (r *wdRedirector) outLoop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logStack(fmt.Sprintf("FATAL panic in WinDivert outLoop: %v", rec))
+			r.running.Store(false)
+		}
+	}()
 	pkt := make([]byte, 65535)
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hOut, pkt)
@@ -488,6 +494,12 @@ func (r *wdRedirector) outLoop() {
 }
 
 func (r *wdRedirector) retLoop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logStack(fmt.Sprintf("FATAL panic in WinDivert retLoop: %v", rec))
+			r.running.Store(false)
+		}
+	}()
 	pkt := make([]byte, 65535)
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hRet, pkt)
@@ -510,6 +522,10 @@ func (r *wdRedirector) retLoop() {
 			continue
 		}
 		e.lastSeen.Store(time.Now().UnixNano())
+		if !e.orig.Addr().Is4() {
+			_ = wdSendPacket(r.hRet, p, &addr)
+			continue
+		}
 		o := e.orig.Addr().As4()
 		copy(p[12:16], o[:])
 		copy(p[16:20], e.clientIP[:])

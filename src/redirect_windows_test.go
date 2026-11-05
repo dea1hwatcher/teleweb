@@ -44,3 +44,28 @@ func TestNatGetOrCreate_SynPurgesStale(t *testing.T) {
 		t.Fatalf("natLookup(%d) = %v, %v; want %v, true", e3.natPort, resolved, ok, orig)
 	}
 }
+
+func TestPrefixLast_Subnets(t *testing.T) {
+	cases := []struct {
+		cidr string
+		want string
+	}{
+		{"149.154.160.0/20", "149.154.175.255"},
+		{"91.108.4.0/22", "91.108.7.255"},
+		{"91.108.8.0/22", "91.108.11.255"},
+		{"91.108.12.0/22", "91.108.15.255"},
+		{"91.108.16.0/22", "91.108.19.255"},
+		{"91.108.20.0/22", "91.108.23.255"},
+		{"91.108.56.0/22", "91.108.59.255"},
+		{"185.76.151.0/24", "185.76.151.255"},
+		{"91.105.192.0/23", "91.105.193.255"},
+	}
+
+	for _, tc := range cases {
+		p := netip.MustParsePrefix(tc.cidr)
+		got := prefixLast(p)
+		if got.String() != tc.want {
+			t.Errorf("prefixLast(%s) = %s; want %s", tc.cidr, got, tc.want)
+		}
+	}
+}
