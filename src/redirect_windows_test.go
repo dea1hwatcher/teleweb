@@ -5,6 +5,7 @@ package main
 import (
 	"net/netip"
 	"testing"
+	"time"
 )
 
 func TestNatGetOrCreate_SynPurgesStale(t *testing.T) {
@@ -66,6 +67,85 @@ func TestPrefixLast_Subnets(t *testing.T) {
 		got := prefixLast(p)
 		if got.String() != tc.want {
 			t.Errorf("prefixLast(%s) = %s; want %s", tc.cidr, got, tc.want)
+		}
+	}
+}
+
+func TestNatEntryTouchMarksEstablished(t *testing.T) {
+	cases := []struct {
+		name  string
+		flags byte
+		want  bool
+	}{
+		{"SYN alone starts the handshake", 0x02, false},
+		{"SYN-ACK is not completion", 0x12, false},
+		{"bare ACK completes it", 0x10, true},
+		{"PSH-ACK carries data", 0x18, true},
+		{"FIN-ACK closes an established flow", 0x11, true},
+	}
+
+	for _, tc := range cases {
+		var e natEntry
+		e.touch(tc.flags, 12345)
+		if got := e.established.Load(); got != tc.want {
+			t.Errorf("%s: flags %#x -> established=%t, want %t", tc.name, tc.flags, got, tc.want)
+		}
+		if e.lastSeen.Load() != 12345 {
+			t.Errorf("%s: lastSeen=%d, want the value passed in", tc.name, e.lastSeen.Load())
+		}
+	}
+}
+
+func TestPruneFlowsTwoPhaseTimeouts(t *testing.T) {
+	natTable.mu.Lock()
+	oldFlows, oldPorts, oldNext := natTable.flows, natTable.ports, natTable.next
+	natTable.flows, natTable.ports, natTable.next = map[natFlowKey]*natEntry{}, map[uint16]*natEntry{}, 20000
+	natTable.mu.Unlock()
+	t.Cleanup(func() {
+		natTable.mu.Lock()
+		natTable.flows, natTable.ports, natTable.next = oldFlows, oldPorts, oldNext
+		natTable.mu.Unlock()
+	})
+
+	now := time.Now()
+	add := func(port uint16, established bool, age time.Duration) {
+		e := &natEntry{natPort: port}
+		e.lastSeen.Store(now.Add(-age).UnixNano())
+		e.established.Store(established)
+		key := natFlowKey{srcPort: port}
+		natTable.mu.Lock()
+		natTable.flows[key] = e
+		natTable.ports[port] = e
+		natTable.mu.Unlock()
+	}
+	add(20001, true, time.Hour)       // established, quiet for an hour: keep
+	add(20002, true, 3*time.Hour)     // established but past the RFC timeout: drop
+	add(20003, false, time.Minute)    // handshake in flight: keep
+	add(20004, false, 10*time.Minute) // never completed, stale: drop
+
+	pruneFlows(now)
+
+	natTable.mu.RLock()
+	defer natTable.mu.RUnlock()
+	kept := map[uint16]bool{}
+	for _, e := range natTable.flows {
+		kept[e.natPort] = true
+	}
+	for _, port := range []uint16{20001, 20003} {
+		if !kept[port] {
+			t.Errorf("port %d was pruned, want it kept", port)
+			continue
+		}
+		if _, ok := natTable.ports[port]; !ok {
+			t.Errorf("port index lost %d while its flow survived", port)
+		}
+	}
+	for _, port := range []uint16{20002, 20004} {
+		if kept[port] {
+			t.Errorf("port %d survived pruning, want it dropped", port)
+		}
+		if _, ok := natTable.ports[port]; ok {
+			t.Errorf("port index still holds %d after the flow was dropped", port)
 		}
 	}
 }
