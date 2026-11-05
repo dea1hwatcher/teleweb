@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -107,6 +109,22 @@ type wdAddr [64]byte
 
 func (a *wdAddr) clearLoopback() { a[10] &^= 0x04 }
 
+func explainWinDivertError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		if errno == 433 {
+			return fmt.Errorf("WinDivertOpen failed (ERROR_NO_SUCH_DEVICE 433): driver is hung or held by another bypass tool (GoodbyeDPI, Zapret). Try closing them or rebooting: %w", err)
+		}
+		if uint32(errno) == 0x8032000A {
+			return fmt.Errorf("WinDivertOpen failed (FWP_E_IN_USE 0x8032000A): WFP filter object is still in use by Windows. Wait a few seconds or reboot: %w", err)
+		}
+	}
+	return fmt.Errorf("WinDivertOpen failed: %v (administrator rights and WinDivert.dll/.sys required)", err)
+}
+
 func wdOpenHandle(filter string) (uintptr, error) {
 	f, err := syscall.BytePtrFromString(filter)
 	if err != nil {
@@ -124,7 +142,7 @@ func wdOpenHandle(filter string) (uintptr, error) {
 		h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0)
 	}
 	if h == wdInvalid || h == 0 {
-		return 0, fmt.Errorf("WinDivertOpen failed: %v (administrator rights and WinDivert.dll/.sys required)", callErr)
+		return 0, explainWinDivertError(callErr)
 	}
 	return h, nil
 }
@@ -206,9 +224,6 @@ func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry 
 		if natTable.next >= 32000 {
 			natTable.next = 20000
 		}
-		if p == defaultPort {
-			continue
-		}
 		if _, busy := natTable.ports[p]; busy {
 			continue
 		}
@@ -251,7 +266,7 @@ func natJanitor(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			cutoff := time.Now().Add(-180 * time.Second).UnixNano()
+			cutoff := time.Now().Add(-360 * time.Second).UnixNano()
 			natTable.mu.Lock()
 			for k, e := range natTable.flows {
 				if e.lastSeen.Load() < cutoff {
@@ -267,6 +282,9 @@ func natJanitor(stop <-chan struct{}) {
 // ------------------------------ Filters ------------------------------------
 
 func prefixLast(p netip.Prefix) netip.Addr {
+	if !p.Addr().Is4() {
+		return p.Addr()
+	}
 	a := p.Masked().Addr().As4()
 	bits := p.Bits()
 	for i := 0; i < 4; i++ {
@@ -278,7 +296,8 @@ func prefixLast(p netip.Prefix) netip.Addr {
 			a[i] = 0xff
 			continue
 		}
-		a[i] |= byte(0xff << b)
+		// b network bits remain in this octet, so the remaining (8 - b) host bits must be 1.
+		a[i] |= byte(0xff >> b)
 	}
 	return netip.AddrFrom4(a)
 }
@@ -391,23 +410,49 @@ func startRedirector() error {
 	return nil
 }
 
+func tryUnloadWinDivertService() {
+	// Attempt to stop the WinDivert service gracefully so the Windows kernel
+	// unloads the driver and unlocks the .sys file from disk.
+	if m, err := mgr.Connect(); err == nil {
+		defer m.Disconnect()
+		for _, name := range []string{"WinDivert", "WinDivert14", "Monkey"} {
+			if s, err := m.OpenService(name); err == nil {
+				_, _ = s.Control(svc.Stop)
+				s.Close()
+			}
+		}
+		return
+	}
+	for _, name := range []string{"WinDivert", "WinDivert14", "Monkey"} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = exec.CommandContext(ctx, "sc.exe", "stop", name).Run()
+		cancel()
+	}
+}
+
 func stopRedirector() {
 	redirectorMu.Lock()
 	defer redirectorMu.Unlock()
-	if activeRedirector == nil {
-		return
+	if activeRedirector != nil {
+		activeRedirector.running.Store(false)
+		if activeRedirector.stopJanitor != nil {
+			close(activeRedirector.stopJanitor)
+		}
+		_, _, _ = wdClose.Call(activeRedirector.hOut)
+		_, _, _ = wdClose.Call(activeRedirector.hRet)
+		activeRedirector = nil
+		logf("redirector: WinDivert stopped")
 	}
-	activeRedirector.running.Store(false)
-	if activeRedirector.stopJanitor != nil {
-		close(activeRedirector.stopJanitor)
-	}
-	_, _, _ = wdClose.Call(activeRedirector.hOut)
-	_, _, _ = wdClose.Call(activeRedirector.hRet)
-	activeRedirector = nil
-	logf("redirector: WinDivert stopped")
+	tryUnloadWinDivertService()
 }
 
 func (r *wdRedirector) outLoop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logStack(fmt.Sprintf("FATAL panic in WinDivert outLoop: %v", rec))
+			r.running.Store(false)
+		}
+	}()
 	pkt := make([]byte, 65535)
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hOut, pkt)
@@ -449,6 +494,12 @@ func (r *wdRedirector) outLoop() {
 }
 
 func (r *wdRedirector) retLoop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logStack(fmt.Sprintf("FATAL panic in WinDivert retLoop: %v", rec))
+			r.running.Store(false)
+		}
+	}()
 	pkt := make([]byte, 65535)
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hRet, pkt)
@@ -471,6 +522,10 @@ func (r *wdRedirector) retLoop() {
 			continue
 		}
 		e.lastSeen.Store(time.Now().UnixNano())
+		if !e.orig.Addr().Is4() {
+			_ = wdSendPacket(r.hRet, p, &addr)
+			continue
+		}
 		o := e.orig.Addr().As4()
 		copy(p[12:16], o[:])
 		copy(p[16:20], e.clientIP[:])

@@ -22,6 +22,8 @@ var (
 	h2Clients   = make(map[string]*http.Client)
 	h2FailsMu   sync.RWMutex
 	h2Fails     = make(map[string]time.Time)
+	h2SuccessMu sync.RWMutex
+	h2Success   = make(map[string]time.Time)
 )
 
 func readH2MediaEnabled() bool         { return readFlag("h2_media_enabled", false) }
@@ -202,6 +204,9 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 		h2FailsMu.Lock()
 		h2Fails[host] = time.Now().Add(30 * time.Second)
 		h2FailsMu.Unlock()
+		h2SuccessMu.Lock()
+		delete(h2Success, host)
+		h2SuccessMu.Unlock()
 		return nil
 	}
 
@@ -278,30 +283,39 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 	client := getH2Client(selectedHost)
 	apiURL := fmt.Sprintf("https://%s/api", selectedHost)
 
-	// 2. Preflight check: HEAD request with 3s timeout to verify HTTP/2 support
-	preflightCtx, preCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	headReq, err := http.NewRequestWithContext(preflightCtx, http.MethodHead, apiURL, nil)
-	if err != nil {
-		preCancel()
-		return false
-	}
-	headReq.Header.Set("User-Agent", "Mozilla/5.0")
-	headResp, err := client.Do(headReq)
-	preCancel() // release context timer immediately after request completes
-	if err != nil {
-		h2FailsMu.Lock()
-		h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
-		h2FailsMu.Unlock()
-		return false
-	}
-	_ = headResp.Body.Close()
+	// 2. Preflight check: verify HTTP/2 support (cached for 5m to avoid adding 1 RTT to every media stream)
+	h2SuccessMu.RLock()
+	validUntil, preflightCached := h2Success[selectedHost]
+	h2SuccessMu.RUnlock()
 
-	// Must negotiate HTTP/2 and return 2xx / 405 / 501
-	if headResp.ProtoMajor < 2 || !(headResp.StatusCode >= 200 && headResp.StatusCode < 300 || headResp.StatusCode == http.StatusMethodNotAllowed || headResp.StatusCode == http.StatusNotImplemented) {
-		h2FailsMu.Lock()
-		h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
-		h2FailsMu.Unlock()
-		return false
+	if !preflightCached || now.After(validUntil) {
+		preflightCtx, preCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		headReq, err := http.NewRequestWithContext(preflightCtx, http.MethodHead, apiURL, nil)
+		if err != nil {
+			preCancel()
+			return false
+		}
+		headReq.Header.Set("User-Agent", "Mozilla/5.0")
+		headResp, err := client.Do(headReq)
+		preCancel() // release context timer immediately after request completes
+		if err != nil {
+			h2FailsMu.Lock()
+			h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
+			h2FailsMu.Unlock()
+			return false
+		}
+		_ = headResp.Body.Close()
+
+		// Must negotiate HTTP/2 and return 2xx / 405 / 501
+		if headResp.ProtoMajor < 2 || !(headResp.StatusCode >= 200 && headResp.StatusCode < 300 || headResp.StatusCode == http.StatusMethodNotAllowed || headResp.StatusCode == http.StatusNotImplemented) {
+			h2FailsMu.Lock()
+			h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
+			h2FailsMu.Unlock()
+			return false
+		}
+		h2SuccessMu.Lock()
+		h2Success[selectedHost] = time.Now().Add(5 * time.Minute)
+		h2SuccessMu.Unlock()
 	}
 
 	// 3. Initialize MTProto framer and client encryptor
@@ -326,15 +340,17 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 
 	// Single reply writer: response bodies are handed over out of band and
 	// reassembled in dispatch order before touching the shared CTR stream.
-	replyCh := make(chan h2Reply, 8)
+	replyCh := make(chan h2Reply, 16)
 	go func() {
 		seq := newH2ReplySequencer(func(body []byte) error {
 			encoded := encodeH2Reply(body, framer.proto)
 			encrypted := make([]byte, len(encoded))
 			cltEnc.XORKeyStream(encrypted, encoded)
+			_ = c.SetWriteDeadline(time.Now().Add(15 * time.Second))
 			if err := writeFull(c, encrypted); err != nil {
 				return err
 			}
+			_ = c.SetWriteDeadline(time.Time{})
 			// Count the full encoded frame (length prefix + body) so the
 			// H2 path's download statistics match the WSS path, which
 			// accounts whole frames.
