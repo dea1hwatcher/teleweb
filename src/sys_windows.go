@@ -80,7 +80,15 @@ func notifySignals(ch chan<- os.Signal) {
 	signal.Notify(ch, os.Interrupt)
 }
 
+// originalDestination is resolved through the NAT table published by the
+// WinDivert redirector: clients are rewritten to 127.0.0.1:<natPort>, and the
+// original Telegram endpoint is recovered from the accepted socket's port.
 func originalDestination(c net.Conn) (netip.AddrPort, error) {
+	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok && ta.Port > 0 {
+		if ap, ok := natLookup(uint16(ta.Port)); ok {
+			return ap, nil
+		}
+	}
 	return netip.AddrPort{}, errNoOriginalDst
 }
 
@@ -107,11 +115,5 @@ func setReuseAddr(raw syscall.RawConn) error {
 var errAdminRequired = errors.New("administrator privileges are required for transparent interception on Windows (run from an elevated console)")
 
 func setDialSockOpts(c syscall.RawConn) error {
-	return c.Control(func(fd uintptr) {
-		// Set SO_LINGER with zero timeout so aborted/cancelled dials terminate
-		// immediately with RST instead of having the Windows TCP stack retransmit
-		// SYN packets for tens of seconds in the background.
-		l := windows.Linger{Onoff: 1, Linger: 0}
-		_ = windows.SetsockoptLinger(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_LINGER, &l)
-	})
+	return setReuseAddr(c)
 }

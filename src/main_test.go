@@ -145,6 +145,13 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 		"2001:b88:3::1":        5,
 		"2001:67c:4e8::1":      2,
 		"2001:b88:1::1":        2,
+		// Official Telegram IPv6 endpoints
+		"2001:b28:f23d:f001::a": 1,
+		"2001:b28:f23d:f003::a": 3,
+		"2001:b28:f23f:f005::a": 5,
+		"2001:b28:f23c::1":      1,
+		"2001:b28::1":          2,
+		"2a0a:f280::1":          2,
 		"2600::1":              0, // Non-Telegram IPv6
 	}
 	for raw, want := range v6Cases {
@@ -1208,6 +1215,34 @@ func TestPrepareUTLSForHTTP1(t *testing.T) {
 	uConn := utls.UClient(c1, uConfig, utls.HelloChrome_Auto)
 	if err := prepareUTLSForHTTP1(uConn); err != nil {
 		t.Fatalf("prepareUTLSForHTTP1 failed: %v", err)
+	}
+
+	found := false
+	for _, ext := range uConn.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			found = true
+			if len(alpn.AlpnProtocols) != 1 || alpn.AlpnProtocols[0] != "http/1.1" {
+				t.Fatalf("unexpected ALPN protocols: %#v", alpn.AlpnProtocols)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ALPNExtension not found on UConn after prepareUTLSForHTTP1")
+	}
+}
+
+func TestPrepareUTLSForHTTP1_Firefox(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	uConfig := &utls.Config{
+		ServerName:         "test.example.com",
+		InsecureSkipVerify: true,
+	}
+	uConn := utls.UClient(c1, uConfig, utls.HelloFirefox_Auto)
+	if err := prepareUTLSForHTTP1(uConn); err != nil {
+		t.Fatalf("prepareUTLSForHTTP1 with Firefox failed: %v", err)
 	}
 
 	found := false
@@ -2847,6 +2882,15 @@ func TestParseProcNetTCPIP(t *testing.T) {
 		t.Fatalf("unexpected parsed addr: %s:%d, want 91.108.56.100:443", addr2, port2)
 	}
 
+	// IPv6 from /proc/net/tcp6: 2001:b28:f23d:f001::1:443 -> 280B012001F03DF20000000001000000:01BB
+	addr6, port6, ok6 := parseProcNetTCPIP("280B012001F03DF20000000001000000:01BB")
+	if !ok6 {
+		t.Fatal("expected ok = true for IPv6 /proc/net/tcp6 entry")
+	}
+	if addr6.String() != "2001:b28:f23d:f001::1" || port6 != 443 {
+		t.Fatalf("unexpected parsed addr6: %s:%d, want 2001:b28:f23d:f001::1:443", addr6, port6)
+	}
+
 	// Invalid
 	if _, _, ok := parseProcNetTCPIP("invalid"); ok {
 		t.Fatal("expected ok = false for invalid format")
@@ -2859,18 +2903,20 @@ func TestParseProcNetTCPContent(t *testing.T) {
    1: 0200A8C0:D431 33A79A95:01BB 01 00000000:00000000 00:00000000 00000000 10123        0 54321 1 0000000000000000 100 0 0 10 0
    2: 0200A8C0:D432 64386C5B:01BB 02 00000000:00000000 00:00000000 00000000 10456        0 54322 1 0000000000000000 100 0 0 10 0
    3: 0200A8C0:D433 2EBEC28E:01BB 01 00000000:00000000 00:00000000 00000000 10789        0 54323 1 0000000000000000 100 0 0 10 0
+   4: 0000000000000000000000000100007F:13AD 280B012001F03DF20000000001000000:01BB 01 00000000:00000000 00:00000000 00000000 10999        0 54324 1 0000000000000000 100 0 0 10 0
 `
 	// Line 0: LISTEN (state 0A) -> ignored
 	// Line 1: ESTABLISHED (state 01) to 149.154.167.51 (Telegram DC2) with UID 10123 -> matched!
 	// Line 2: SYN_SENT (state 02) to 91.108.56.100 (Telegram DC5) with UID 10456 -> matched!
 	// Line 3: ESTABLISHED (state 01) to 142.190.190.46 (Non-Telegram IP) with UID 10789 -> ignored!
+	// Line 4: ESTABLISHED (state 01) to 2001:b28:f23d:f001::1 (Telegram IPv6) with UID 10999 -> matched!
 
 	uids := parseProcNetTCPContent(fakeProcNetTCP)
-	if len(uids) != 2 {
-		t.Fatalf("expected 2 detected UIDs from Telegram sockets, got %d: %#v", len(uids), uids)
+	if len(uids) != 3 {
+		t.Fatalf("expected 3 detected UIDs from Telegram sockets, got %d: %#v", len(uids), uids)
 	}
-	if uids[0] != 10123 || uids[1] != 10456 {
-		t.Fatalf("unexpected UIDs: %#v, want [10123, 10456]", uids)
+	if uids[0] != 10123 || uids[1] != 10456 || uids[2] != 10999 {
+		t.Fatalf("unexpected UIDs: %#v, want [10123, 10456, 10999]", uids)
 	}
 }
 
@@ -3035,6 +3081,9 @@ func TestIsTelegramEndpoint_IPv6(t *testing.T) {
 		"2001:b88::1",
 		"2001:b88:1000::5",
 		"2001:67c:4e8::2",
+		"2001:b28::1",
+		"2001:b28:f23d:f001::a",
+		"2a0a:f280::1",
 	} {
 		addr := netip.MustParseAddr(ip)
 		if !isTelegramEndpointV6(addr) {
@@ -3587,6 +3636,56 @@ func TestWorkerCooldowns_SweepAndOpportunisticCleanup(t *testing.T) {
 		t.Fatalf("expected activeHost to remain in workerCooldowns")
 	}
 	workerCooldowns.Delete(activeHost)
+}
+
+func TestSweepRouteCaches_BoundedMapsAndH2Success(t *testing.T) {
+	directDialFailMu.Lock()
+	for i := 0; i < 300; i++ {
+		directDialFails[fmt.Sprintf("1.1.1.%d:443", i)] = time.Now().Add(time.Minute)
+	}
+	directDialFailMu.Unlock()
+
+	cdn203FailMu.Lock()
+	for i := 0; i < 300; i++ {
+		cdn203Fails[fmt.Sprintf("2.2.2.%d:443", i)] = time.Now().Add(time.Minute)
+	}
+	cdn203FailMu.Unlock()
+
+	h2SuccessMu.Lock()
+	h2Success["expired.host.test"] = time.Now().Add(-10 * time.Second)
+	h2Success["valid.host.test"] = time.Now().Add(5 * time.Minute)
+	h2SuccessMu.Unlock()
+
+	sweepRouteCaches()
+
+	directDialFailMu.Lock()
+	lenDD := len(directDialFails)
+	directDialFails = make(map[string]time.Time)
+	directDialFailMu.Unlock()
+
+	cdn203FailMu.Lock()
+	lenCDN := len(cdn203Fails)
+	cdn203Fails = make(map[string]time.Time)
+	cdn203FailMu.Unlock()
+
+	h2SuccessMu.Lock()
+	_, hasExpired := h2Success["expired.host.test"]
+	_, hasValid := h2Success["valid.host.test"]
+	delete(h2Success, "valid.host.test")
+	h2SuccessMu.Unlock()
+
+	if lenDD > 256 {
+		t.Fatalf("expected directDialFails bounded <= 256, got %d", lenDD)
+	}
+	if lenCDN > 256 {
+		t.Fatalf("expected cdn203Fails bounded <= 256, got %d", lenCDN)
+	}
+	if hasExpired {
+		t.Fatalf("expected expired.host.test to be swept from h2Success")
+	}
+	if !hasValid {
+		t.Fatalf("expected valid.host.test to remain in h2Success")
+	}
 }
 
 func TestWsPool_DeepSleepIdleNoRefill(t *testing.T) {

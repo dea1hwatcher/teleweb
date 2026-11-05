@@ -103,22 +103,53 @@ func originalDestination(c net.Conn) (netip.AddrPort, error) {
 	}
 	var addr netip.AddrPort
 	var inner error
+	isV6 := false
+	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok && ta.IP != nil && ta.IP.To4() == nil {
+		isV6 = true
+	}
 	e = raw.Control(func(fd uintptr) {
 		var sa [128]byte
-		l := uint32(16)
-		if err := getOriginalDst(fd, unsafe.Pointer(&sa[0]), &l); err != nil {
-			inner = err
-			return
+		if isV6 {
+			l6 := uint32(28)
+			if err := getOriginalDstV6(fd, unsafe.Pointer(&sa[0]), &l6); err == nil {
+				port := binary.BigEndian.Uint16(sa[2:4])
+				if a, ok := netip.AddrFromSlice(sa[8:24]); ok {
+					addr = netip.AddrPortFrom(a.Unmap(), port)
+					return
+				}
+			}
+			l4 := uint32(16)
+			if err := getOriginalDst(fd, unsafe.Pointer(&sa[0]), &l4); err == nil {
+				port := binary.BigEndian.Uint16(sa[2:4])
+				ip := net.IPv4(sa[4], sa[5], sa[6], sa[7])
+				if a, ok := netip.AddrFromSlice(ip); ok {
+					addr = netip.AddrPortFrom(a.Unmap(), port)
+					return
+				}
+			} else {
+				inner = err
+			}
+		} else {
+			l4 := uint32(16)
+			if err := getOriginalDst(fd, unsafe.Pointer(&sa[0]), &l4); err == nil {
+				port := binary.BigEndian.Uint16(sa[2:4])
+				ip := net.IPv4(sa[4], sa[5], sa[6], sa[7])
+				if a, ok := netip.AddrFromSlice(ip); ok {
+					addr = netip.AddrPortFrom(a.Unmap(), port)
+					return
+				}
+			}
+			l6 := uint32(28)
+			if err := getOriginalDstV6(fd, unsafe.Pointer(&sa[0]), &l6); err == nil {
+				port := binary.BigEndian.Uint16(sa[2:4])
+				if a, ok := netip.AddrFromSlice(sa[8:24]); ok {
+					addr = netip.AddrPortFrom(a.Unmap(), port)
+					return
+				}
+			} else {
+				inner = err
+			}
 		}
-		port := binary.BigEndian.Uint16(sa[2:4])
-		ip := net.IPv4(sa[4], sa[5], sa[6], sa[7])
-		a, ok := netip.AddrFromSlice(ip)
-		if !ok {
-			inner = errors.New("bad original IPv4 address")
-			return
-		}
-		a = a.Unmap()
-		addr = netip.AddrPortFrom(a, port)
 	})
 	if e != nil {
 		return netip.AddrPort{}, e
