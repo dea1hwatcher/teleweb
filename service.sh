@@ -60,7 +60,10 @@ mkdir -p /data/adb/teleweb
 chmod 700 /data/adb/teleweb 2>/dev/null
 export TELEWEB_DIR=/data/adb/teleweb
 export TELEWEB_MOD="$MODDIR"
-export GOMEMLIMIT=48MiB
+# No GOMEMLIMIT here on purpose. A hard heap ceiling drove the collector into a
+# death spiral on media bursts (the ~220% CPU incident on Realme), and the Go
+# runtime honours this variable even though the code no longer sets it - so
+# exporting it here would silently re-enable the regression the code fix removed.
 export GOGC=50
 
 chmod 0755 "$MODDIR/bin/tgws" 2>/dev/null
