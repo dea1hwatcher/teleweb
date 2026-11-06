@@ -8,6 +8,28 @@ import (
 	"testing"
 )
 
+// TestLinuxDefaultBaseDirFollowsAndroidGate pins the one decision that separates
+// the Android module from the Linux desktop port: the two share GOOS=linux, so a
+// wrong answer sends the daemon to the wrong state directory. The probe is
+// replaced rather than faked, because the machine running the tests is not
+// expected to carry /system/build.prop.
+func TestLinuxDefaultBaseDirFollowsAndroidGate(t *testing.T) {
+	origProbe, origGate := androidProbe, androidDetection
+	t.Cleanup(func() { androidProbe, androidDetection = origProbe, origGate })
+
+	androidProbe = func() bool { return true }
+	androidDetection = &androidGate{}
+	if got := defaultBaseDir(); got != "/data/adb/teleweb" {
+		t.Fatalf("android baseDir=%q, want /data/adb/teleweb", got)
+	}
+
+	androidProbe = func() bool { return false }
+	androidDetection = &androidGate{}
+	if got := defaultBaseDir(); got == "/data/adb/teleweb" {
+		t.Fatal("desktop Linux must not use the module directory")
+	}
+}
+
 // TestDecodeOriginalDst covers the two sockaddr layouts that
 // IP(6)T_SO_ORIGINAL_DST writes. The parse used to be written out four times
 // inside originalDestination, which is how a wrong offset would survive review.

@@ -17,23 +17,31 @@ import (
 	"unsafe"
 )
 
-var androidDetection = struct {
+// androidGate memoizes the Android detection for the process lifetime.
+type androidGate struct {
 	once sync.Once
 	val  bool
-}{}
+}
+
+var androidDetection = &androidGate{}
+
+// androidProbe answers whether this Linux build is running inside Android. It
+// is a variable so a test can pin the answer instead of having to fake
+// /system/build.prop and /system/bin/app_process on the test machine.
+var androidProbe = func() bool {
+	if _, err := os.Stat("/system/build.prop"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/system/bin/app_process"); err == nil {
+		return true
+	}
+	return false
+}
 
 // isAndroidRuntime separates the Android module from the Linux desktop port:
 // both build with GOOS=linux, so the distinction must be made at runtime.
 func isAndroidRuntime() bool {
-	androidDetection.once.Do(func() {
-		if _, err := os.Stat("/system/build.prop"); err == nil {
-			androidDetection.val = true
-			return
-		}
-		if _, err := os.Stat("/system/bin/app_process"); err == nil {
-			androidDetection.val = true
-		}
-	})
+	androidDetection.once.Do(func() { androidDetection.val = androidProbe() })
 	return androidDetection.val
 }
 
