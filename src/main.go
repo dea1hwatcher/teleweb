@@ -47,22 +47,25 @@ const (
 )
 
 var (
-	baseDir            = envOr("TELEWEB_DIR", defaultBaseDir())
-	startAt            = time.Now()
-	active             int64
-	wsCount            int64
-	failCnt            int64
-	trafficUpBytes     int64 // Telegram client -> WSS, cumulative for this daemon lifetime
-	trafficDownBytes   int64 // WSS -> Telegram client, cumulative for this daemon lifetime
-	connSeq            int64
-	statsMu            sync.Mutex
-	dcCounts           = map[string]int{}
-	logMu              sync.Mutex
-	logFile            *os.File
-	logWrites          uint64
-	lastLogRaw         string
-	repeatLogCount     int
-	lastRepeatLog      time.Time
+	baseDir          = envOr("TELEWEB_DIR", defaultBaseDir())
+	startAt          = time.Now()
+	active           int64
+	wsCount          int64
+	failCnt          int64
+	trafficUpBytes   int64 // Telegram client -> WSS, cumulative for this daemon lifetime
+	trafficDownBytes int64 // WSS -> Telegram client, cumulative for this daemon lifetime
+	connSeq          int64
+	statsMu          sync.Mutex
+	dcCounts         = map[string]int{}
+	logMu            sync.Mutex
+	logFile          *os.File
+	logWrites        uint64
+	lastLogRaw       string
+	repeatLogCount   int
+	lastRepeatLog    time.Time
+	// logSuppressed counts the lines the dedupe folded into a summary, so a
+	// storm that looks quiet in the log is still visible in the status.
+	logSuppressed      atomic.Uint64
 	appCacheMu         sync.Mutex
 	appCache           []App
 	uidCache           []int
@@ -222,6 +225,7 @@ type Status struct {
 	GCPauseAvgMs      float64        `json:"gcPauseAvgMs"`
 	HeapLiveBytes     int64          `json:"heapLiveBytes"`
 	Log               string         `json:"log"`
+	LogSuppressed     uint64         `json:"logSuppressed"`
 	CFPriority        bool           `json:"cfPriority"`
 	CFBalance         bool           `json:"cfBalance"`
 	CustomCFDomain    string         `json:"customCFDomain"`
@@ -389,6 +393,7 @@ func flushLogDedupe() {
 	defer logMu.Unlock()
 	flushRepeatLocked(time.Now())
 	lastLogRaw = ""
+	logSuppressed.Store(0)
 }
 
 func logf(format string, a ...any) {
@@ -400,6 +405,7 @@ func logf(format string, a ...any) {
 
 	if raw == lastLogRaw {
 		repeatLogCount++
+		logSuppressed.Add(1)
 		// Flush summary periodically during extended duplicate storms
 		if now.Sub(lastRepeatLog) >= 5*time.Second || repeatLogCount >= 50 {
 			flushRepeatLocked(now)
@@ -538,8 +544,11 @@ func writeEnabled(v bool) error {
 
 // cfgFileCache memoizes config-file parses for the hot per-connection path.
 // Entries are validated by a single Stat (mtime+size) signature, so a dial
-// performs one cheap syscall instead of several full file reads and regex passes,
-// while external edits are picked up almost immediately.
+// performs one cheap syscall instead of several full file reads and regex
+// passes, while external edits are picked up on the next call. The signature is
+// the whole invalidation mechanism: there is no time limit, which holds while
+// the filesystem reports nanosecond mtime (ext4, f2fs and NTFS all do) and a
+// rewrite of a flag file changes its size or timestamp.
 var cfgFileCache = struct {
 	mu      sync.Mutex
 	entries map[string]cfgFileEntry
@@ -2708,6 +2717,7 @@ func liveMetrics(s *Status) {
 	s.Active = atomic.LoadInt64(&active)
 	s.WS = atomic.LoadInt64(&wsCount)
 	s.Fail = atomic.LoadInt64(&failCnt)
+	s.LogSuppressed = logSuppressed.Load()
 	s.DC = dc
 	s.MemNowBytes = memNow
 	s.MemPeakBytes = memPeak
