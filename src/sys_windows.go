@@ -102,6 +102,10 @@ func attachParentConsole() {
 	}
 }
 
+// startConsole attaches standard I/O to the console tgws was launched from,
+// so the CLI still prints when the binary is built with -H=windowsgui.
+func startConsole() { attachParentConsole() }
+
 func setCmdNoWindow(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
