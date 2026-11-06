@@ -537,25 +537,6 @@ func TestRepeatedEarlyEOFTemporarilyCoolsRoute(t *testing.T) {
 	}
 }
 
-func TestAppProcessMatches(t *testing.T) {
-	cases := []struct {
-		cmd, pkg string
-		want     bool
-	}{
-		{"com.exteragram.messenger\x00", "com.exteragram.messenger", true},
-		{"com.exteragram.messenger:push\x00", "com.exteragram.messenger", true},
-		{"com.exteragram.messenger2", "com.exteragram.messenger", false},
-		{"org.telegram.messenger", "com.exteragram.messenger", false},
-		{"org.nemogram.messenger\x00", "org.nemogram.messenger", true},
-		{"org.nemogram\x00", "org.nemogram", true},
-	}
-	for _, tc := range cases {
-		if got := appProcessMatches(tc.cmd, tc.pkg); got != tc.want {
-			t.Errorf("appProcessMatches(%q,%q)=%t want %t", tc.cmd, tc.pkg, got, tc.want)
-		}
-	}
-}
-
 func TestDecodeCFProxyDomain(t *testing.T) {
 	cases := map[string]string{
 		"virkgj.com":     "pclead.co.uk",
@@ -1643,7 +1624,7 @@ func TestWorkerCooldownAndRateLimit(t *testing.T) {
 		t.Fatalf("unexpected RateLimitError string: %s", rle.Error())
 	}
 
-	markWorkerCooldown(host, rle.RetryAfter)
+	markWorkerCooldownDC(host, 0, rle.RetryAfter)
 	if !isWorkerInCooldown(host) {
 		t.Fatal("worker should be in cooldown after markWorkerCooldown")
 	}
@@ -1654,7 +1635,7 @@ func TestWorkerCooldownAndRateLimit(t *testing.T) {
 	}
 
 	// Exponential backoff test (strike 1 -> 30s)
-	markWorkerCooldown(host, 0)
+	markWorkerCooldownDC(host, 0, 0)
 	v, ok := workerCooldowns.Load(host)
 	if !ok {
 		t.Fatal("workerCooldowns entry missing")
@@ -1669,7 +1650,7 @@ func TestWorkerCooldownAndRateLimit(t *testing.T) {
 	}
 
 	// Strike 2 -> 60s
-	markWorkerCooldown(host, 0)
+	markWorkerCooldownDC(host, 0, 0)
 	v, ok = workerCooldowns.Load(host)
 	if !ok {
 		t.Fatal("workerCooldowns entry missing")
