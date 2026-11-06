@@ -2710,66 +2710,12 @@ func buildStatus(apps []App) Status {
 	return s
 }
 
-func currentStatusMetrics() Status {
-	dc := map[string]int{}
+// liveMetrics overlays this process's live counters on an already assembled
+// snapshot. Every path that reports on a running daemon goes through here, so a
+// new counter is added once instead of in each caller.
+func liveMetrics(s *Status) {
 	statsMu.Lock()
-	for k, v := range dcCounts {
-		dc[k] = v
-	}
-	statsMu.Unlock()
-	memNow, memPeak := processMemoryBytes()
-	up := atomic.LoadInt64(&trafficUpBytes)
-	down := atomic.LoadInt64(&trafficDownBytes)
-	s := Status{
-		Enabled:        readEnabled(),
-		Port:           defaultPort,
-		Running:        true,
-		Uptime:         int64(time.Since(startAt).Seconds()),
-		Active:         atomic.LoadInt64(&active),
-		WS:             atomic.LoadInt64(&wsCount),
-		Fail:           atomic.LoadInt64(&failCnt),
-		DC:             dc,
-		MemNowBytes:    memNow,
-		MemPeakBytes:   memPeak,
-		TrafficUpBytes: up,
-		TrafficDownBytes: down,
-		TrafficTotalBytes: up + down,
-		Redirector:     localRedirectorHealthy(),
-		CFPriority:     readCFPriority(),
-		CFBalance:      readCFBalance(),
-		CustomCFDomain: readCustomCFDomain(),
-		CustomCFWorker: readCustomCFWorker(),
-		DCOverrides:    readDCOverridesRaw(),
-		PoolSize:       readPoolSize(),
-		DoHEnabled:     readDoHEnabled(),
-		ForceTestDC:    readForceTestDC(),
-		H2MediaEnabled: readH2MediaEnabled(),
-		DC203DirectTCP: readDC203DirectTCP(),
-		LastCFPoP: func() string {
-			if p := lastCFPoP.Load(); p != nil {
-				return *p
-			}
-			return ""
-		}(),
-		LastCFRay: func() string {
-			if p := lastCFRay.Load(); p != nil {
-				return *p
-			}
-			return ""
-		}(),
-	}
-	if globalWsPool != nil {
-		s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
-	}
-	fillGCStats(&s)
-	return s
-}
-
-func currentStatus() Status {
-	apps, _ := installedApps()
-	s := buildStatus(apps)
-	dc := map[string]int{}
-	statsMu.Lock()
+	dc := make(map[string]int, len(dcCounts))
 	for k, v := range dcCounts {
 		dc[k] = v
 	}
@@ -2788,7 +2734,22 @@ func currentStatus() Status {
 	s.TrafficUpBytes = up
 	s.TrafficDownBytes = down
 	s.TrafficTotalBytes = up + down
-	fillGCStats(&s)
+	fillGCStats(s)
+}
+
+// statusMetrics is the snapshot that gets persisted: the config flags and the
+// live counters, without the app list and the log tail, which status() rebuilds
+// from apps.json and the log file for the API answer.
+func statusMetrics() Status {
+	s := buildStatus(nil)
+	liveMetrics(&s)
+	return s
+}
+
+func currentStatus() Status {
+	apps, _ := installedApps()
+	s := buildStatus(apps)
+	liveMetrics(&s)
 	return s
 }
 func status() Status {
@@ -2846,7 +2807,7 @@ func status() Status {
 	return s
 }
 func writeStatus() {
-	s := currentStatusMetrics()
+	s := statusMetrics()
 	b, err := json.Marshal(s)
 	if err != nil {
 		return
