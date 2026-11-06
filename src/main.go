@@ -1657,30 +1657,37 @@ func findBin(name string) string {
 	}
 	return ""
 }
+// deleteChainJumps removes the jumps an earlier run installed on OUTPUT: the
+// global one, the root-excluding one and the per-UID ones. Each loop repeats
+// until iptables reports nothing left to delete, which clears rules from every
+// version this project has shipped before a new mode is installed.
+func deleteChainJumps(bin string, uids []int, chain string) {
+	for i := 0; i < 16; i++ {
+		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
+			break
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
+			break
+		}
+	}
+	for _, uid := range uids {
+		for i := 0; i < 16; i++ {
+			if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain) != nil {
+				break
+			}
+		}
+	}
+}
+
 func iptSetup(bin string, uids []int, cidrs []string, chain string, family string) error {
 	if bin == "" {
 		return fmt.Errorf("%s is missing", family)
 	}
 	// Remove both previous global, root-excluding and UID-scoped jumps before
 	// selecting a mode.
-	for i := 0; i < 8; i++ {
-		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
-			break
-		}
-	}
-	for i := 0; i < 8; i++ {
-		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
-			break
-		}
-	}
-	for _, uid := range uids {
-		for i := 0; i < 8; i++ {
-			e := runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain)
-			if e != nil {
-				break
-			}
-		}
-	}
+	deleteChainJumps(bin, uids, chain)
 	_ = runCmd(bin, "-t", "nat", "-F", chain)
 	if err := runCmd(bin, "-t", "nat", "-N", chain); err != nil { // likely already exists
 		if e := runCmd(bin, "-t", "nat", "-F", chain); e != nil {
@@ -1711,23 +1718,7 @@ func iptCleanup(bin string, uids []int, chain string) {
 	}
 	// Remove the previous v1.2 global jump as well as this version's UID-scoped
 	// and desktop (root-excluding) jumps.
-	for i := 0; i < 8; i++ {
-		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
-			break
-		}
-	}
-	for i := 0; i < 8; i++ {
-		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
-			break
-		}
-	}
-	for _, uid := range uids {
-		for i := 0; i < 16; i++ {
-			if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain) != nil {
-				break
-			}
-		}
-	}
+	deleteChainJumps(bin, uids, chain)
 	_ = runCmd(bin, "-t", "nat", "-F", chain)
 	_ = runCmd(bin, "-t", "nat", "-X", chain)
 }

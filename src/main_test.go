@@ -55,6 +55,33 @@ func TestParseProcCgroupsNormalizesRootAndPath(t *testing.T) {
 	}
 }
 
+// makeObfuscatedInit builds an obfuscated2 init packet whose decrypted tail
+// carries the transport tag proto and the DC index, which is what parseMTProtoDC
+// reads. The header bytes are the key and IV material, so their value only has
+// to stay stable: one deterministic pattern serves every caller.
+func makeObfuscatedInit(t *testing.T, dcIndex int16, proto uint32) []byte {
+	t.Helper()
+	init := make([]byte, 64)
+	for i := range init {
+		init[i] = byte(i*13 + 7)
+	}
+	block, err := aes.NewCipher(init[8:40])
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := cipher.NewCTR(block, init[40:56])
+	stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
+	keystream := make([]byte, 8)
+	stream.XORKeyStream(keystream, make([]byte, 8))
+	plainTail := make([]byte, 8)
+	binary.LittleEndian.PutUint32(plainTail[:4], proto)
+	binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
+	for i := 0; i < 8; i++ {
+		init[56+i] = plainTail[i] ^ keystream[i]
+	}
+	return init
+}
+
 func TestWebSocketHostForDC(t *testing.T) {
 	want := map[int]string{
 		1: "kws1.web.telegram.org",
@@ -469,28 +496,7 @@ func TestWebSocketUpgradeHandshake(t *testing.T) {
 }
 
 func TestParseMTProtoDCAndMediaFlag(t *testing.T) {
-	makeInit := func(dcIndex int16) []byte {
-		init := make([]byte, 64)
-		for i := range init {
-			init[i] = byte(i*13 + 7)
-		}
-		key := init[8:40]
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stream := cipher.NewCTR(block, init[40:56])
-		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-		keystream := make([]byte, 8)
-		stream.XORKeyStream(keystream, make([]byte, 8))
-		plainTail := make([]byte, 8)
-		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
-		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
-		for i := 0; i < 8; i++ {
-			init[56+i] = plainTail[i] ^ keystream[i]
-		}
-		return init
-	}
+	makeInit := func(dcIndex int16) []byte { return makeObfuscatedInit(t, dcIndex, 0xEEEEEEEE) }
 	if dc, media, ok := parseMTProtoDC(makeInit(2)); !ok || dc != 2 || media {
 		t.Fatalf("normal DC parse=(%d,%t,%t)", dc, media, ok)
 	}
@@ -552,28 +558,7 @@ func TestDecodeCFProxyDomain(t *testing.T) {
 }
 
 func TestDC203Normalization(t *testing.T) {
-	makeInit := func(dcIndex int16) []byte {
-		init := make([]byte, 64)
-		for i := range init {
-			init[i] = byte(i*13 + 7)
-		}
-		key := init[8:40]
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stream := cipher.NewCTR(block, init[40:56])
-		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-		keystream := make([]byte, 8)
-		stream.XORKeyStream(keystream, make([]byte, 8))
-		plainTail := make([]byte, 8)
-		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
-		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
-		for i := 0; i < 8; i++ {
-			init[56+i] = plainTail[i] ^ keystream[i]
-		}
-		return init
-	}
+	makeInit := func(dcIndex int16) []byte { return makeObfuscatedInit(t, dcIndex, 0xEEEEEEEE) }
 	dc, isMedia, ok := parseMTProtoDC(makeInit(203))
 	if !ok || dc != 203 || isMedia {
 		t.Fatalf("DC 203 detection failed: dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
@@ -2180,28 +2165,7 @@ func TestApiMain_NewFeaturesConfig(t *testing.T) {
 }
 
 func TestParseMTProtoDC_TestDCs(t *testing.T) {
-	makeInit := func(dcIndex int16) []byte {
-		init := make([]byte, 64)
-		for i := range init {
-			init[i] = byte(i*17 + 3)
-		}
-		key := init[8:40]
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stream := cipher.NewCTR(block, init[40:56])
-		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-		keystream := make([]byte, 8)
-		stream.XORKeyStream(keystream, make([]byte, 8))
-		plainTail := make([]byte, 8)
-		binary.LittleEndian.PutUint32(plainTail[:4], 0xEFEFEFEF)
-		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
-		for i := 0; i < 8; i++ {
-			init[56+i] = plainTail[i] ^ keystream[i]
-		}
-		return init
-	}
+	makeInit := func(dcIndex int16) []byte { return makeObfuscatedInit(t, dcIndex, 0xEFEFEFEF) }
 
 	// 1. Positive Test DCs (10001-10003)
 	if dc, media, ok := parseMTProtoDC(makeInit(10001)); !ok || dc != 10001 || media {
@@ -3314,28 +3278,7 @@ func TestServeConnRefusesForgedCDN203(t *testing.T) {
 		logMu.Unlock()
 	}()
 
-	makeInit := func(dcIndex int16) []byte {
-		init := make([]byte, 64)
-		for i := range init {
-			init[i] = byte(i*13 + 7)
-		}
-		key := init[8:40]
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stream := cipher.NewCTR(block, init[40:56])
-		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-		keystream := make([]byte, 8)
-		stream.XORKeyStream(keystream, make([]byte, 8))
-		plainTail := make([]byte, 8)
-		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
-		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
-		for i := 0; i < 8; i++ {
-			init[56+i] = plainTail[i] ^ keystream[i]
-		}
-		return init
-	}
+	makeInit := func(dcIndex int16) []byte { return makeObfuscatedInit(t, dcIndex, 0xEEEEEEEE) }
 
 	c1, c2 := net.Pipe()
 	defer c1.Close()
