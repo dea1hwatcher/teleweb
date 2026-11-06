@@ -178,9 +178,9 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 		"2001:b28:f23d:f003::a": 3,
 		"2001:b28:f23f:f005::a": 5,
 		"2001:b28:f23c::1":      1,
-		"2001:b28::1":          2,
+		"2001:b28::1":           2,
 		"2a0a:f280::1":          2,
-		"2600::1":              0, // Non-Telegram IPv6
+		"2600::1":               0, // Non-Telegram IPv6
 	}
 	for raw, want := range v6Cases {
 		if got := dcFor(netip.MustParseAddr(raw)); got != want {
