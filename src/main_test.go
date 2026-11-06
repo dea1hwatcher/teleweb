@@ -2779,6 +2779,7 @@ func TestStatusSnapshotsDifferOnlyInAppsAndLog(t *testing.T) {
 		s.TrafficUpBytes, s.TrafficDownBytes, s.TrafficTotalBytes = 0, 0, 0
 		s.PoolHits, s.PoolMisses, s.PoolIdle = 0, 0, 0
 		s.GCNum, s.GCCPUPercent, s.GCPauseAvgMs, s.HeapLiveBytes = 0, 0, 0, 0
+		s.LogSuppressed = 0
 	}
 	if !reflect.DeepEqual(api, persisted) {
 		t.Fatalf("the two snapshots disagree outside Apps and Log:\n api       %#v\n persisted %#v", api, persisted)
@@ -3416,6 +3417,7 @@ func TestLogDeduplication(t *testing.T) {
 	lastLogRaw = ""
 	repeatLogCount = 0
 	logMu.Unlock()
+	logSuppressed.Store(0)
 	defer func() {
 		baseDir = origDir
 		logMu.Lock()
@@ -3426,6 +3428,7 @@ func TestLogDeduplication(t *testing.T) {
 		lastLogRaw = ""
 		repeatLogCount = 0
 		logMu.Unlock()
+		logSuppressed.Store(0)
 	}()
 
 	// Log identical lines 5 times
@@ -3434,7 +3437,15 @@ func TestLogDeduplication(t *testing.T) {
 	}
 	// Log a different line to trigger flush
 	logf("test-different-line")
+	// One line is written, the other four are folded into the summary; the
+	// counter is what the UI shows, so it has to match that folding exactly.
+	if got := logSuppressed.Load(); got != 4 {
+		t.Fatalf("suppressed counter = %d after five identical lines, want 4", got)
+	}
 	flushLogDedupe()
+	if got := logSuppressed.Load(); got != 0 {
+		t.Fatalf("counter = %d after the log was cleared, want 0", got)
+	}
 
 	b, err := os.ReadFile(path("tgws.log"))
 	if err != nil {
