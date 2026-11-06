@@ -2732,6 +2732,10 @@ func liveMetrics(s *Status) {
 // from apps.json and the log file for the API answer.
 func statusMetrics() Status {
 	s := buildStatus(nil)
+	// The persisted snapshot is rewritten every five seconds and its log tail
+	// is never read back: status() rebuilds it from the log file for the API
+	// answer. buildStatus fills Log for that answer, so drop it here.
+	s.Log = ""
 	liveMetrics(&s)
 	return s
 }

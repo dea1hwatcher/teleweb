@@ -2687,6 +2687,12 @@ func TestWriteStatusOmitsAppsAndLog(t *testing.T) {
 		appCacheMu.Unlock()
 	})
 
+	// A log with content, so "the file must not carry the log" is a real
+	// assertion instead of a vacuous one over an empty directory.
+	if err := os.WriteFile(path("tgws.log"), []byte("line one\nline two\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
 	writeStatus()
 	b, err := os.ReadFile(path("status.json"))
 	if err != nil {
@@ -2710,6 +2716,10 @@ func TestWriteStatusOmitsAppsAndLog(t *testing.T) {
 	// directly: installedApps() answers nothing at all on desktop platforms.
 	if got := buildStatus(appCache); len(got.Apps) != 1 || got.Apps[0].IconNormal != "aGVsbG8=" {
 		t.Fatalf("status snapshot lost the app list: %#v", got.Apps)
+	}
+	// ...and the log: dropping it from the file must not drop it from the answer.
+	if got := status(); got.Log == "" {
+		t.Fatal("the API answer lost the log tail together with the file copy")
 	}
 }
 
@@ -2753,11 +2763,19 @@ func TestStatusSnapshotsDifferOnlyInAppsAndLog(t *testing.T) {
 		appCacheMu.Unlock()
 	})
 
+	// Seed the log so the Apps/Log split below compares real content.
+	if err := os.WriteFile(path("tgws.log"), []byte("line one\nline two\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
 	api := currentStatus()
 	persisted := statusMetrics()
 
 	if len(api.Apps) != 1 || api.Apps[0].IconNormal == "" {
 		t.Fatalf("the API snapshot lost the app list: %#v", api.Apps)
+	}
+	if api.Log == "" {
+		t.Fatal("the API snapshot has no log to compare against; seed tgws.log in the setup")
 	}
 	if persisted.Apps != nil || persisted.Log != "" {
 		t.Fatalf("the persisted snapshot carries the API-only fields: %d apps, log %q", len(persisted.Apps), persisted.Log)
