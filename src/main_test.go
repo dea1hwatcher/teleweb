@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -2785,6 +2786,57 @@ func TestLoadCachedAppsDropsFabricatedEntries(t *testing.T) {
 	got, uids := loadCachedApps()
 	if len(got) != 1 || got[0].Pkg != "org.telegram.messenger" || len(uids) != 1 || uids[0] != 10123 {
 		t.Fatalf("fabricated entry survived: %#v uids=%v", got, uids)
+	}
+}
+
+func TestStatusSnapshotsDifferOnlyInAppsAndLog(t *testing.T) {
+	// The API answer and the persisted snapshot are assembled from the same two
+	// pieces: buildStatus for the flags and liveMetrics for the counters. This
+	// keeps a field added to Status from being wired into one path only - the
+	// mistake that a hand-rolled second mapping invites.
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	appCacheMu.Lock()
+	oldApps, oldUIDs := appCache, uidCache
+	appCache = []App{{Name: "Telegram", Pkg: "org.telegram.messenger", UID: 10123, IconNormal: "aGVsbG8="}}
+	uidCache = []int{10123}
+	appCacheMu.Unlock()
+	t.Cleanup(func() {
+		baseDir = oldDir
+		appCacheMu.Lock()
+		appCache, uidCache = oldApps, oldUIDs
+		appCacheMu.Unlock()
+	})
+
+	api := currentStatus()
+	persisted := statusMetrics()
+
+	if len(api.Apps) != 1 || api.Apps[0].IconNormal == "" {
+		t.Fatalf("the API snapshot lost the app list: %#v", api.Apps)
+	}
+	if persisted.Apps != nil || persisted.Log != "" {
+		t.Fatalf("the persisted snapshot carries the API-only fields: %d apps, log %q", len(persisted.Apps), persisted.Log)
+	}
+	if !persisted.Running || persisted.Port == 0 {
+		// Only the fields that are filled unconditionally: Uptime stays zero in
+		// a fresh test process, and the GC counters need a cycle to run, which
+		// TestFillGCStatsReportsCollectionProgress covers on its own.
+		t.Fatalf("the persisted snapshot lost its live metrics: %#v", persisted)
+	}
+
+	// Volatile fields are read from the process between the two calls, so only
+	// the stable half is compared; the values themselves are asserted above.
+	api.Apps, api.Log = nil, ""
+	for _, s := range []*Status{&api, &persisted} {
+		s.Uptime, s.Active, s.WS, s.Fail = 0, 0, 0, 0
+		s.DC = nil
+		s.MemNowBytes, s.MemPeakBytes = 0, 0
+		s.TrafficUpBytes, s.TrafficDownBytes, s.TrafficTotalBytes = 0, 0, 0
+		s.PoolHits, s.PoolMisses, s.PoolIdle = 0, 0, 0
+		s.GCNum, s.GCCPUPercent, s.GCPauseAvgMs, s.HeapLiveBytes = 0, 0, 0, 0
+	}
+	if !reflect.DeepEqual(api, persisted) {
+		t.Fatalf("the two snapshots disagree outside Apps and Log:\n api       %#v\n persisted %#v", api, persisted)
 	}
 }
 
