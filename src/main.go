@@ -47,16 +47,16 @@ const (
 )
 
 var (
-	baseDir          = envOr("TELEWEB_DIR", defaultBaseDir())
-	startAt          = time.Now()
-	active           int64
-	wsCount          int64
-	failCnt          int64
-	trafficUpBytes   int64 // Telegram client -> WSS, cumulative for this daemon lifetime
-	trafficDownBytes int64 // WSS -> Telegram client, cumulative for this daemon lifetime
-	connSeq          int64
-	statsMu          sync.Mutex
-	dcCounts         = map[string]int{}
+	baseDir            = envOr("TELEWEB_DIR", defaultBaseDir())
+	startAt            = time.Now()
+	active             int64
+	wsCount            int64
+	failCnt            int64
+	trafficUpBytes     int64 // Telegram client -> WSS, cumulative for this daemon lifetime
+	trafficDownBytes   int64 // WSS -> Telegram client, cumulative for this daemon lifetime
+	connSeq            int64
+	statsMu            sync.Mutex
+	dcCounts           = map[string]int{}
 	logMu              sync.Mutex
 	logFile            *os.File
 	logWrites          uint64
@@ -75,7 +75,7 @@ var (
 	cfFrontSeq         uint64
 	dcDomainAffinityMu sync.RWMutex
 	dcDomainAffinity   = map[int]string{} // dc -> preferred working front domain
-	ioBufPool        = sync.Pool{
+	ioBufPool          = sync.Pool{
 		New: func() any {
 			b := make([]byte, 32*1024)
 			return &b
@@ -1657,6 +1657,7 @@ func findBin(name string) string {
 	}
 	return ""
 }
+
 // deleteChainJumps removes the jumps an earlier run installed on OUTPUT: the
 // global one, the root-excluding one and the per-UID ones. Each loop repeats
 // until iptables reports nothing left to delete, which clears rules from every
