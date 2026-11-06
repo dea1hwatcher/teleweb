@@ -34,6 +34,10 @@ func defaultBaseDir() string {
 
 func isAndroidRuntime() bool { return false }
 
+// startConsole has nothing to attach on this branch: it ships no Windows
+// GUI, and a console build already has a console.
+func startConsole() {}
+
 func setDaemonProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
