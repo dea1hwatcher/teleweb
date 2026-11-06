@@ -34,6 +34,38 @@ func defaultBaseDir() string {
 
 func isAndroidRuntime() bool { return false }
 
+// kernel32 is shared with the GUI file, which also calls into it.
+var kernel32 = windows.NewLazySystemDLL("kernel32.dll")
+
+var procAttachConsole = kernel32.NewProc("AttachConsole")
+
+// startConsole attaches standard I/O to the console tgws was launched from, so
+// the CLI still prints when the binary is built with -H=windowsgui.
+func startConsole() { attachParentConsole() }
+
+// attachParentConsole attaches standard I/O to the parent console if tgws was
+// executed from Command Prompt or PowerShell, so CLI commands print their
+// output even when compiled with -H=windowsgui. If launched by double-clicking
+// in Explorer, this is a silent no-op and never allocates a console window.
+func attachParentConsole() {
+	if len(os.Args) <= 1 {
+		return
+	}
+	// If stdout/stderr was already redirected to a pipe or file by the caller,
+	// preserve that stream so CLI piping and automation keep working.
+	h, _ := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	if ft, _ := windows.GetFileType(h); ft == windows.FILE_TYPE_PIPE || ft == windows.FILE_TYPE_DISK {
+		return
+	}
+	const attachParentProcess = ^uintptr(0) // DWORD -1
+	if r, _, _ := procAttachConsole.Call(attachParentProcess); r != 0 {
+		if f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
+			os.Stdout = f
+			os.Stderr = f
+		}
+	}
+}
+
 func setDaemonProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
@@ -115,5 +147,12 @@ func setReuseAddr(raw syscall.RawConn) error {
 var errAdminRequired = errors.New("administrator privileges are required for transparent interception on Windows (run from an elevated console)")
 
 func setDialSockOpts(c syscall.RawConn) error {
-	return setReuseAddr(c)
+	_ = setReuseAddr(c)
+	return c.Control(func(fd uintptr) {
+		// Set SO_LINGER with zero timeout so aborted/cancelled dials terminate
+		// immediately with RST instead of having the Windows TCP stack retransmit
+		// SYN packets for tens of seconds in the background.
+		l := windows.Linger{Onoff: 1, Linger: 0}
+		_ = windows.SetsockoptLinger(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_LINGER, &l)
+	})
 }

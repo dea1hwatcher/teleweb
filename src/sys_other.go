@@ -72,3 +72,7 @@ func serverListening() bool {
 
 func setReuseAddr(raw syscall.RawConn) error  { return nil }
 func setDialSockOpts(c syscall.RawConn) error { return nil }
+
+// startConsole has no work to do outside Windows: the CLI already has a
+// terminal, or the process was started without one on purpose.
+func startConsole() {}

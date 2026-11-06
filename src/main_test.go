@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -52,6 +53,33 @@ func TestParseProcCgroupsNormalizesRootAndPath(t *testing.T) {
 	if len(got) != 2 || got[0].path != "/" || got[1].path != "/top-app" {
 		t.Fatalf("unexpected normalized entries: %#v", got)
 	}
+}
+
+// makeObfuscatedInit builds an obfuscated2 init packet whose decrypted tail
+// carries the transport tag proto and the DC index, which is what parseMTProtoDC
+// reads. The header bytes are the key and IV material, so their value only has
+// to stay stable: one deterministic pattern serves every caller.
+func makeObfuscatedInit(t *testing.T, dcIndex int16, proto uint32) []byte {
+	t.Helper()
+	init := make([]byte, 64)
+	for i := range init {
+		init[i] = byte(i*13 + 7)
+	}
+	block, err := aes.NewCipher(init[8:40])
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := cipher.NewCTR(block, init[40:56])
+	stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
+	keystream := make([]byte, 8)
+	stream.XORKeyStream(keystream, make([]byte, 8))
+	plainTail := make([]byte, 8)
+	binary.LittleEndian.PutUint32(plainTail[:4], proto)
+	binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
+	for i := 0; i < 8; i++ {
+		init[56+i] = plainTail[i] ^ keystream[i]
+	}
+	return init
 }
 
 func TestWebSocketHostForDC(t *testing.T) {
@@ -150,9 +178,9 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 		"2001:b28:f23d:f003::a": 3,
 		"2001:b28:f23f:f005::a": 5,
 		"2001:b28:f23c::1":      1,
-		"2001:b28::1":          2,
+		"2001:b28::1":           2,
 		"2a0a:f280::1":          2,
-		"2600::1":              0, // Non-Telegram IPv6
+		"2600::1":               0, // Non-Telegram IPv6
 	}
 	for raw, want := range v6Cases {
 		if got := dcFor(netip.MustParseAddr(raw)); got != want {
@@ -468,28 +496,7 @@ func TestWebSocketUpgradeHandshake(t *testing.T) {
 }
 
 func TestParseMTProtoDCAndMediaFlag(t *testing.T) {
-	makeInit := func(dcIndex int16) []byte {
-		init := make([]byte, 64)
-		for i := range init {
-			init[i] = byte(i*13 + 7)
-		}
-		key := init[8:40]
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stream := cipher.NewCTR(block, init[40:56])
-		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-		keystream := make([]byte, 8)
-		stream.XORKeyStream(keystream, make([]byte, 8))
-		plainTail := make([]byte, 8)
-		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
-		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
-		for i := 0; i < 8; i++ {
-			init[56+i] = plainTail[i] ^ keystream[i]
-		}
-		return init
-	}
+	makeInit := func(dcIndex int16) []byte { return makeObfuscatedInit(t, dcIndex, 0xEEEEEEEE) }
 	if dc, media, ok := parseMTProtoDC(makeInit(2)); !ok || dc != 2 || media {
 		t.Fatalf("normal DC parse=(%d,%t,%t)", dc, media, ok)
 	}
@@ -536,25 +543,6 @@ func TestRepeatedEarlyEOFTemporarilyCoolsRoute(t *testing.T) {
 	}
 }
 
-func TestAppProcessMatches(t *testing.T) {
-	cases := []struct {
-		cmd, pkg string
-		want     bool
-	}{
-		{"com.exteragram.messenger\x00", "com.exteragram.messenger", true},
-		{"com.exteragram.messenger:push\x00", "com.exteragram.messenger", true},
-		{"com.exteragram.messenger2", "com.exteragram.messenger", false},
-		{"org.telegram.messenger", "com.exteragram.messenger", false},
-		{"org.nemogram.messenger\x00", "org.nemogram.messenger", true},
-		{"org.nemogram\x00", "org.nemogram", true},
-	}
-	for _, tc := range cases {
-		if got := appProcessMatches(tc.cmd, tc.pkg); got != tc.want {
-			t.Errorf("appProcessMatches(%q,%q)=%t want %t", tc.cmd, tc.pkg, got, tc.want)
-		}
-	}
-}
-
 func TestDecodeCFProxyDomain(t *testing.T) {
 	cases := map[string]string{
 		"virkgj.com":     "pclead.co.uk",
@@ -570,28 +558,7 @@ func TestDecodeCFProxyDomain(t *testing.T) {
 }
 
 func TestDC203Normalization(t *testing.T) {
-	makeInit := func(dcIndex int16) []byte {
-		init := make([]byte, 64)
-		for i := range init {
-			init[i] = byte(i*13 + 7)
-		}
-		key := init[8:40]
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stream := cipher.NewCTR(block, init[40:56])
-		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-		keystream := make([]byte, 8)
-		stream.XORKeyStream(keystream, make([]byte, 8))
-		plainTail := make([]byte, 8)
-		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
-		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
-		for i := 0; i < 8; i++ {
-			init[56+i] = plainTail[i] ^ keystream[i]
-		}
-		return init
-	}
+	makeInit := func(dcIndex int16) []byte { return makeObfuscatedInit(t, dcIndex, 0xEEEEEEEE) }
 	dc, isMedia, ok := parseMTProtoDC(makeInit(203))
 	if !ok || dc != 203 || isMedia {
 		t.Fatalf("DC 203 detection failed: dc=%d isMedia=%t ok=%t", dc, isMedia, ok)
@@ -1642,7 +1609,7 @@ func TestWorkerCooldownAndRateLimit(t *testing.T) {
 		t.Fatalf("unexpected RateLimitError string: %s", rle.Error())
 	}
 
-	markWorkerCooldown(host, rle.RetryAfter)
+	markWorkerCooldownDC(host, 0, rle.RetryAfter)
 	if !isWorkerInCooldown(host) {
 		t.Fatal("worker should be in cooldown after markWorkerCooldown")
 	}
@@ -1653,7 +1620,7 @@ func TestWorkerCooldownAndRateLimit(t *testing.T) {
 	}
 
 	// Exponential backoff test (strike 1 -> 30s)
-	markWorkerCooldown(host, 0)
+	markWorkerCooldownDC(host, 0, 0)
 	v, ok := workerCooldowns.Load(host)
 	if !ok {
 		t.Fatal("workerCooldowns entry missing")
@@ -1668,7 +1635,7 @@ func TestWorkerCooldownAndRateLimit(t *testing.T) {
 	}
 
 	// Strike 2 -> 60s
-	markWorkerCooldown(host, 0)
+	markWorkerCooldownDC(host, 0, 0)
 	v, ok = workerCooldowns.Load(host)
 	if !ok {
 		t.Fatal("workerCooldowns entry missing")
@@ -2198,28 +2165,7 @@ func TestApiMain_NewFeaturesConfig(t *testing.T) {
 }
 
 func TestParseMTProtoDC_TestDCs(t *testing.T) {
-	makeInit := func(dcIndex int16) []byte {
-		init := make([]byte, 64)
-		for i := range init {
-			init[i] = byte(i*17 + 3)
-		}
-		key := init[8:40]
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stream := cipher.NewCTR(block, init[40:56])
-		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-		keystream := make([]byte, 8)
-		stream.XORKeyStream(keystream, make([]byte, 8))
-		plainTail := make([]byte, 8)
-		binary.LittleEndian.PutUint32(plainTail[:4], 0xEFEFEFEF)
-		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
-		for i := 0; i < 8; i++ {
-			init[56+i] = plainTail[i] ^ keystream[i]
-		}
-		return init
-	}
+	makeInit := func(dcIndex int16) []byte { return makeObfuscatedInit(t, dcIndex, 0xEFEFEFEF) }
 
 	// 1. Positive Test DCs (10001-10003)
 	if dc, media, ok := parseMTProtoDC(makeInit(10001)); !ok || dc != 10001 || media {
@@ -2788,6 +2734,58 @@ func TestLoadCachedAppsDropsFabricatedEntries(t *testing.T) {
 	}
 }
 
+func TestStatusSnapshotsDifferOnlyInAppsAndLog(t *testing.T) {
+	// The API answer and the persisted snapshot are assembled from the same two
+	// pieces: buildStatus for the flags and liveMetrics for the counters. This
+	// keeps a field added to Status from being wired into one path only - the
+	// mistake that a hand-rolled second mapping invites.
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	appCacheMu.Lock()
+	oldApps, oldUIDs := appCache, uidCache
+	appCache = []App{{Name: "Telegram", Pkg: "org.telegram.messenger", UID: 10123, IconNormal: "aGVsbG8="}}
+	uidCache = []int{10123}
+	appCacheMu.Unlock()
+	t.Cleanup(func() {
+		baseDir = oldDir
+		appCacheMu.Lock()
+		appCache, uidCache = oldApps, oldUIDs
+		appCacheMu.Unlock()
+	})
+
+	api := currentStatus()
+	persisted := statusMetrics()
+
+	if len(api.Apps) != 1 || api.Apps[0].IconNormal == "" {
+		t.Fatalf("the API snapshot lost the app list: %#v", api.Apps)
+	}
+	if persisted.Apps != nil || persisted.Log != "" {
+		t.Fatalf("the persisted snapshot carries the API-only fields: %d apps, log %q", len(persisted.Apps), persisted.Log)
+	}
+	if !persisted.Running || persisted.Port == 0 {
+		// Only the fields that are filled unconditionally: Uptime stays zero in
+		// a fresh test process, and the GC counters need a cycle to run, which
+		// TestFillGCStatsReportsCollectionProgress covers on its own.
+		t.Fatalf("the persisted snapshot lost its live metrics: %#v", persisted)
+	}
+
+	// Volatile fields are read from the process between the two calls, so only
+	// the stable half is compared; the values themselves are asserted above.
+	api.Apps, api.Log = nil, ""
+	for _, s := range []*Status{&api, &persisted} {
+		s.Uptime, s.Active, s.WS, s.Fail = 0, 0, 0, 0
+		s.DC = nil
+		s.MemNowBytes, s.MemPeakBytes = 0, 0
+		s.TrafficUpBytes, s.TrafficDownBytes, s.TrafficTotalBytes = 0, 0, 0
+		s.PoolHits, s.PoolMisses, s.PoolIdle = 0, 0, 0
+		s.GCNum, s.GCCPUPercent, s.GCPauseAvgMs, s.HeapLiveBytes = 0, 0, 0, 0
+		s.LogSuppressed = 0
+	}
+	if !reflect.DeepEqual(api, persisted) {
+		t.Fatalf("the two snapshots disagree outside Apps and Log:\n api       %#v\n persisted %#v", api, persisted)
+	}
+}
+
 func TestTelegramClientName(t *testing.T) {
 	dir := t.TempDir()
 	tgAPK := writeSyntheticAPK(t, filepath.Join(dir, "fork.apk"), "lib/arm64-v8a/libtmessages.48.so")
@@ -3281,28 +3279,7 @@ func TestServeConnRefusesForgedCDN203(t *testing.T) {
 		logMu.Unlock()
 	}()
 
-	makeInit := func(dcIndex int16) []byte {
-		init := make([]byte, 64)
-		for i := range init {
-			init[i] = byte(i*13 + 7)
-		}
-		key := init[8:40]
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stream := cipher.NewCTR(block, init[40:56])
-		stream.XORKeyStream(make([]byte, 56), make([]byte, 56))
-		keystream := make([]byte, 8)
-		stream.XORKeyStream(keystream, make([]byte, 8))
-		plainTail := make([]byte, 8)
-		binary.LittleEndian.PutUint32(plainTail[:4], 0xEEEEEEEE)
-		binary.LittleEndian.PutUint16(plainTail[4:6], uint16(dcIndex))
-		for i := 0; i < 8; i++ {
-			init[56+i] = plainTail[i] ^ keystream[i]
-		}
-		return init
-	}
+	makeInit := func(dcIndex int16) []byte { return makeObfuscatedInit(t, dcIndex, 0xEEEEEEEE) }
 
 	c1, c2 := net.Pipe()
 	defer c1.Close()
@@ -3440,6 +3417,7 @@ func TestLogDeduplication(t *testing.T) {
 	lastLogRaw = ""
 	repeatLogCount = 0
 	logMu.Unlock()
+	logSuppressed.Store(0)
 	defer func() {
 		baseDir = origDir
 		logMu.Lock()
@@ -3450,6 +3428,7 @@ func TestLogDeduplication(t *testing.T) {
 		lastLogRaw = ""
 		repeatLogCount = 0
 		logMu.Unlock()
+		logSuppressed.Store(0)
 	}()
 
 	// Log identical lines 5 times
@@ -3458,7 +3437,15 @@ func TestLogDeduplication(t *testing.T) {
 	}
 	// Log a different line to trigger flush
 	logf("test-different-line")
+	// One line is written, the other four are folded into the summary; the
+	// counter is what the UI shows, so it has to match that folding exactly.
+	if got := logSuppressed.Load(); got != 4 {
+		t.Fatalf("suppressed counter = %d after five identical lines, want 4", got)
+	}
 	flushLogDedupe()
+	if got := logSuppressed.Load(); got != 0 {
+		t.Fatalf("counter = %d after the log was cleared, want 0", got)
+	}
 
 	b, err := os.ReadFile(path("tgws.log"))
 	if err != nil {

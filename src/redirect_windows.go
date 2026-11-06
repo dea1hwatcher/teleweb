@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -184,10 +185,30 @@ func wdCalcChecksums(pkt []byte, addr *wdAddr) {
 
 type natEntry struct {
 	orig       netip.AddrPort
-	clientIP   [4]byte
+	clientAddr netip.Addr
 	clientPort uint16
 	natPort    uint16
 	lastSeen   atomic.Int64
+	// established turns true once a packet carrying ACK but not SYN crosses the
+	// flow, which is the handshake completing. Established flows are kept for
+	// the RFC 5382 idle timeout instead of a couple of minutes: dropping a live
+	// mapping leaves the replies forwarded to the client unrewritten.
+	established atomic.Bool
+}
+
+// TCP control bits, as they appear in the flags octet.
+const (
+	tcpFlagSYN = 0x02
+	tcpFlagACK = 0x10
+)
+
+// touch records traffic on the flow and upgrades it to established when the
+// flags show a completed handshake.
+func (e *natEntry) touch(flags byte, now int64) {
+	e.lastSeen.Store(now)
+	if flags&tcpFlagACK != 0 && flags&tcpFlagSYN == 0 {
+		e.established.Store(true)
+	}
 }
 
 type natFlowKey struct {
@@ -197,12 +218,52 @@ type natFlowKey struct {
 	dstPort uint16
 }
 
+// natFlowKeyV6 is the same tuple for a native IPv6 flow.
+type natFlowKeyV6 struct {
+	srcIP   [16]byte
+	srcPort uint16
+	dstIP   [16]byte
+	dstPort uint16
+}
+
+const (
+	natPortFirst = 20000
+	natPortLast  = 32000
+)
+
 var natTable = struct {
-	mu    sync.RWMutex
-	flows map[natFlowKey]*natEntry
-	ports map[uint16]*natEntry
-	next  uint16
-}{flows: map[natFlowKey]*natEntry{}, ports: map[uint16]*natEntry{}, next: 20000}
+	mu      sync.RWMutex
+	flows   map[natFlowKey]*natEntry
+	flowsV6 map[natFlowKeyV6]*natEntry
+	ports   map[uint16]*natEntry
+	next    uint16
+}{
+	flows:   map[natFlowKey]*natEntry{},
+	flowsV6: map[natFlowKeyV6]*natEntry{},
+	ports:   map[uint16]*natEntry{},
+	next:    natPortFirst,
+}
+
+// allocNatEntry claims a free local port for a mapping and indexes it there.
+// The caller holds natTable.mu and files the entry in its own flow map, so both
+// address families share one port space and one lookup for accepted sockets.
+func allocNatEntry(orig netip.AddrPort, clientAddr netip.Addr, clientPort uint16) *natEntry {
+	for i := 0; i < natPortLast-natPortFirst; i++ {
+		p := natTable.next
+		natTable.next++
+		if natTable.next >= natPortLast {
+			natTable.next = natPortFirst
+		}
+		if _, busy := natTable.ports[p]; busy {
+			continue
+		}
+		e := &natEntry{orig: orig, clientAddr: clientAddr, clientPort: clientPort, natPort: p}
+		e.lastSeen.Store(time.Now().UnixNano())
+		natTable.ports[p] = e
+		return e
+	}
+	return nil
+}
 
 func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry {
 	natTable.mu.Lock()
@@ -218,22 +279,32 @@ func natGetOrCreate(flow natFlowKey, orig netip.AddrPort, isSYN bool) *natEntry 
 		delete(natTable.ports, old.natPort)
 		delete(natTable.flows, flow)
 	}
-	for i := 0; i < 12000; i++ {
-		p := natTable.next
-		natTable.next++
-		if natTable.next >= 32000 {
-			natTable.next = 20000
-		}
-		if _, busy := natTable.ports[p]; busy {
-			continue
-		}
-		e := &natEntry{orig: orig, clientIP: flow.srcIP, clientPort: flow.srcPort, natPort: p}
-		e.lastSeen.Store(time.Now().UnixNano())
-		natTable.flows[flow] = e
-		natTable.ports[p] = e
-		return e
+	e := allocNatEntry(orig, netip.AddrFrom4(flow.srcIP), flow.srcPort)
+	if e == nil {
+		return nil
 	}
-	return nil
+	natTable.flows[flow] = e
+	return e
+}
+
+// natGetOrCreateV6 mirrors natGetOrCreate for native IPv6 flows.
+func natGetOrCreateV6(flow natFlowKeyV6, orig netip.AddrPort, isSYN bool) *natEntry {
+	natTable.mu.Lock()
+	defer natTable.mu.Unlock()
+	if !isSYN {
+		if e := natTable.flowsV6[flow]; e != nil {
+			return e
+		}
+	} else if old := natTable.flowsV6[flow]; old != nil {
+		delete(natTable.ports, old.natPort)
+		delete(natTable.flowsV6, flow)
+	}
+	e := allocNatEntry(orig, netip.AddrFrom16(flow.srcIP), flow.srcPort)
+	if e == nil {
+		return nil
+	}
+	natTable.flowsV6[flow] = e
+	return e
 }
 
 func natReturnEntry(port uint16) *natEntry {
@@ -243,7 +314,8 @@ func natReturnEntry(port uint16) *natEntry {
 }
 
 // natLookup resolves the original Telegram endpoint for an accepted socket
-// whose remote is 127.0.0.1:<natPort>.
+// whose remote is 127.0.0.1:<natPort>. The port space is shared by both address
+// families, so this answers for IPv6 flows as well.
 func natLookup(port uint16) (netip.AddrPort, bool) {
 	e := natReturnEntry(port)
 	if e == nil {
@@ -258,6 +330,48 @@ func natLookupFlow(flow natFlowKey) *natEntry {
 	return natTable.flows[flow]
 }
 
+func natLookupFlowV6(flow natFlowKeyV6) *natEntry {
+	natTable.mu.RLock()
+	defer natTable.mu.RUnlock()
+	return natTable.flowsV6[flow]
+}
+
+// Idle timeouts from RFC 5382: a connection that never finished its handshake
+// goes stale after four minutes, an established one only after two hours and
+// four minutes. The single 360 s cutoff that was here before dropped connections
+// that were alive but quiet, and a dropped mapping sends the replies to the
+// client unrewritten, which the client sees as a broken connection.
+const (
+	natIdleTimeout        = 4 * time.Minute
+	natEstablishedTimeout = 2*time.Hour + 4*time.Minute
+)
+
+// pruneFlowMap drops stale mappings from one family's flow map. The caller
+// holds natTable.mu.
+func pruneFlowMap[K comparable](flows map[K]*natEntry, now time.Time) {
+	idleCutoff := now.Add(-natIdleTimeout).UnixNano()
+	establishedCutoff := now.Add(-natEstablishedTimeout).UnixNano()
+	for k, e := range flows {
+		cutoff := idleCutoff
+		if e.established.Load() {
+			cutoff = establishedCutoff
+		}
+		if e.lastSeen.Load() < cutoff {
+			delete(flows, k)
+			delete(natTable.ports, e.natPort)
+		}
+	}
+}
+
+// pruneFlows drops stale mappings. now is a parameter so the rules can be
+// exercised without waiting on a clock.
+func pruneFlows(now time.Time) {
+	natTable.mu.Lock()
+	defer natTable.mu.Unlock()
+	pruneFlowMap(natTable.flows, now)
+	pruneFlowMap(natTable.flowsV6, now)
+}
+
 func natJanitor(stop <-chan struct{}) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
@@ -266,15 +380,7 @@ func natJanitor(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			cutoff := time.Now().Add(-360 * time.Second).UnixNano()
-			natTable.mu.Lock()
-			for k, e := range natTable.flows {
-				if e.lastSeen.Load() < cutoff {
-					delete(natTable.flows, k)
-					delete(natTable.ports, e.natPort)
-				}
-			}
-			natTable.mu.Unlock()
+			pruneFlows(time.Now())
 		}
 	}
 }
@@ -318,6 +424,29 @@ func buildReturnFilter() string {
 	return fmt.Sprintf("loopback and outbound and ip and tcp and ip.SrcAddr == 127.0.0.1 and tcp.SrcPort == %d and ip.DstAddr == 127.0.0.1", defaultPort)
 }
 
+// buildOutboundFilterV6 captures every outbound IPv6 TCP packet. A range test is
+// not available for IPv6 fields in the WinDivert filter language - the
+// documented workaround for IPv6 is to capture all of it - so the address is
+// matched per packet instead, and everything that is not a Telegram aggregate
+// leaves the loop untouched within one iteration.
+func buildOutboundFilterV6() string {
+	return "outbound and ipv6 and tcp and not loopback"
+}
+
+func buildReturnFilterV6() string {
+	return fmt.Sprintf("loopback and outbound and ipv6 and tcp and ipv6.SrcAddr == ::1 and tcp.SrcPort == %d and ipv6.DstAddr == ::1", defaultPort)
+}
+
+// v6InterceptTarget reports whether an outbound IPv6 packet belongs to the
+// tunnel: the daemon's own dials are excluded, and a destination outside
+// Telegram's aggregates is handed straight back to the stack.
+func v6InterceptTarget(dst [16]byte, sport uint16) bool {
+	if isSelfDialPort(sport) {
+		return false
+	}
+	return isTelegramEndpointV6(netip.AddrFrom16(dst))
+}
+
 // ------------------------------ Packet parsing -----------------------------
 
 type tcpMeta struct {
@@ -344,12 +473,61 @@ func parseTCPv4(pkt []byte) (tcpMeta, bool) {
 	return m, true
 }
 
+// tcpMetaV6 mirrors tcpMeta for native IPv6 packets. A packet whose IPv6 Next
+// Header is not TCP is rejected here and forwarded untouched: WinDivert's
+// filter language cannot express a test for IPv6 extension headers, so they are
+// sorted out per packet instead.
+type tcpMetaV6 struct {
+	tcpOff       int
+	srcIP, dstIP [16]byte
+	sport, dport uint16
+	flags        byte
+}
+
+func parseTCPv6(pkt []byte) (tcpMetaV6, bool) {
+	var m tcpMetaV6
+	if len(pkt) < 60 || pkt[0]>>4 != 6 || pkt[6] != 6 { // IPv6, next header = TCP
+		return m, false
+	}
+	m.tcpOff = 40
+	copy(m.srcIP[:], pkt[8:24])
+	copy(m.dstIP[:], pkt[24:40])
+	m.sport = binary.BigEndian.Uint16(pkt[m.tcpOff:])
+	m.dport = binary.BigEndian.Uint16(pkt[m.tcpOff+2:])
+	m.flags = pkt[m.tcpOff+13]
+	return m, true
+}
+
+// v6ToLoopback rewrites a client -> Telegram IPv6 packet so the daemon's
+// listener accepts it: the packet is addressed to [::1]:defaultPort and appears
+// to come from [::1]:natPort, which is how the accepted socket later maps back
+// to the Telegram endpoint. It mirrors the rewrite the IPv4 loop applies.
+func v6ToLoopback(p []byte, meta tcpMetaV6, natPort uint16) {
+	loop := netip.IPv6Loopback().As16()
+	copy(p[8:24], loop[:])
+	copy(p[24:40], loop[:])
+	binary.BigEndian.PutUint16(p[meta.tcpOff:], natPort)
+	binary.BigEndian.PutUint16(p[meta.tcpOff+2:], defaultPort)
+}
+
+// v6FromLoopback restores the client's view of a reply: the source becomes the
+// Telegram endpoint again and the destination the client that opened the flow.
+func v6FromLoopback(p []byte, meta tcpMetaV6, orig netip.AddrPort, client netip.Addr, clientPort uint16) {
+	src := orig.Addr().As16()
+	dst := client.As16()
+	copy(p[8:24], src[:])
+	copy(p[24:40], dst[:])
+	binary.BigEndian.PutUint16(p[meta.tcpOff:], orig.Port())
+	binary.BigEndian.PutUint16(p[meta.tcpOff+2:], clientPort)
+}
+
 // ------------------------------ Redirector ---------------------------------
 
 type wdRedirector struct {
-	hOut, hRet  uintptr
-	running     atomic.Bool
-	stopJanitor chan struct{}
+	hOut, hRet   uintptr
+	hOut6, hRet6 uintptr
+	running      atomic.Bool
+	stopJanitor  chan struct{}
 }
 
 var (
@@ -372,6 +550,57 @@ func localRedirectorHealthy() bool {
 	redirectorMu.Lock()
 	defer redirectorMu.Unlock()
 	return activeRedirector != nil && activeRedirector.running.Load()
+}
+
+// hostHasGlobalIPv6 reports whether this machine holds a routable IPv6 address,
+// which is what decides whether the coverage gap below can actually be hit.
+func hostHasGlobalIPv6() bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip, ok := netip.AddrFromSlice(ipNet.IP)
+			if !ok {
+				continue
+			}
+			ip = ip.Unmap()
+			if ip.Is6() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsPrivate() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// v6CoverageNotice states what the WinDivert redirector does with Telegram's
+// IPv6 ranges. They cannot be intercepted the way IPv4 is: the filter language
+// offers no range test for an IPv6 field (its documented escape hatch for IPv6
+// is to capture all IPv6 traffic, which is not something to impose on every
+// machine), so those connections leave unproxied. Saying so at startup beats a
+// gap nobody can see.
+func v6CoverageNotice(hasIPv6 bool) string {
+	ranges := make([]string, 0, len(telegramV6Prefixes))
+	for _, p := range telegramV6Prefixes {
+		ranges = append(ranges, p.String())
+	}
+	detail := "this host has no global IPv6 address, so nothing can bypass it"
+	if hasIPv6 {
+		detail = "Telegram traffic to them leaves the machine unproxied"
+	}
+	return fmt.Sprintf("redirector: IPv4 only; %s is not intercepted (%s)", strings.Join(ranges, ", "), detail)
 }
 
 func startRedirector() error {
@@ -407,6 +636,31 @@ func startRedirector() error {
 	go r.retLoop()
 	go natJanitor(stopCh)
 	logf("redirector: WinDivert active; Telegram TCP -> 127.0.0.1:%d", defaultPort)
+
+	// IPv6 rides on its own pair of handles, so a failure here leaves the IPv4
+	// path exactly as it was, and the coverage notice explains the gap.
+	if readFlag("ipv6_capture", true) {
+		switch hOut6, err6 := wdOpenHandle(buildOutboundFilterV6()); {
+		case err6 != nil:
+			logf("redirector: IPv6 capture unavailable: %v", err6)
+			logf("%s", v6CoverageNotice(hostHasGlobalIPv6()))
+		default:
+			hRet6, err6b := wdOpenHandle(buildReturnFilterV6())
+			if err6b != nil {
+				_, _, _ = wdClose.Call(hOut6)
+				logf("redirector: IPv6 capture unavailable: %v", err6b)
+				logf("%s", v6CoverageNotice(hostHasGlobalIPv6()))
+				break
+			}
+			r.hOut6, r.hRet6 = hOut6, hRet6
+			go r.out6Loop()
+			go r.ret6Loop()
+			logf("redirector: Telegram IPv6 -> [::1]:%d; other IPv6 TCP passes through", defaultPort)
+		}
+	} else {
+		logf("redirector: IPv6 capture disabled by the ipv6_capture flag")
+		logf("%s", v6CoverageNotice(hostHasGlobalIPv6()))
+	}
 	return nil
 }
 
@@ -440,6 +694,12 @@ func stopRedirector() {
 		}
 		_, _, _ = wdClose.Call(activeRedirector.hOut)
 		_, _, _ = wdClose.Call(activeRedirector.hRet)
+		if activeRedirector.hOut6 != 0 {
+			_, _, _ = wdClose.Call(activeRedirector.hOut6)
+		}
+		if activeRedirector.hRet6 != 0 {
+			_, _, _ = wdClose.Call(activeRedirector.hRet6)
+		}
 		activeRedirector = nil
 		logf("redirector: WinDivert stopped")
 	}
@@ -469,7 +729,7 @@ func (r *wdRedirector) outLoop() {
 			_ = wdSendPacket(r.hOut, p, &addr)
 			continue
 		}
-		isSYN := (m.flags & 0x12) == 0x02 // SYN set, ACK clear
+		isSYN := (m.flags & (tcpFlagSYN | tcpFlagACK)) == tcpFlagSYN
 		flow := natFlowKey{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
 		// Fast path: established flows are resolved under a read lock. A SYN
 		// (new or retransmitted) may carry a stale TIME_WAIT mapping, so it
@@ -479,11 +739,17 @@ func (r *wdRedirector) outLoop() {
 		if e == nil || isSYN {
 			e = natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
 			if e == nil {
+				// Every local port is taken: the packet leaves unrewritten, so
+				// this connection bypasses the tunnel. logf collapses repeats.
+				natTable.mu.RLock()
+				flows := len(natTable.ports)
+				natTable.mu.RUnlock()
+				logf("redirector: NAT port range exhausted (%d flows); %s:%d -> %s:%d escapes the tunnel", flows, netip.AddrFrom4(m.srcIP), m.sport, netip.AddrFrom4(m.dstIP), m.dport)
 				_ = wdSendPacket(r.hOut, p, &addr)
 				continue
 			}
 		}
-		e.lastSeen.Store(time.Now().UnixNano())
+		e.touch(m.flags, time.Now().UnixNano())
 		p[12], p[13], p[14], p[15] = 127, 0, 0, 1
 		p[16], p[17], p[18], p[19] = 127, 0, 0, 1
 		binary.BigEndian.PutUint16(p[m.ihl:], e.natPort)
@@ -521,19 +787,121 @@ func (r *wdRedirector) retLoop() {
 			_ = wdSendPacket(r.hRet, p, &addr)
 			continue
 		}
-		e.lastSeen.Store(time.Now().UnixNano())
+		e.touch(m.flags, time.Now().UnixNano())
 		if !e.orig.Addr().Is4() {
 			_ = wdSendPacket(r.hRet, p, &addr)
 			continue
 		}
 		o := e.orig.Addr().As4()
+		client := e.clientAddr.As4()
 		copy(p[12:16], o[:])
-		copy(p[16:20], e.clientIP[:])
+		copy(p[16:20], client[:])
 		binary.BigEndian.PutUint16(p[m.ihl:], e.orig.Port())
 		binary.BigEndian.PutUint16(p[m.ihl+2:], e.clientPort)
 		addr.clearLoopback()
 		wdCalcChecksums(p, &addr)
 		_ = wdSendPacket(r.hRet, p, &addr)
+	}
+}
+
+// processOut6 folds one captured outbound IPv6 packet into the tunnel in place
+// and reports whether it did. Pulled out of the loop so the whole decision
+// chain - parse, range check, mapping, rewrite - can be exercised without
+// WinDivert and without a routed IPv6 stack.
+func processOut6(p []byte) bool {
+	m, ok := parseTCPv6(p)
+	if !ok || !v6InterceptTarget(m.dstIP, m.sport) {
+		return false
+	}
+	isSYN := (m.flags & (tcpFlagSYN | tcpFlagACK)) == tcpFlagSYN
+	flow := natFlowKeyV6{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
+	e := natLookupFlowV6(flow)
+	if e == nil || isSYN {
+		orig := netip.AddrPortFrom(netip.AddrFrom16(m.dstIP), m.dport)
+		e = natGetOrCreateV6(flow, orig, isSYN)
+		if e == nil {
+			natTable.mu.RLock()
+			flows := len(natTable.ports)
+			natTable.mu.RUnlock()
+			logf("redirector: NAT port range exhausted (%d flows); %s:%d -> %s:%d escapes the tunnel", flows, netip.AddrFrom16(m.srcIP), m.sport, orig.Addr(), m.dport)
+			return false
+		}
+	}
+	e.touch(m.flags, time.Now().UnixNano())
+	v6ToLoopback(p, m, e.natPort)
+	return true
+}
+
+// processRet6 restores the client's view of one reply from the listener and
+// reports whether it rewrote the packet.
+func processRet6(p []byte) bool {
+	m, ok := parseTCPv6(p)
+	if !ok {
+		return false
+	}
+	e := natReturnEntry(m.dport)
+	if e == nil || !e.orig.Addr().Is6() {
+		// No mapping, or the shared port belongs to an IPv4 flow: hand it back.
+		return false
+	}
+	e.touch(m.flags, time.Now().UnixNano())
+	v6FromLoopback(p, m, e.orig, e.clientAddr, e.clientPort)
+	return true
+}
+
+// out6Loop is the IPv6 twin of outLoop. Every outbound IPv6 TCP packet passes
+// through here because the filter cannot be narrowed to a range; a packet that
+// is not tunnel material is injected back unchanged in the same iteration.
+func (r *wdRedirector) out6Loop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logStack(fmt.Sprintf("FATAL panic in WinDivert out6Loop: %v", rec))
+			r.running.Store(false)
+		}
+	}()
+	pkt := make([]byte, 65535)
+	for r.running.Load() {
+		n, addr, err := wdRecvPacket(r.hOut6, pkt)
+		if err != nil {
+			if r.running.Load() {
+				logf("redirector: v6 recv: %v", err)
+				r.running.Store(false)
+			}
+			return
+		}
+		p := pkt[:n]
+		if processOut6(p) {
+			wdCalcChecksums(p, &addr)
+		}
+		_ = wdSendPacket(r.hOut6, p, &addr)
+	}
+}
+
+// ret6Loop rewrites the listener's replies back into the Telegram endpoint, the
+// IPv6 counterpart of retLoop.
+func (r *wdRedirector) ret6Loop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logStack(fmt.Sprintf("FATAL panic in WinDivert ret6Loop: %v", rec))
+			r.running.Store(false)
+		}
+	}()
+	pkt := make([]byte, 65535)
+	for r.running.Load() {
+		n, addr, err := wdRecvPacket(r.hRet6, pkt)
+		if err != nil {
+			if r.running.Load() {
+				logf("redirector: v6 ret recv: %v", err)
+				r.running.Store(false)
+			}
+			return
+		}
+		p := pkt[:n]
+		if processRet6(p) {
+			addr.clearLoopback()
+			wdCalcChecksums(p, &addr)
+		}
+		_ = wdSendPacket(r.hRet6, p, &addr)
 	}
 }
 

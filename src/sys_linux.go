@@ -17,23 +17,31 @@ import (
 	"unsafe"
 )
 
-var androidDetection = struct {
+// androidGate memoizes the Android detection for the process lifetime.
+type androidGate struct {
 	once sync.Once
 	val  bool
-}{}
+}
+
+var androidDetection = &androidGate{}
+
+// androidProbe answers whether this Linux build is running inside Android. It
+// is a variable so a test can pin the answer instead of having to fake
+// /system/build.prop and /system/bin/app_process on the test machine.
+var androidProbe = func() bool {
+	if _, err := os.Stat("/system/build.prop"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/system/bin/app_process"); err == nil {
+		return true
+	}
+	return false
+}
 
 // isAndroidRuntime separates the Android module from the Linux desktop port:
 // both build with GOOS=linux, so the distinction must be made at runtime.
 func isAndroidRuntime() bool {
-	androidDetection.once.Do(func() {
-		if _, err := os.Stat("/system/build.prop"); err == nil {
-			androidDetection.val = true
-			return
-		}
-		if _, err := os.Stat("/system/bin/app_process"); err == nil {
-			androidDetection.val = true
-		}
-	})
+	androidDetection.once.Do(func() { androidDetection.val = androidProbe() })
 	return androidDetection.val
 }
 
@@ -92,6 +100,28 @@ func notifySignals(ch chan<- os.Signal) {
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 }
 
+// decodeOriginalDst reads the struct sockaddr that IP(6)T_SO_ORIGINAL_DST
+// filled in. The port sits right after the family in both layouts; IPv4 puts
+// the address in the next four bytes, while IPv6 has the flow label in between
+// and then a sixteen byte address.
+func decodeOriginalDst(sa []byte, v6 bool) (netip.AddrPort, bool) {
+	if len(sa) < 8 {
+		return netip.AddrPort{}, false
+	}
+	port := binary.BigEndian.Uint16(sa[2:4])
+	if v6 {
+		if len(sa) < 24 {
+			return netip.AddrPort{}, false
+		}
+		a, ok := netip.AddrFromSlice(sa[8:24])
+		if !ok {
+			return netip.AddrPort{}, false
+		}
+		return netip.AddrPortFrom(a.Unmap(), port), true
+	}
+	return netip.AddrPortFrom(netip.AddrFrom4([4]byte{sa[4], sa[5], sa[6], sa[7]}), port), true
+}
+
 func originalDestination(c net.Conn) (netip.AddrPort, error) {
 	tc, ok := c.(*net.TCPConn)
 	if !ok {
@@ -101,66 +131,47 @@ func originalDestination(c net.Conn) (netip.AddrPort, error) {
 	if e != nil {
 		return netip.AddrPort{}, e
 	}
+	// The socket's own family is asked first and the other one after it: some
+	// kernels answer a single one of the two options.
+	v6First := false
+	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok && ta.IP != nil && ta.IP.To4() == nil {
+		v6First = true
+	}
 	var addr netip.AddrPort
 	var inner error
-	isV6 := false
-	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok && ta.IP != nil && ta.IP.To4() == nil {
-		isV6 = true
-	}
 	e = raw.Control(func(fd uintptr) {
 		var sa [128]byte
-		if isV6 {
-			l6 := uint32(28)
-			if err := getOriginalDstV6(fd, unsafe.Pointer(&sa[0]), &l6); err == nil {
-				port := binary.BigEndian.Uint16(sa[2:4])
-				if a, ok := netip.AddrFromSlice(sa[8:24]); ok {
-					addr = netip.AddrPortFrom(a.Unmap(), port)
-					return
-				}
+		for _, wantV6 := range []bool{v6First, !v6First} {
+			length := uint32(16)
+			if wantV6 {
+				length = 28
 			}
-			l4 := uint32(16)
-			if err := getOriginalDst(fd, unsafe.Pointer(&sa[0]), &l4); err == nil {
-				port := binary.BigEndian.Uint16(sa[2:4])
-				ip := net.IPv4(sa[4], sa[5], sa[6], sa[7])
-				if a, ok := netip.AddrFromSlice(ip); ok {
-					addr = netip.AddrPortFrom(a.Unmap(), port)
-					return
-				}
+			var err error
+			if wantV6 {
+				err = getOriginalDstV6(fd, unsafe.Pointer(&sa[0]), &length)
 			} else {
-				inner = err
+				err = getOriginalDst(fd, unsafe.Pointer(&sa[0]), &length)
 			}
-		} else {
-			l4 := uint32(16)
-			if err := getOriginalDst(fd, unsafe.Pointer(&sa[0]), &l4); err == nil {
-				port := binary.BigEndian.Uint16(sa[2:4])
-				ip := net.IPv4(sa[4], sa[5], sa[6], sa[7])
-				if a, ok := netip.AddrFromSlice(ip); ok {
-					addr = netip.AddrPortFrom(a.Unmap(), port)
-					return
-				}
-			}
-			l6 := uint32(28)
-			if err := getOriginalDstV6(fd, unsafe.Pointer(&sa[0]), &l6); err == nil {
-				port := binary.BigEndian.Uint16(sa[2:4])
-				if a, ok := netip.AddrFromSlice(sa[8:24]); ok {
-					addr = netip.AddrPortFrom(a.Unmap(), port)
-					return
-				}
-			} else {
+			if err != nil {
 				inner = err
+				continue
+			}
+			if ap, ok := decodeOriginalDst(sa[:], wantV6); ok {
+				addr = ap
+				return
 			}
 		}
 	})
 	if e != nil {
 		return netip.AddrPort{}, e
 	}
+	if addr.IsValid() {
+		return addr, nil
+	}
 	if inner != nil {
 		return netip.AddrPort{}, inner
 	}
-	if !addr.IsValid() {
-		return netip.AddrPort{}, errors.New("SO_ORIGINAL_DST did not return address")
-	}
-	return addr, nil
+	return netip.AddrPort{}, errors.New("SO_ORIGINAL_DST did not return address")
 }
 
 func setReuseAddr(raw syscall.RawConn) error {
@@ -175,3 +186,7 @@ func setReuseAddr(raw syscall.RawConn) error {
 }
 
 func setDialSockOpts(c syscall.RawConn) error { return setReuseAddr(c) }
+
+// startConsole has no work to do outside Windows: the CLI already has a
+// terminal, or the process was started without one on purpose.
+func startConsole() {}

@@ -57,12 +57,15 @@ var (
 	connSeq          int64
 	statsMu          sync.Mutex
 	dcCounts         = map[string]int{}
-	logMu              sync.Mutex
-	logFile            *os.File
-	logWrites          uint64
-	lastLogRaw         string
-	repeatLogCount     int
-	lastRepeatLog      time.Time
+	logMu            sync.Mutex
+	logFile          *os.File
+	logWrites        uint64
+	lastLogRaw       string
+	repeatLogCount   int
+	lastRepeatLog    time.Time
+	// logSuppressed counts the lines the dedupe folded into a summary, so a
+	// storm that looks quiet in the log is still visible in the status.
+	logSuppressed      atomic.Uint64
 	appCacheMu         sync.Mutex
 	appCache           []App
 	uidCache           []int
@@ -75,7 +78,7 @@ var (
 	cfFrontSeq         uint64
 	dcDomainAffinityMu sync.RWMutex
 	dcDomainAffinity   = map[int]string{} // dc -> preferred working front domain
-	ioBufPool        = sync.Pool{
+	ioBufPool          = sync.Pool{
 		New: func() any {
 			b := make([]byte, 32*1024)
 			return &b
@@ -222,6 +225,7 @@ type Status struct {
 	GCPauseAvgMs      float64        `json:"gcPauseAvgMs"`
 	HeapLiveBytes     int64          `json:"heapLiveBytes"`
 	Log               string         `json:"log"`
+	LogSuppressed     uint64         `json:"logSuppressed"`
 	CFPriority        bool           `json:"cfPriority"`
 	CFBalance         bool           `json:"cfBalance"`
 	CustomCFDomain    string         `json:"customCFDomain"`
@@ -389,6 +393,7 @@ func flushLogDedupe() {
 	defer logMu.Unlock()
 	flushRepeatLocked(time.Now())
 	lastLogRaw = ""
+	logSuppressed.Store(0)
 }
 
 func logf(format string, a ...any) {
@@ -400,6 +405,7 @@ func logf(format string, a ...any) {
 
 	if raw == lastLogRaw {
 		repeatLogCount++
+		logSuppressed.Add(1)
 		// Flush summary periodically during extended duplicate storms
 		if now.Sub(lastRepeatLog) >= 5*time.Second || repeatLogCount >= 50 {
 			flushRepeatLocked(now)
@@ -538,8 +544,11 @@ func writeEnabled(v bool) error {
 
 // cfgFileCache memoizes config-file parses for the hot per-connection path.
 // Entries are validated by a single Stat (mtime+size) signature, so a dial
-// performs one cheap syscall instead of several full file reads and regex passes,
-// while external edits are picked up almost immediately.
+// performs one cheap syscall instead of several full file reads and regex
+// passes, while external edits are picked up on the next call. The signature is
+// the whole invalidation mechanism: there is no time limit, which holds while
+// the filesystem reports nanosecond mtime (ext4, f2fs and NTFS all do) and a
+// rewrite of a flag file changes its size or timestamp.
 var cfgFileCache = struct {
 	mu      sync.Mutex
 	entries map[string]cfgFileEntry
@@ -1657,30 +1666,38 @@ func findBin(name string) string {
 	}
 	return ""
 }
+
+// deleteChainJumps removes the jumps an earlier run installed on OUTPUT: the
+// global one, the root-excluding one and the per-UID ones. Each loop repeats
+// until iptables reports nothing left to delete, which clears rules from every
+// version this project has shipped before a new mode is installed.
+func deleteChainJumps(bin string, uids []int, chain string) {
+	for i := 0; i < 16; i++ {
+		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
+			break
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
+			break
+		}
+	}
+	for _, uid := range uids {
+		for i := 0; i < 16; i++ {
+			if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain) != nil {
+				break
+			}
+		}
+	}
+}
+
 func iptSetup(bin string, uids []int, cidrs []string, chain string, family string) error {
 	if bin == "" {
 		return fmt.Errorf("%s is missing", family)
 	}
 	// Remove both previous global, root-excluding and UID-scoped jumps before
 	// selecting a mode.
-	for i := 0; i < 8; i++ {
-		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
-			break
-		}
-	}
-	for i := 0; i < 8; i++ {
-		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
-			break
-		}
-	}
-	for _, uid := range uids {
-		for i := 0; i < 8; i++ {
-			e := runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain)
-			if e != nil {
-				break
-			}
-		}
-	}
+	deleteChainJumps(bin, uids, chain)
 	_ = runCmd(bin, "-t", "nat", "-F", chain)
 	if err := runCmd(bin, "-t", "nat", "-N", chain); err != nil { // likely already exists
 		if e := runCmd(bin, "-t", "nat", "-F", chain); e != nil {
@@ -1711,23 +1728,7 @@ func iptCleanup(bin string, uids []int, chain string) {
 	}
 	// Remove the previous v1.2 global jump as well as this version's UID-scoped
 	// and desktop (root-excluding) jumps.
-	for i := 0; i < 8; i++ {
-		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-j", chain) != nil {
-			break
-		}
-	}
-	for i := 0; i < 8; i++ {
-		if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", chain) != nil {
-			break
-		}
-	}
-	for _, uid := range uids {
-		for i := 0; i < 16; i++ {
-			if runCmd(bin, "-t", "nat", "-D", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", chain) != nil {
-				break
-			}
-		}
-	}
+	deleteChainJumps(bin, uids, chain)
 	_ = runCmd(bin, "-t", "nat", "-F", chain)
 	_ = runCmd(bin, "-t", "nat", "-X", chain)
 }
@@ -1851,10 +1852,6 @@ func markWorkerCooldownDC(host string, dc int, retryAfter time.Duration) {
 	} else {
 		logf("worker %s: rate limited (HTTP 429/503); quarantined for %v", host, retryAfter)
 	}
-}
-
-func markWorkerCooldown(host string, retryAfter time.Duration) {
-	markWorkerCooldownDC(host, 0, retryAfter)
 }
 
 func clearWorkerCooldown(host string, optDC ...int) {
@@ -2184,14 +2181,6 @@ func protectProcess(pid int) {
 		}
 		logf("protect: PID %d moved from cgroup %s to root group via %s", pid, entry.path, target)
 	}
-}
-
-// appProcessMatches identifies the main Android process and package-scoped
-// secondary processes (for example com.example:push), without matching other
-// packages that merely share a prefix.
-func appProcessMatches(cmdline, pkg string) bool {
-	cmdline = strings.TrimRight(cmdline, "\x00\n\r ")
-	return cmdline == pkg || strings.HasPrefix(cmdline, pkg+":")
 }
 
 func processUID(pid int) (int, bool) {
@@ -2710,66 +2699,12 @@ func buildStatus(apps []App) Status {
 	return s
 }
 
-func currentStatusMetrics() Status {
-	dc := map[string]int{}
+// liveMetrics overlays this process's live counters on an already assembled
+// snapshot. Every path that reports on a running daemon goes through here, so a
+// new counter is added once instead of in each caller.
+func liveMetrics(s *Status) {
 	statsMu.Lock()
-	for k, v := range dcCounts {
-		dc[k] = v
-	}
-	statsMu.Unlock()
-	memNow, memPeak := processMemoryBytes()
-	up := atomic.LoadInt64(&trafficUpBytes)
-	down := atomic.LoadInt64(&trafficDownBytes)
-	s := Status{
-		Enabled:        readEnabled(),
-		Port:           defaultPort,
-		Running:        true,
-		Uptime:         int64(time.Since(startAt).Seconds()),
-		Active:         atomic.LoadInt64(&active),
-		WS:             atomic.LoadInt64(&wsCount),
-		Fail:           atomic.LoadInt64(&failCnt),
-		DC:             dc,
-		MemNowBytes:    memNow,
-		MemPeakBytes:   memPeak,
-		TrafficUpBytes: up,
-		TrafficDownBytes: down,
-		TrafficTotalBytes: up + down,
-		Redirector:     localRedirectorHealthy(),
-		CFPriority:     readCFPriority(),
-		CFBalance:      readCFBalance(),
-		CustomCFDomain: readCustomCFDomain(),
-		CustomCFWorker: readCustomCFWorker(),
-		DCOverrides:    readDCOverridesRaw(),
-		PoolSize:       readPoolSize(),
-		DoHEnabled:     readDoHEnabled(),
-		ForceTestDC:    readForceTestDC(),
-		H2MediaEnabled: readH2MediaEnabled(),
-		DC203DirectTCP: readDC203DirectTCP(),
-		LastCFPoP: func() string {
-			if p := lastCFPoP.Load(); p != nil {
-				return *p
-			}
-			return ""
-		}(),
-		LastCFRay: func() string {
-			if p := lastCFRay.Load(); p != nil {
-				return *p
-			}
-			return ""
-		}(),
-	}
-	if globalWsPool != nil {
-		s.PoolHits, s.PoolMisses, s.PoolIdle = globalWsPool.Stats()
-	}
-	fillGCStats(&s)
-	return s
-}
-
-func currentStatus() Status {
-	apps, _ := installedApps()
-	s := buildStatus(apps)
-	dc := map[string]int{}
-	statsMu.Lock()
+	dc := make(map[string]int, len(dcCounts))
 	for k, v := range dcCounts {
 		dc[k] = v
 	}
@@ -2782,13 +2717,29 @@ func currentStatus() Status {
 	s.Active = atomic.LoadInt64(&active)
 	s.WS = atomic.LoadInt64(&wsCount)
 	s.Fail = atomic.LoadInt64(&failCnt)
+	s.LogSuppressed = logSuppressed.Load()
 	s.DC = dc
 	s.MemNowBytes = memNow
 	s.MemPeakBytes = memPeak
 	s.TrafficUpBytes = up
 	s.TrafficDownBytes = down
 	s.TrafficTotalBytes = up + down
-	fillGCStats(&s)
+	fillGCStats(s)
+}
+
+// statusMetrics is the snapshot that gets persisted: the config flags and the
+// live counters, without the app list and the log tail, which status() rebuilds
+// from apps.json and the log file for the API answer.
+func statusMetrics() Status {
+	s := buildStatus(nil)
+	liveMetrics(&s)
+	return s
+}
+
+func currentStatus() Status {
+	apps, _ := installedApps()
+	s := buildStatus(apps)
+	liveMetrics(&s)
 	return s
 }
 func status() Status {
@@ -2846,7 +2797,7 @@ func status() Status {
 	return s
 }
 func writeStatus() {
-	s := currentStatusMetrics()
+	s := statusMetrics()
 	b, err := json.Marshal(s)
 	if err != nil {
 		return
@@ -2981,11 +2932,9 @@ func executeAPICommand(q apiRequest) (any, error) {
 	}
 }
 
+// apiDispatch is the in-process entry point the native GUI uses instead of
+// spawning a child for every click.
 var apiDispatch = executeAPICommand
-
-func apiDispatchJson(payload []byte) ([]byte, error) {
-	return executeAPIPayload(string(payload))
-}
 
 func executeAPIPayload(arg string) ([]byte, error) {
 	b, err := base64.StdEncoding.DecodeString(arg)
@@ -3077,6 +3026,7 @@ func main() {
 			os.Exit(2)
 		}
 	}()
+	startConsole()
 	initMemoryTuning()
 	ensureDir()
 	if len(os.Args) > 1 {
