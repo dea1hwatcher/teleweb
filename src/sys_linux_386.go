@@ -24,3 +24,21 @@ func getOriginalDst(fd uintptr, sa unsafe.Pointer, l *uint32) error {
 	}
 	return nil
 }
+
+func getOriginalDstV6(fd uintptr, sa unsafe.Pointer, l *uint32) error {
+	const sysGETSOCKOPT = 15
+	const solIPV6 = 41
+	const ip6tSOOriginalDst = 80
+	args := [5]uintptr{
+		fd,
+		uintptr(solIPV6),
+		uintptr(ip6tSOOriginalDst),
+		uintptr(sa),
+		uintptr(unsafe.Pointer(l)),
+	}
+	_, _, errno := syscall.Syscall(syscall.SYS_SOCKETCALL, sysGETSOCKOPT, uintptr(unsafe.Pointer(&args[0])), 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
