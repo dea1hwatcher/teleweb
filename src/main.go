@@ -3026,6 +3026,7 @@ func main() {
 			os.Exit(2)
 		}
 	}()
+	startConsole()
 	initMemoryTuning()
 	ensureDir()
 	if len(os.Args) > 1 {
