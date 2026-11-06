@@ -20,7 +20,6 @@ import (
 )
 
 var (
-	kernel32            = windows.NewLazySystemDLL("kernel32.dll")
 	user32              = windows.NewLazySystemDLL("user32.dll")
 	shell32             = windows.NewLazySystemDLL("shell32.dll")
 	dwmapi              = windows.NewLazySystemDLL("dwmapi.dll")
