@@ -1853,10 +1853,6 @@ func markWorkerCooldownDC(host string, dc int, retryAfter time.Duration) {
 	}
 }
 
-func markWorkerCooldown(host string, retryAfter time.Duration) {
-	markWorkerCooldownDC(host, 0, retryAfter)
-}
-
 func clearWorkerCooldown(host string, optDC ...int) {
 	dc := 0
 	if len(optDC) > 0 {
@@ -2184,14 +2180,6 @@ func protectProcess(pid int) {
 		}
 		logf("protect: PID %d moved from cgroup %s to root group via %s", pid, entry.path, target)
 	}
-}
-
-// appProcessMatches identifies the main Android process and package-scoped
-// secondary processes (for example com.example:push), without matching other
-// packages that merely share a prefix.
-func appProcessMatches(cmdline, pkg string) bool {
-	cmdline = strings.TrimRight(cmdline, "\x00\n\r ")
-	return cmdline == pkg || strings.HasPrefix(cmdline, pkg+":")
 }
 
 func processUID(pid int) (int, bool) {
