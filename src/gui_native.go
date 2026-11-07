@@ -98,7 +98,6 @@ type guiState struct {
 	heroToggleBtn  widget.Clickable
 	heroRestartBtn widget.Clickable
 	heroElevateBtn widget.Clickable
-	openWebUIBtn   widget.Clickable
 
 	// Routing & Settings
 	settingsInitialized bool
@@ -145,9 +144,6 @@ func cmdGui(_ string) {
 			st := status()
 			target := !st.Running
 			_, _ = apiDispatch(apiRequest{Cmd: "set", Enabled: &target})
-		},
-		func() {
-			openInBrowser("http://127.0.0.1:17842")
 		},
 		func() {
 			runShutdownHooks()
@@ -349,11 +345,6 @@ func handleGuiEvents(w *app.Window, st *guiState, gtx layout.Context) {
 		}()
 	}
 
-	// Open WebUI in browser
-	if st.openWebUIBtn.Clicked(gtx) {
-		go openInBrowser("http://127.0.0.1:17842")
-	}
-
 	// UAC Elevation
 	if st.heroElevateBtn.Clicked(gtx) {
 		if err := restartElevated(); err != nil {
@@ -542,10 +533,6 @@ func renderNavPane(st *guiState, gtx layout.Context, th *material.Theme) layout.
 			// Footer action buttons
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return renderNavFooterBtn(gtx, th, &st.openWebUIBtn, "↗", "WebUI в браузере")
-					}),
-					layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return renderNavFooterBtn(gtx, th, &st.refreshBtn, "↻", "Обновить статус")
 					}),
@@ -1209,16 +1196,13 @@ func renderServiceInfoCard(st *guiState, gtx layout.Context, th *material.Theme,
 							if socksPort == "0" {
 								socksPort = "1080"
 							}
-							info := fmt.Sprintf("Локальный SOCKS5: 127.0.0.1:%s  •  WebUI: http://127.0.0.1:17842", socksPort)
+							info := fmt.Sprintf("Локальный SOCKS5-прокси: 127.0.0.1:%s (для приложений без сетевого перехвата)", socksPort)
 							lbl := material.Body2(th, info)
 							lbl.Color = colTextSecondary
 							lbl.Font.Typeface = fontSegoe
 							return lbl.Layout(gtx)
 						}),
 					)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return renderStandardButton(gtx, th, &st.openWebUIBtn, "Открыть WebUI в браузере ↗")
 				}),
 			)
 		})

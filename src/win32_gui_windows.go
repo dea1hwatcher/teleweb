@@ -106,7 +106,6 @@ var (
 	trayActive     bool
 	trayTipText    = "TeleWEB: прозрачный WSS транспорт"
 	trayOnToggleFn func()
-	trayOnWebUIFn  func()
 	trayOnQuitFn   func()
 	singleMutexH   uintptr
 )
@@ -335,10 +334,9 @@ const (
 	mfGrayed        = 0x00000001
 )
 
-func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit func()) func() {
+func setupSystemTray(title string, onToggle func(), onQuit func()) func() {
 	trayMu.Lock()
 	trayOnToggleFn = onToggle
-	trayOnWebUIFn = onOpenWebUI
 	trayOnQuitFn = onQuit
 	trayMu.Unlock()
 
@@ -384,9 +382,6 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 					mToggle, _ := windows.UTF16PtrFromString(toggleLabel)
 					procAppendMenu.Call(hMenu, mfString, 103, uintptr(unsafe.Pointer(mToggle)))
 
-					mWebUI, _ := windows.UTF16PtrFromString("Открыть WebUI в браузере")
-					procAppendMenu.Call(hMenu, mfString, 104, uintptr(unsafe.Pointer(mWebUI)))
-
 					procAppendMenu.Call(hMenu, mfSeparator, 0, 0)
 					mQuit, _ := windows.UTF16PtrFromString("Выход")
 					procAppendMenu.Call(hMenu, mfString, 105, uintptr(unsafe.Pointer(mQuit)))
@@ -400,13 +395,6 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 					case 103:
 						trayMu.Lock()
 						fn := trayOnToggleFn
-						trayMu.Unlock()
-						if fn != nil {
-							go fn()
-						}
-					case 104:
-						trayMu.Lock()
-						fn := trayOnWebUIFn
 						trayMu.Unlock()
 						if fn != nil {
 							go fn()

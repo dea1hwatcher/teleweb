@@ -134,7 +134,7 @@ func TestWindowStartup(t *testing.T) {
 }
 
 func TestSetupSystemTray(t *testing.T) {
-	cleanup := setupSystemTray("TeleWEB Test", nil, nil, nil)
+	cleanup := setupSystemTray("TeleWEB Test", nil, nil)
 	defer cleanup()
 
 	trayMu.Lock()

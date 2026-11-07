@@ -2,16 +2,9 @@
 
 package main
 
-import (
-	"embed"
-	"io/fs"
-)
+import "io/fs"
 
-//go:embed webui_fallback/*
-var embeddedFiles embed.FS
-
-// WinDivert ships no ARM64 driver, so transparent mode is unavailable there;
-// the embedded WebUI still makes the SOCKS mode self-contained.
+// WinDivert ships no ARM64 driver, so transparent mode is unavailable there.
 func embeddedDriverFS() fs.FS { return nil }
 
-func embeddedWebrootFS() fs.FS { return subEmbedded(embeddedFiles, "webui_fallback") }
+func embeddedWebrootFS() fs.FS { return nil }

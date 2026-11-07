@@ -3238,6 +3238,10 @@ func main() {
 			cmdSocks(addr)
 			return
 		case "webui":
+			if !isAndroidRuntime() {
+				fmt.Fprintln(os.Stderr, "webui: WebUI is not available in desktop versions; use the native GUI dashboard or CLI commands")
+				os.Exit(1)
+			}
 			addr := ""
 			if len(os.Args) > 2 {
 				addr = os.Args[2]
@@ -3272,11 +3276,11 @@ func main() {
 		}
 	}
 	if !isAndroidRuntime() {
-		// Desktop double-click: launch the WebUI instead of printing usage.
+		// Desktop double-click: launch the native GUI dashboard on Windows, or print usage.
 		cmdGui("")
 		return
 	}
-	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | webui [addr] | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
+	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
 }
 
 func serve() {

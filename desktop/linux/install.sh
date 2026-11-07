@@ -15,10 +15,6 @@ command -v iptables >/dev/null 2>&1 || echo "warning: iptables not found; instal
 
 install -Dm755 "$SRC_DIR/tgws" "$PREFIX/tgws"
 mkdir -p "$SHARE" "$STATE"
-if [ -d "$SRC_DIR/webroot" ]; then
-  rm -rf "$SHARE/webroot"
-  cp -r "$SRC_DIR/webroot" "$SHARE/webroot"
-fi
 chmod 700 "$STATE"
 
 cat > "$UNIT" <<'EOF'
@@ -30,7 +26,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=TELEWEB_DIR=/var/lib/teleweb
-Environment=TELEWEB_WEBROOT=/usr/local/share/teleweb/webroot
 ExecStart=/usr/local/bin/tgws run
 ExecStopPost=/usr/local/bin/tgws stop
 Restart=on-failure
@@ -47,5 +42,4 @@ systemctl restart teleweb.service
 echo "TeleWEB installed and started."
 echo "  status:  tgws status"
 echo "  logs:    journalctl -u teleweb -f   (or /var/lib/teleweb/tgws.log)"
-echo "  webui:   tgws webui 127.0.0.1:17842  then open http://127.0.0.1:17842"
 echo "  socks:   tgws socks 127.0.0.1:17845  (no-root alternative, set proxy in Telegram)"
