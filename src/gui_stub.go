@@ -2,19 +2,10 @@
 
 package main
 
-import "time"
+import "fmt"
 
-// cmdGui falls back to the browser panel for builds without the native GUI
-// tag (Android module, engine-only builds and CI engine builds).
-func cmdGui(addr string) {
-	if addr == "" {
-		addr = "127.0.0.1:17842"
-	}
-	ensureDir()
-	startSignalLogger()
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		openInBrowser("http://" + addr + "/")
-	}()
-	cmdWebUI(addr)
+// cmdGui is invoked when the application is launched without arguments on
+// platforms where the native GUI is not available (Linux / headless).
+func cmdGui(_ string) {
+	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | api BASE64_JSON | check")
 }

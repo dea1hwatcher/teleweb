@@ -1,14 +1,12 @@
 # TeleWEB desktop build script.
-# Windows: amd64/386/arm64 — standalone tgws.exe (WebUI + WinDivert driver are
-# embedded, so a single exe works without any accompanying files).
+# Windows: amd64/386/arm64 — standalone tgws.exe (WinUI 3 GUI + embedded WinDivert driver).
+# Linux: amd64/arm64 — standalone tgws + installers.
 # Produces packages under dist/.
 $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SrcDir = Join-Path $RootDir "src"
 $DistDir = Join-Path $RootDir "dist"
-$Webroot = Join-Path $RootDir "webroot"
-$WebuiFallback = Join-Path $SrcDir "webui_fallback"
 
 $GoPath = "go"
 if (Test-Path "C:\Program Files\Go\bin\go.exe") { $GoPath = "C:\Program Files\Go\bin\go.exe" }
@@ -20,6 +18,9 @@ function Build-Target([string]$goos, [string]$goarch, [string]$outFile, [string]
     $env:GOARCH = $goarch
     $ldflags = "-s -w"
     if ($goos -eq "windows" -and $tags -match "nativegui") {
+        # GUI subsystem: double-clicking opens the window without a console
+        # behind it. CLI output still works, because startConsole attaches the
+        # process to the console it was launched from.
         $ldflags += " -H=windowsgui"
     }
     $buildArgs = @("build", "-trimpath", "-ldflags", $ldflags)
@@ -31,35 +32,14 @@ function Build-Target([string]$goos, [string]$goarch, [string]$outFile, [string]
     Pop-Location
 }
 
-function Copy-Common([string]$dest) {
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    Copy-Item $Webroot (Join-Path $dest "webroot") -Recurse -Force
+if (Test-Path "$RootDir\icon.png") {
+    Copy-Item "$RootDir\icon.png" "$SrcDir\app_icon.png" -Force
 }
-
-# The embedded WebUI copy is generated from webroot/ (single source of truth).
-New-Item -ItemType Directory -Force -Path $WebuiFallback | Out-Null
-Get-ChildItem $WebuiFallback -File | Where-Object { $_.Name -ne "placeholder.txt" } | Remove-Item -Force
-Copy-Item "$Webroot\*" $WebuiFallback -Recurse -Force
 
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-Get-ChildItem $DistDir -File -Filter "tgws-windows-*.exe" | Remove-Item -Force
+Get-ChildItem $DistDir -File -Filter "tgws-windows-*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
 # ---- Windows (standalone exe per architecture) ----
-# Compile Windows resources (High-DPI PerMonitorV2 manifest, multi-res icon, VERSIONINFO)
-$windres = Get-Command windres.exe -ErrorAction SilentlyContinue
-if ($windres) {
-    if (Test-Path "$RootDir\icon.png") {
-        python -c "from PIL import Image; Image.open(r'$RootDir\icon.png').save(r'$SrcDir\icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])" 2>$null
-    }
-    if (Test-Path "$SrcDir\teleweb.rc") {
-        Push-Location $SrcDir
-        & $windres.Source -i teleweb.rc -O coff -o teleweb_windows_amd64.syso -F pe-x86-64
-        & $windres.Source -i teleweb.rc -O coff -o teleweb_windows_386.syso -F pe-i386
-        Pop-Location
-        Write-Host "Compiled Windows PE resources (.syso) with windres" -ForegroundColor Green
-    }
-}
-
 # amd64/386 get transparent mode (embedded WinDivert); arm64 is SOCKS-only.
 $winTargets = @(
     @{ Arch = "amd64"; Driver = $true },
@@ -70,15 +50,25 @@ foreach ($t in $winTargets) {
     $arch = $t.Arch
     $dir = Join-Path $DistDir "teleweb-windows-$arch"
     if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-    Copy-Common $dir
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
     Build-Target "windows" $arch (Join-Path $dir "tgws.exe") "nativegui"
     if ($t.Driver) {
         Copy-Item (Join-Path $SrcDir "drivers\$arch\*") $dir -Force
         Copy-Item (Join-Path $SrcDir "drivers\LICENSE") (Join-Path $dir "WinDivert-LICENSE.txt") -Force
     }
     Copy-Item (Join-Path $RootDir "desktop\windows\install.ps1") $dir -Force
-    # Single-file exe asset: driver and WebUI are embedded in the binary.
-    Copy-Item (Join-Path $dir "tgws.exe") (Join-Path $DistDir "tgws-windows-$arch.exe") -Force
+    # Single-file exe asset: driver is embedded in the binary.
+    Copy-Item (Join-Path $dir "tgws.exe") (Join-Path $DistDir "tgws-windows-$arch.exe") -Force -ErrorAction SilentlyContinue
+}
+
+# ---- Linux amd64 / arm64 (transparent mode via iptables) ----
+foreach ($arch in @("amd64", "arm64")) {
+    $dir = Join-Path $DistDir "teleweb-linux-$arch"
+    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    Build-Target "linux" $arch (Join-Path $dir "tgws")
+    Copy-Item (Join-Path $RootDir "desktop\linux\install.sh") $dir -Force
+    Copy-Item (Join-Path $RootDir "desktop\linux\uninstall.sh") $dir -Force
 }
 
 # ---- Archives ----

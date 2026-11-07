@@ -15,8 +15,6 @@ func localRedirectorHealthy() bool { return false }
 
 func redirectorUnsupportedReason() error { return nil }
 
-func isElevated() bool { return false }
-
 var errWindowsOnly = errors.New("this command is only supported on Windows")
 
 func svcInstall() error   { return errWindowsOnly }
