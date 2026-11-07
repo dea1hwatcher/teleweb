@@ -45,3 +45,40 @@ func TestCreateIconFromPNG(t *testing.T) {
 		}
 	}
 }
+
+func TestGetAppIconCached(t *testing.T) {
+	icon16a := getAppIcon(16)
+	icon16b := getAppIcon(16)
+	if icon16a == 0 || icon16a != icon16b {
+		t.Fatalf("expected cached 16px icon, got %v and %v", icon16a, icon16b)
+	}
+	icon32a := getAppIcon(32)
+	icon32b := getAppIcon(32)
+	if icon32a == 0 || icon32a != icon32b {
+		t.Fatalf("expected cached 32px icon, got %v and %v", icon32a, icon32b)
+	}
+}
+
+func TestSetMainHwnd(t *testing.T) {
+	mainHwndMu.Lock()
+	orig := mainHwnd
+	mainHwndMu.Unlock()
+	defer func() {
+		mainHwndMu.Lock()
+		mainHwnd = orig
+		mainHwndMu.Unlock()
+	}()
+
+	dummy := uintptr(0xDEADBEEF)
+	setMainHwnd(dummy)
+	mainHwndMu.Lock()
+	got := mainHwnd
+	mainHwndMu.Unlock()
+	if got != dummy {
+		t.Fatalf("setMainHwnd got %v, want %v", got, dummy)
+	}
+
+	// setMainWindowIcon on a dummy handle should return immediately without blocking or panicking
+	setMainWindowIcon(dummy)
+	setMainWindowIcon(0)
+}

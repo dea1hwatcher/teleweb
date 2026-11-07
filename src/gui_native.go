@@ -198,6 +198,11 @@ func guiLoop(w *app.Window) error {
 		switch e := e.(type) {
 		case app.DestroyEvent:
 			return e.Err
+		case app.ViewEvent:
+			if we, ok := e.(app.Win32ViewEvent); ok && we.HWND != 0 {
+				setMainHwnd(we.HWND)
+				applyWindowsDarkTheme("TeleWEB")
+			}
 		case *app.ClosingEvent:
 			if runtime.GOOS == "windows" {
 				e.Abort()

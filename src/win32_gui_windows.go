@@ -37,7 +37,6 @@ var (
 	procLoadIcon                 = user32.NewProc("LoadIconW")
 	procCreateIconFromResourceEx = user32.NewProc("CreateIconFromResourceEx")
 	procDestroyIcon              = user32.NewProc("DestroyIcon")
-	procSendMessage              = user32.NewProc("SendMessageW")
 	procDefWindowProc            = user32.NewProc("DefWindowProcW")
 	procRegisterClassEx          = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx           = user32.NewProc("CreateWindowExW")
@@ -53,6 +52,7 @@ var (
 	procTrackPopupMenuEx         = user32.NewProc("TrackPopupMenuEx")
 	procDestroyMenu              = user32.NewProc("DestroyMenu")
 	procGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
+	procGetWindowTextLength      = user32.NewProc("GetWindowTextLengthW")
 	procEnumWindows              = user32.NewProc("EnumWindows")
 	procIsWindow                 = user32.NewProc("IsWindow")
 
@@ -111,6 +111,12 @@ var (
 	singleMutexH   uintptr
 )
 
+func setMainHwnd(hwnd uintptr) {
+	mainHwndMu.Lock()
+	mainHwnd = hwnd
+	mainHwndMu.Unlock()
+}
+
 func findMainWindow() uintptr {
 	mainHwndMu.Lock()
 	defer mainHwndMu.Unlock()
@@ -129,8 +135,12 @@ func findMainWindow() uintptr {
 		isTray := (hwnd == trayHwnd)
 		trayMu.Unlock()
 		if wndPid == pid && !isTray {
-			mainHwnd = hwnd
-			return 0 // stop enumeration
+			// Skip hidden helper/IME windows by requiring a non-empty window title
+			l, _, _ := procGetWindowTextLength.Call(hwnd)
+			if int32(l) > 0 {
+				mainHwnd = hwnd
+				return 0 // stop enumeration
+			}
 		}
 		return 1 // continue
 	}), 0)
@@ -140,6 +150,27 @@ func findMainWindow() uintptr {
 		mainHwnd = h
 	}
 	return mainHwnd
+}
+
+var (
+	iconMu      sync.Mutex
+	iconCache16 uintptr
+	iconCache32 uintptr
+)
+
+func getAppIcon(size int) uintptr {
+	iconMu.Lock()
+	defer iconMu.Unlock()
+	if size == 16 {
+		if iconCache16 == 0 {
+			iconCache16 = loadAppIcon(16)
+		}
+		return iconCache16
+	}
+	if iconCache32 == 0 {
+		iconCache32 = loadAppIcon(32)
+	}
+	return iconCache32
 }
 
 func loadAppIcon(size int) uintptr {
@@ -169,19 +200,21 @@ func setMainWindowIcon(hwnd uintptr) {
 	if hwnd == 0 {
 		return
 	}
-	hIconBig := loadAppIcon(32)
-	hIconSm := loadAppIcon(16)
-	const (
-		wmSetIcon = 0x0080
-		iconSmall = 0
-		iconBig   = 1
-	)
-	if hIconBig != 0 {
-		procSendMessage.Call(hwnd, wmSetIcon, iconBig, hIconBig)
-	}
-	if hIconSm != 0 {
-		procSendMessage.Call(hwnd, wmSetIcon, iconSmall, hIconSm)
-	}
+	go func() {
+		hIconBig := getAppIcon(32)
+		hIconSm := getAppIcon(16)
+		const (
+			wmSetIcon = 0x0080
+			iconSmall = 0
+			iconBig   = 1
+		)
+		if hIconBig != 0 {
+			procPostMessage.Call(hwnd, wmSetIcon, iconBig, hIconBig)
+		}
+		if hIconSm != 0 {
+			procPostMessage.Call(hwnd, wmSetIcon, iconSmall, hIconSm)
+		}
+	}()
 }
 
 // applyWindowsDarkTheme sets the DWM non-client attributes for dark mode,
@@ -219,17 +252,12 @@ func showMainWindow(restore bool) {
 	}
 	setMainWindowIcon(hwnd)
 	const (
-		SW_NORMAL  = 1
 		SW_RESTORE = 9
+		SW_SHOW    = 5
 	)
-	cmd := uintptr(SW_NORMAL)
-	if restore {
-		cmd = uintptr(SW_RESTORE)
-	}
-	go func(h, c uintptr) {
-		procShowWindow.Call(h, c)
-		procSetFgWindow.Call(h)
-	}(hwnd, cmd)
+	procShowWindow.Call(hwnd, SW_RESTORE)
+	procShowWindow.Call(hwnd, SW_SHOW)
+	procSetFgWindow.Call(hwnd)
 }
 
 func hideMainWindow() {
@@ -238,7 +266,7 @@ func hideMainWindow() {
 		return
 	}
 	const SW_HIDE = 0
-	go procShowWindow.Call(hwnd, uintptr(SW_HIDE))
+	procShowWindow.Call(hwnd, uintptr(SW_HIDE))
 }
 
 func restartElevated() error {
@@ -308,7 +336,7 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 		runtime.LockOSThread()
 		className, _ := windows.UTF16PtrFromString("TeleWEB_Tray_Window_Class")
 		hMod, _, _ := procGetModuleHandle.Call(0)
-		hIcon := loadAppIcon(16)
+		hIcon := getAppIcon(16)
 
 		wndProc := syscall.NewCallback(func(hwnd, msg, wParam, lParam uintptr) uintptr {
 			switch msg {
@@ -397,7 +425,7 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
 			lpfnWndProc:   wndProc,
 			hInstance:     hMod,
-			hIcon:         hIcon,
+			hIcon:         getAppIcon(32),
 			hIconSm:       hIcon,
 			lpszClassName: className,
 		}
