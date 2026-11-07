@@ -1,4 +1,4 @@
-//go:build nativegui
+//go:build windows && nativegui
 
 package main
 
@@ -37,10 +37,8 @@ var (
 	colOnPrimary        = color.NRGBA{R: 0x00, G: 0x34, B: 0x4F, A: 0xFF} // #00344f Deep Ocean Navy
 	colPrimaryContainer = color.NRGBA{R: 0x00, G: 0x4C, B: 0x70, A: 0xFF} // #004c70 Primary Container
 	colOnPrimaryCont    = color.NRGBA{R: 0xC6, G: 0xE7, B: 0xFF, A: 0xFF} // #c6e7ff On Primary Container
-	colSecondary        = color.NRGBA{R: 0xB6, G: 0xC9, B: 0xD8, A: 0xFF} // #b6c9d8 Secondary
 	colText             = color.NRGBA{R: 0xE0, G: 0xE2, B: 0xE8, A: 0xFF} // #e0e2e8 On Surface Text
 	colTextMuted        = color.NRGBA{R: 0x90, G: 0x98, B: 0xA2, A: 0xFF} // #9098a2 Subtitle / Hint
-	colOutline          = color.NRGBA{R: 0x41, G: 0x47, B: 0x4D, A: 0xFF} // #41474d Outline Variant
 	colSuccess          = color.NRGBA{R: 0x85, G: 0xD9, B: 0x96, A: 0xFF} // #85d996 Active Mint Green
 	colSuccessContainer = color.NRGBA{R: 0x00, G: 0x53, B: 0x22, A: 0xFF} // #005322 Active Pill Background
 	colError            = color.NRGBA{R: 0xFF, G: 0xB4, B: 0xAB, A: 0xFF} // #ffb4ab Warning Coral Red

@@ -126,6 +126,29 @@ func TestParseTCPv6(t *testing.T) {
 	if _, ok := parseTCPv6(udp); ok {
 		t.Error("parseTCPv6 accepted an IPv6/UDP packet")
 	}
+
+	// F14: an extension-header chain must not make the packet escape.
+	hop := append([]byte(nil), pkt[:40]...)
+	hop = append(hop, make([]byte, 8)...) // Hop-by-Hop: 8*(0+1) = 8 bytes
+	hop = append(hop, pkt[40:]...)        // then the TCP header
+	hop[6] = 0                            // next after IPv6 header: Hop-by-Hop
+	hop[40] = 6                           // next after options: TCP
+	metaH, okH := parseTCPv6(hop)
+	if !okH {
+		t.Fatal("parseTCPv6 rejected an IPv6 packet with a Hop-by-Hop header")
+	}
+	if metaH.dport != meta.dport || metaH.tcpOff != 48 {
+		t.Errorf("hop-by-hop parse: tcpOff=%d dport=%d, want 48/%d", metaH.tcpOff, metaH.dport, meta.dport)
+	}
+
+	frag := append([]byte(nil), pkt[:40]...)
+	frag = append(frag, make([]byte, 8)...) // Fragment: fixed 8 bytes
+	frag = append(frag, pkt[40:]...)        // then the TCP header
+	frag[6] = 44                            // next after IPv6 header: Fragment
+	frag[40] = 6                            // next after fragment header: TCP
+	if metaF, okF := parseTCPv6(frag); !okF || metaF.tcpOff != 48 {
+		t.Fatalf("fragment chain: ok=%v tcpOff=%d, want true/48", okF, metaF.tcpOff)
+	}
 	if _, ok := parseTCPv6(pkt[:59]); ok {
 		t.Error("parseTCPv6 accepted a truncated packet")
 	}
@@ -299,7 +322,7 @@ func TestProcessOut6AndRet6Pipeline(t *testing.T) {
 	telegram := netip.MustParseAddr("2001:b28:f23d:f001::a")
 
 	req := buildV6TCPPacket(client, telegram, 40000, 443, 0x02)
-	if !processOut6(req) {
+	if processOut6(req) != v6Rewritten {
 		t.Fatal("a Telegram IPv6 flow was not folded into the tunnel")
 	}
 	meta, ok := parseTCPv6(req)
@@ -324,7 +347,7 @@ func TestProcessOut6AndRet6Pipeline(t *testing.T) {
 	other := netip.MustParseAddr("2606:4700::1111")
 	pass := buildV6TCPPacket(client, other, 40001, 443, 0x02)
 	before := append([]byte(nil), pass...)
-	if processOut6(pass) {
+	if processOut6(pass) != v6PassThrough {
 		t.Error("a non-Telegram IPv6 flow was folded into the tunnel")
 	}
 	if !bytes.Equal(pass, before) {
@@ -334,7 +357,7 @@ func TestProcessOut6AndRet6Pipeline(t *testing.T) {
 	selfDialRegister(40002)
 	defer selfDialExpire(40002)
 	self := buildV6TCPPacket(client, telegram, 40002, 443, 0x02)
-	if processOut6(self) {
+	if processOut6(self) != v6PassThrough {
 		t.Error("the daemon's own dial was folded into the tunnel")
 	}
 

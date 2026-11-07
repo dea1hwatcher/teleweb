@@ -3650,17 +3650,12 @@ func TestWorkerCooldowns_SweepAndOpportunisticCleanup(t *testing.T) {
 }
 
 func TestSweepRouteCaches_BoundedMapsAndH2Success(t *testing.T) {
-	directDialFailMu.Lock()
+	defer directDialFails.clear()
+	defer cdn203Fails.clear()
 	for i := 0; i < 300; i++ {
-		directDialFails[fmt.Sprintf("1.1.1.%d:443", i)] = time.Now().Add(time.Minute)
+		directDialFails.markFail(fmt.Sprintf("1.1.1.%d:443", i))
+		cdn203Fails.markFail(fmt.Sprintf("2.2.2.%d:443", i))
 	}
-	directDialFailMu.Unlock()
-
-	cdn203FailMu.Lock()
-	for i := 0; i < 300; i++ {
-		cdn203Fails[fmt.Sprintf("2.2.2.%d:443", i)] = time.Now().Add(time.Minute)
-	}
-	cdn203FailMu.Unlock()
 
 	h2SuccessMu.Lock()
 	h2Success["expired.host.test"] = time.Now().Add(-10 * time.Second)
@@ -3669,15 +3664,8 @@ func TestSweepRouteCaches_BoundedMapsAndH2Success(t *testing.T) {
 
 	sweepRouteCaches()
 
-	directDialFailMu.Lock()
-	lenDD := len(directDialFails)
-	directDialFails = make(map[string]time.Time)
-	directDialFailMu.Unlock()
-
-	cdn203FailMu.Lock()
-	lenCDN := len(cdn203Fails)
-	cdn203Fails = make(map[string]time.Time)
-	cdn203FailMu.Unlock()
+	lenDD := directDialFails.size()
+	lenCDN := cdn203Fails.size()
 
 	h2SuccessMu.Lock()
 	_, hasExpired := h2Success["expired.host.test"]
