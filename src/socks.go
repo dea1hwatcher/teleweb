@@ -34,10 +34,13 @@ func cmdSocks(addr string) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
-			if isNeutralError(err) {
-				continue
+			// EMFILE/ENFILE return immediately and would busy-spin; pause
+			// briefly. A closed listener stops the loop.
+			if pause := acceptPause(err); pause < 0 {
+				return
+			} else if pause > 0 {
+				time.Sleep(pause)
 			}
-			logf("socks: accept: %v", err)
 			continue
 		}
 		go socksHandle(c, logger)

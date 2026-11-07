@@ -56,6 +56,8 @@ export default {
     let timedOut = false;
     try {
       upstream = connect({ hostname: destination, port: TELEGRAM_PORT });
+      // Swallow a rejection that happens before the post-upgrade handler
+      // below attaches; once attached, that one drives shutdown(1011).
       upstream.closed.catch(() => {});
       await Promise.race([
         upstream.opened,
