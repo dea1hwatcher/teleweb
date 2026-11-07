@@ -112,6 +112,28 @@ func encodeH2Reply(body []byte, proto uint32) []byte {
 	}
 }
 
+func stripTransportPrefix(proto uint32, packetBody []byte) []byte {
+	switch proto {
+	case 0xEFEFEFEF: // Abridged
+		if len(packetBody) > 0 {
+			if (packetBody[0] & 0x7f) == 0x7f {
+				if len(packetBody) >= 4 {
+					return packetBody[4:]
+				}
+			} else {
+				return packetBody[1:]
+			}
+		}
+	case 0xEEEEEEEE, 0xDDDDDDDD: // Intermediate / Padded Intermediate
+		if len(packetBody) >= 4 {
+			return packetBody[4:]
+		}
+	default:
+		return packetBody
+	}
+	return nil
+}
+
 func createClientEncryptor(initial []byte) (cipher.Stream, error) {
 	if len(initial) < 56 {
 		return nil, fmt.Errorf("initial header too short")
@@ -418,29 +440,11 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				// the session down -- the MTProto client reconnects on its own.
 				logf("H2 media bridge: framing error: %v; closing session", perr)
 				bridgeCancel()
+				break
 			}
 			for _, packetBody := range packets {
-
 				// Strip length prefix from packetBody before HTTP/2 POST
-				var rawMTProto []byte
-				switch framer.proto {
-				case 0xEFEFEFEF:
-					if len(packetBody) > 0 {
-						if (packetBody[0] & 0x7f) == 0x7f {
-							if len(packetBody) >= 4 {
-								rawMTProto = packetBody[4:]
-							}
-						} else {
-							rawMTProto = packetBody[1:]
-						}
-					}
-				case 0xEEEEEEEE, 0xDDDDDDDD:
-					if len(packetBody) >= 4 {
-						rawMTProto = packetBody[4:]
-					}
-				default:
-					rawMTProto = packetBody
-				}
+				rawMTProto := stripTransportPrefix(framer.proto, packetBody)
 
 				if len(rawMTProto) == 0 {
 					continue

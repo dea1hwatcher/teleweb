@@ -23,6 +23,8 @@ func cmdSocks(addr string) {
 	}
 	ensureDir()
 	startSignalLogger()
+	loadRouteCache()
+	loadLearnedDCs()
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
