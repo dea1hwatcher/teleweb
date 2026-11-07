@@ -7,12 +7,18 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -3772,5 +3778,210 @@ func TestMTProtoPacketFramer_InitialFreed(t *testing.T) {
 	}
 	if f.initial != nil {
 		t.Fatalf("expected f.initial to be nil after header was sent, got %d bytes", len(f.initial))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Code-review regressions (docs/CODE_REVIEW_2026-11-06.md, F2-F6) and the
+// GOMEMLIMIT gate from the 07.11 recheck.
+// ---------------------------------------------------------------------------
+
+// TestFrontingSNIScopedToFrontDials guards F2: a fronting-SNI override belongs
+// to Cloudflare-fronted routes only. Direct dials to Telegram endpoints and
+// worker sessions must keep their real SNI and their certificate
+// verification even when the override file exists.
+func TestFrontingSNIScopedToFrontDials(t *testing.T) {
+	oldDir := baseDir
+	tmp := t.TempDir()
+	baseDir = tmp
+	defer func() { baseDir = oldDir }()
+	_ = os.WriteFile(filepath.Join(tmp, "fronting-sni"), []byte("sprinthost.ru\n"), 0600)
+
+	sni, skip := tlsHandshakeForHost("kws2.web.telegram.org", false)
+	if sni != "kws2.web.telegram.org" || skip {
+		t.Fatalf("direct dial must keep verification: sni=%q skip=%v", sni, skip)
+	}
+
+	sni, skip = tlsHandshakeForHost("gw.example.workers.dev", false)
+	if sni != "gw.example.workers.dev" || skip {
+		t.Fatalf("worker dial must keep verification: sni=%q skip=%v", sni, skip)
+	}
+
+	// A CF-front dial honours the override: the documented trade-off, now
+	// paired with verifyFrontingPeerChain instead of a blind skip.
+	sni, skip = tlsHandshakeForHost("kws2.web.telegram.org", true)
+	if sni != "sprinthost.ru" || !skip {
+		t.Fatalf("front dial must honour the override: sni=%q skip=%v", sni, skip)
+	}
+}
+
+// TestFrontingPeerChainVerifierRejectsSelfSigned checks that the callback
+// attached when verification is relaxed still rejects certificates that are
+// not anchored in the system trust store -- the whole point of the F2 fix.
+func TestFrontingPeerChainVerifierRejectsSelfSigned(t *testing.T) {
+	if err := verifyFrontingPeerChain(nil, nil); err == nil {
+		t.Fatal("empty certificate list must be rejected")
+	}
+	if err := verifyFrontingPeerChain([][]byte{[]byte("garbage")}, nil); err == nil {
+		t.Fatal("malformed certificate must be rejected")
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "on-path-mitm.example"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              []string{"kws2.web.telegram.org"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("self-signed certificate: %v", err)
+	}
+	// Even a self-signed certificate that names the dialed host exactly must
+	// not pass: the verifier requires a system-trusted anchor.
+	if err := verifyFrontingPeerChain([][]byte{der}, nil); err == nil {
+		t.Fatal("self-signed certificate must be rejected")
+	}
+}
+
+// TestClampFrontRetryWait guards F3: the pause must respect both the retry
+// ceiling and the caller's remaining dial budget.
+func TestClampFrontRetryWait(t *testing.T) {
+	ctx := context.Background()
+	if got := clampFrontRetryWait(ctx, 30*time.Second); got != frontRetryWaitLimit {
+		t.Fatalf("30s cooldown must clamp to the ceiling, got %v", got)
+	}
+	if got := clampFrontRetryWait(ctx, 500*time.Millisecond); got != 500*time.Millisecond {
+		t.Fatalf("short park must not be extended, got %v", got)
+	}
+	// A nearly-expired dial budget must not be consumed by the pause.
+	dctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if got := clampFrontRetryWait(dctx, 5*time.Second); got >= frontDialReserve {
+		t.Fatalf("pause must respect the remaining dial budget, got %v", got)
+	}
+	// The ceiling must cover the timeout park, otherwise the pause is skipped
+	// and the candidate list collapses to direct-only dials.
+	if frontRetryWaitLimit < frontTimeoutPark {
+		t.Fatalf("frontRetryWaitLimit %v is below the timeout park %v", frontRetryWaitLimit, frontTimeoutPark)
+	}
+}
+
+// TestFrontCandidatesForRaceKeepsOneFrontWhenAllParked guards the structural
+// part of F3: a shared outage must never leave zero Cloudflare candidates.
+func TestFrontCandidatesForRaceKeepsOneFrontWhenAllParked(t *testing.T) {
+	domains := []string{"p.example", "q.example", "r.example"}
+
+	// Isolate from the DC affinity set by other tests: a healthy preferred
+	// front would legitimately become the single candidate.
+	dcDomainAffinityMu.Lock()
+	oldAffinity, hadAffinity := dcDomainAffinity[2]
+	delete(dcDomainAffinity, 2)
+	dcDomainAffinityMu.Unlock()
+	if hadAffinity {
+		defer setDCDomainAffinity(2, oldAffinity)
+	}
+
+	for _, d := range domains {
+		clearRouteHealth(frontHost(2, d))
+		defer clearRouteHealth(frontHost(2, d))
+	}
+	for _, d := range domains {
+		noteServerBusy(frontHost(2, d), errors.New("HTTP 503: busy"))
+	}
+	got := frontCandidatesForRace(2, domains, 0, 3)
+	if len(got) != 1 {
+		t.Fatalf("all-parked pool must still yield exactly one front, got %v", got)
+	}
+	for _, d := range domains {
+		if got[0] == frontHost(2, d) {
+			return
+		}
+	}
+	t.Fatalf("fallback front is not from the pool: %v", got)
+}
+
+// TestTestDCRouting guards F4: force_test_dc is a global toggle, but Telegram
+// defines test endpoints only for DC1-DC3. DC4/DC5 must keep production
+// routing instead of a guaranteed-empty candidate list.
+func TestTestDCRouting(t *testing.T) {
+	cases := []struct {
+		name            string
+		dc              int
+		force, explicit bool
+		want            bool
+	}{
+		{"DC2 has a test IP", 2, true, false, true},
+		{"DC3 has a test IP", 3, false, true, true},
+		{"DC4 has none", 4, true, false, false},
+		{"DC5 has none", 5, true, false, false},
+		{"explicit tag on DC4 still guarded", 4, false, true, false},
+		{"no toggle", 1, false, false, false},
+		{"DC203 is not testable", 203, true, false, false},
+	}
+	for _, tc := range cases {
+		if got := testDCRouting(tc.dc, tc.force, tc.explicit); got != tc.want {
+			t.Errorf("%s: testDCRouting(%d, %v, %v) = %v, want %v", tc.name, tc.dc, tc.force, tc.explicit, got, tc.want)
+		}
+	}
+}
+
+// TestDCInitContradictsKnownIP guards F6: 149.154.174.100 is listed for both
+// DC1 and DC3, so the destination IP must not override a parsed tag there.
+func TestDCInitContradictsKnownIP(t *testing.T) {
+	if dcInitContradictsKnownIP("149.154.174.100", 3) {
+		t.Fatal("shared ingress must not override a parsed DC tag")
+	}
+	if !dcInitContradictsKnownIP("149.154.167.51", 5) {
+		t.Fatal("bogus tag on an unambiguous endpoint must be discarded")
+	}
+	if dcInitContradictsKnownIP("149.154.167.51", 2) {
+		t.Fatal("matching tag must not be discarded")
+	}
+	if dcInitContradictsKnownIP("8.8.8.8", 5) {
+		t.Fatal("unknown IP must not produce an opinion")
+	}
+}
+
+// TestShutdownHooksRunOnce guards F5's mechanism: every GUI exit path goes
+// through os.Exit, so cleanup has to live in hooks and run exactly once.
+func TestShutdownHooksRunOnce(t *testing.T) {
+	var calls atomic.Int32
+	registerShutdownHook(func() { calls.Add(1) })
+	registerShutdownHook(func() { calls.Add(1) })
+	runShutdownHooks()
+	runShutdownHooks()
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("hooks must run exactly once each, got %d calls", got)
+	}
+}
+
+// TestLaunchScriptsDoNotExportGOMEMLIMIT is the in-repo twin of the CI step
+// "Reject a forced GOMEMLIMIT in daemon launch scripts". service.sh exists
+// only in the android branch; the test skips elsewhere.
+func TestLaunchScriptsDoNotExportGOMEMLIMIT(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "service.sh"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("service.sh not present on this branch")
+		}
+		t.Fatalf("read service.sh: %v", err)
+	}
+	for i, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "export GOMEMLIMIT=") {
+			t.Fatalf("service.sh:%d exports GOMEMLIMIT: the runtime honours it even though the Go code no longer sets it", i+1)
+		}
 	}
 }
