@@ -108,15 +108,12 @@ type guiState struct {
 // double-click entry point on Windows (built with -tags nativegui).
 func cmdGui(_ string) {
 	ensureDir()
-	startSignalLogger()
 
 	cleanup, ok := acquireSingleInstance()
 	if !ok {
 		// Existing instance was brought to foreground
 		return
 	}
-	defer cleanup()
-
 	trayCleanup := setupSystemTray(
 		"TeleWEB",
 		func() {
@@ -128,11 +125,28 @@ func cmdGui(_ string) {
 			openInBrowser("http://127.0.0.1:17842")
 		},
 		func() {
-			stopServer()
+			runShutdownHooks()
 			os.Exit(0)
 		},
 	)
-	defer trayCleanup()
+
+	// Every exit path here goes through os.Exit, which skips defers, so the
+	// cleanup has to be reachable from the shutdown-hook path the signal
+	// logger uses. Without these hooks Ctrl+C killed the dashboard while the
+	// child tgws daemon and the WinDivert interception kept running, and the
+	// tray icon stayed behind as a ghost.
+	var teardownOnce sync.Once
+	teardown := func() {
+		teardownOnce.Do(func() {
+			stopServer()
+			trayCleanup()
+			cleanup()
+		})
+	}
+	registerShutdownHook(teardown)
+	defer teardown()
+
+	startSignalLogger()
 
 	go func() {
 		w := new(app.Window)
@@ -144,8 +158,10 @@ func cmdGui(_ string) {
 		if err := guiLoop(w); err != nil {
 			logf("gui: %v", err)
 			fmt.Fprintln(os.Stderr, err)
+			runShutdownHooks()
 			os.Exit(1)
 		}
+		runShutdownHooks()
 		os.Exit(0)
 	}()
 	app.Main()
