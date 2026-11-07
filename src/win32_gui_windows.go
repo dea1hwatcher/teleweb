@@ -214,8 +214,8 @@ func setMainWindowIcon(hwnd uintptr) {
 }
 
 // applyWindowsDarkTheme sets the DWM non-client attributes for dark mode,
-// custom caption color matching Material 3 Expressive Dark (#101418), and rounded
-// corners on Windows 11.
+// Mica system backdrop, custom caption color matching WinUI 3 Base (#202020),
+// and rounded corners on Windows 11.
 func applyWindowsDarkTheme(title string) {
 	hwnd := findMainWindow()
 	if hwnd == 0 {
@@ -228,12 +228,21 @@ func applyWindowsDarkTheme(title string) {
 	if r != 0 {
 		procDwmSetAttr.Call(hwnd, 19, uintptr(unsafe.Pointer(&darkMode)), unsafe.Sizeof(darkMode))
 	}
-	// DWMWA_CAPTION_COLOR (35) = 0x00181410 (#101418 in BGR)
-	var captionColor uint32 = 0x00181410
+
+	// DWMWA_SYSTEMBACKDROP_TYPE (38) = DWMSBT_MAINWINDOW (2, Mica on Win11 22H2+)
+	var backdropType uint32 = 2
+	procDwmSetAttr.Call(hwnd, 38, uintptr(unsafe.Pointer(&backdropType)), unsafe.Sizeof(backdropType))
+
+	// DWMWA_MICA_EFFECT (1029) = 1 (Mica on Win11 21H2 Build 22000)
+	var micaEffect uint32 = 1
+	procDwmSetAttr.Call(hwnd, 1029, uintptr(unsafe.Pointer(&micaEffect)), unsafe.Sizeof(micaEffect))
+
+	// DWMWA_CAPTION_COLOR (35) = 0x00202020 (#202020 in BGR)
+	var captionColor uint32 = 0x00202020
 	procDwmSetAttr.Call(hwnd, 35, uintptr(unsafe.Pointer(&captionColor)), unsafe.Sizeof(captionColor))
 
-	// DWMWA_BORDER_COLOR (34) = 0x002F2A26 (#262A2F in BGR)
-	var borderColor uint32 = 0x002F2A26
+	// DWMWA_BORDER_COLOR (34) = 0x00383838 (#383838 in BGR)
+	var borderColor uint32 = 0x00383838
 	procDwmSetAttr.Call(hwnd, 34, uintptr(unsafe.Pointer(&borderColor)), unsafe.Sizeof(borderColor))
 
 	// DWMWA_WINDOW_CORNER_PREFERENCE (33) = DWMWCP_ROUND (2)

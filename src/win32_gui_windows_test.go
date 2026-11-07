@@ -147,3 +147,8 @@ func TestSetupSystemTray(t *testing.T) {
 	// Post tray click message; must handle smoothly without stalling
 	procPostMessage.Call(hwnd, wmUserTray, 1, wmLButtonUp)
 }
+
+func TestApplyWindowsDarkThemeNoHwnd(t *testing.T) {
+	// Should gracefully return without panic when no window is present
+	applyWindowsDarkTheme("NonExistentWindow")
+}
