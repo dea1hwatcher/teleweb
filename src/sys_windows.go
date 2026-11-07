@@ -66,9 +66,22 @@ func attachParentConsole() {
 	}
 }
 
-func setDaemonProcAttr(cmd *exec.Cmd) {
+func setCmdNoWindow(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NO_WINDOW,
+	}
+}
+
+func setDaemonProcAttr(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,
 		HideWindow:    true,
 	}
 }

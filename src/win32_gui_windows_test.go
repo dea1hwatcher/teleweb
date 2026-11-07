@@ -36,3 +36,12 @@ func TestCopyUTF16AlwaysTerminates(t *testing.T) {
 	}
 	copyUTF16(nil, "ignored")
 }
+
+func TestCreateIconFromPNG(t *testing.T) {
+	for _, sz := range []int{16, 32, 48, 64} {
+		hIcon := loadAppIcon(sz)
+		if hIcon == 0 {
+			t.Fatalf("loadAppIcon failed for size %d", sz)
+		}
+	}
+}

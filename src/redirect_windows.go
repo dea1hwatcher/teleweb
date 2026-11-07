@@ -732,7 +732,9 @@ func tryUnloadWinDivertService() {
 	}
 	for _, name := range []string{"WinDivert", "WinDivert14", "Monkey"} {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		_ = exec.CommandContext(ctx, "sc.exe", "stop", name).Run()
+		cmd := exec.CommandContext(ctx, "sc.exe", "stop", name)
+		setCmdNoWindow(cmd)
+		_ = cmd.Run()
 		cancel()
 	}
 }

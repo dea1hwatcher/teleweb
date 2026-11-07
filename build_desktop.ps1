@@ -44,6 +44,9 @@ function Copy-Common([string]$dest) {
 New-Item -ItemType Directory -Force -Path $WebuiFallback | Out-Null
 Get-ChildItem $WebuiFallback -File | Where-Object { $_.Name -ne "placeholder.txt" } | Remove-Item -Force
 Copy-Item "$Webroot\*" $WebuiFallback -Recurse -Force
+if (Test-Path "$RootDir\icon.png") {
+    Copy-Item "$RootDir\icon.png" "$SrcDir\app_icon.png" -Force
+}
 
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 Get-ChildItem $DistDir -File -Filter "tgws-windows-*.exe" | Remove-Item -Force

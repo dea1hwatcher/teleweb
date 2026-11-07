@@ -9,6 +9,7 @@ package main
 // the GUI variant so a service build carries none of it.
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"runtime"
@@ -18,6 +19,9 @@ import (
 
 	"golang.org/x/sys/windows"
 )
+
+//go:embed app_icon.png
+var appIconPNG []byte
 
 var (
 	user32              = windows.NewLazySystemDLL("user32.dll")
@@ -31,6 +35,9 @@ var (
 	procShowWindow               = user32.NewProc("ShowWindow")
 	procSetFgWindow              = user32.NewProc("SetForegroundWindow")
 	procLoadIcon                 = user32.NewProc("LoadIconW")
+	procCreateIconFromResourceEx = user32.NewProc("CreateIconFromResourceEx")
+	procDestroyIcon              = user32.NewProc("DestroyIcon")
+	procSendMessage              = user32.NewProc("SendMessageW")
 	procDefWindowProc            = user32.NewProc("DefWindowProcW")
 	procRegisterClassEx          = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx           = user32.NewProc("CreateWindowExW")
@@ -135,6 +142,48 @@ func findMainWindow() uintptr {
 	return mainHwnd
 }
 
+func loadAppIcon(size int) uintptr {
+	if len(appIconPNG) > 0 {
+		hIcon, _, _ := procCreateIconFromResourceEx.Call(
+			uintptr(unsafe.Pointer(&appIconPNG[0])),
+			uintptr(len(appIconPNG)),
+			1,          // fIcon = TRUE
+			0x00030000, // dwVersion
+			uintptr(size),
+			uintptr(size),
+			0, // flags
+		)
+		if hIcon != 0 {
+			return hIcon
+		}
+	}
+	hMod, _, _ := procGetModuleHandle.Call(0)
+	hIcon, _, _ := procLoadIcon.Call(hMod, 1)
+	if hIcon == 0 {
+		hIcon, _, _ = procLoadIcon.Call(0, 32512)
+	}
+	return hIcon
+}
+
+func setMainWindowIcon(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	hIconBig := loadAppIcon(32)
+	hIconSm := loadAppIcon(16)
+	const (
+		wmSetIcon = 0x0080
+		iconSmall = 0
+		iconBig   = 1
+	)
+	if hIconBig != 0 {
+		procSendMessage.Call(hwnd, wmSetIcon, iconBig, hIconBig)
+	}
+	if hIconSm != 0 {
+		procSendMessage.Call(hwnd, wmSetIcon, iconSmall, hIconSm)
+	}
+}
+
 // applyWindowsDarkTheme sets the DWM non-client attributes for dark mode,
 // custom caption color matching Material 3 Expressive Dark (#101418), and rounded
 // corners on Windows 11.
@@ -143,6 +192,7 @@ func applyWindowsDarkTheme(title string) {
 	if hwnd == 0 {
 		return
 	}
+	setMainWindowIcon(hwnd)
 	var darkMode uint32 = 1
 	// DWMWA_USE_IMMERSIVE_DARK_MODE (20 on Win10 1903+/Win11, 19 on Win10 1809)
 	r, _, _ := procDwmSetAttr.Call(hwnd, 20, uintptr(unsafe.Pointer(&darkMode)), unsafe.Sizeof(darkMode))
@@ -167,6 +217,7 @@ func showMainWindow(restore bool) {
 	if hwnd == 0 {
 		return
 	}
+	setMainWindowIcon(hwnd)
 	const (
 		SW_NORMAL  = 1
 		SW_RESTORE = 9
@@ -257,10 +308,7 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 		runtime.LockOSThread()
 		className, _ := windows.UTF16PtrFromString("TeleWEB_Tray_Window_Class")
 		hMod, _, _ := procGetModuleHandle.Call(0)
-		hIcon, _, _ := procLoadIcon.Call(hMod, 1)
-		if hIcon == 0 {
-			hIcon, _, _ = procLoadIcon.Call(0, 32512)
-		}
+		hIcon := loadAppIcon(16)
 
 		wndProc := syscall.NewCallback(func(hwnd, msg, wParam, lParam uintptr) uintptr {
 			switch msg {
@@ -349,6 +397,8 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
 			lpfnWndProc:   wndProc,
 			hInstance:     hMod,
+			hIcon:         hIcon,
+			hIconSm:       hIcon,
 			lpszClassName: className,
 		}
 		procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))

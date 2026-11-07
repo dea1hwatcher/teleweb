@@ -1142,9 +1142,14 @@ var (
 )
 
 func packageUID(pkg string) int {
+	if !isAndroidRuntime() {
+		return 0
+	}
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err == nil {
 			m := pmUIDRe.FindSubmatch(out)
@@ -1157,7 +1162,9 @@ func packageUID(pkg string) int {
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	out, _ := exec.CommandContext(ctx, "dumpsys", "package", pkg).CombinedOutput()
+	c := exec.CommandContext(ctx, "dumpsys", "package", pkg)
+	setCmdNoWindow(c)
+	out, _ := c.CombinedOutput()
 	cancel()
 	for _, re := range []*regexp.Regexp{dumpsysUserIdRe, dumpsysAppIdRe} {
 		m := re.FindSubmatch(out)
@@ -1172,9 +1179,14 @@ func packageUID(pkg string) int {
 }
 
 func findPackageAPK(pkg string) string {
+	if !isAndroidRuntime() {
+		return ""
+	}
 	for _, cmd := range [][]string{{"cmd", "package", "path", pkg}, {"pm", "path", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
@@ -1443,6 +1455,9 @@ func parsePMPackagesListing(out string) []pmPackage {
 }
 
 func discoverApps() ([]App, []int) {
+	if !isAndroidRuntime() {
+		return nil, nil
+	}
 	var apps []App
 	var uids []int
 	seen := map[int]bool{}
@@ -1456,7 +1471,9 @@ func discoverApps() ([]App, []int) {
 		{"pm", "list", "packages", "-U"},
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err != nil {
 			continue
@@ -1551,6 +1568,10 @@ func installedApps() ([]App, []int) {
 	}
 	appCacheMu.Unlock()
 
+	if !isAndroidRuntime() {
+		return nil, nil
+	}
+
 	discoverMu.Lock()
 	defer discoverMu.Unlock()
 
@@ -1640,6 +1661,7 @@ func runCmd(name string, args ...string) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		c := exec.CommandContext(ctx, name, args...)
+		setCmdNoWindow(c)
 		b, e := c.CombinedOutput()
 		cancel()
 		if e == nil {
@@ -4259,6 +4281,13 @@ var (
 // androidDNSServers finds resolver addresses exposed by Android's netd.
 // Caches discovered resolvers for 45 seconds to avoid repeatedly spawning getprop processes.
 func androidDNSServers() []string {
+	if !isAndroidRuntime() {
+		dnsCacheMu.Lock()
+		dnsCacheServers = []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+		dnsCacheAt = time.Now()
+		dnsCacheMu.Unlock()
+		return []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+	}
 	dnsCacheMu.RLock()
 	if time.Since(dnsCacheAt) < 45*time.Second && len(dnsCacheServers) > 0 {
 		cached := append([]string(nil), dnsCacheServers...)
@@ -4283,6 +4312,9 @@ func androidDNSServers() []string {
 // discoverAndroidDNSServers probes Android's netd resolvers and the local
 // resolv.conf, falling back to well-known public resolvers.
 func discoverAndroidDNSServers() []string {
+	if !isAndroidRuntime() {
+		return []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+	}
 	var out []string
 	seen := map[string]bool{}
 	add := func(raw string) {
@@ -4301,7 +4333,9 @@ func discoverAndroidDNSServers() []string {
 		}
 	}
 	// 1. Android property dumps (catches net.wlan0.dns1, net.rmnet_data0.dns1, net.dns1..4, etc.)
-	if b, err := exec.Command("getprop").Output(); err == nil && len(b) > 0 {
+	cmdGetprop := exec.Command("getprop")
+	setCmdNoWindow(cmdGetprop)
+	if b, err := cmdGetprop.Output(); err == nil && len(b) > 0 {
 		for _, line := range strings.Split(string(b), "\n") {
 			if strings.Contains(strings.ToLower(line), "dns") {
 				parts := strings.SplitN(line, "]: [", 2)
@@ -4314,7 +4348,9 @@ func discoverAndroidDNSServers() []string {
 	} else {
 		// 2. Legacy net.dns1..4 fallback if full getprop dump is unavailable
 		for i := 1; i <= 4; i++ {
-			b, err := exec.Command("getprop", fmt.Sprintf("net.dns%d", i)).Output()
+			c := exec.Command("getprop", fmt.Sprintf("net.dns%d", i))
+			setCmdNoWindow(c)
+			b, err := c.Output()
 			if err == nil {
 				add(string(b))
 			}
