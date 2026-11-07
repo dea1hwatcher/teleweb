@@ -28,6 +28,17 @@ jobs:
           ver=$(sed -n 's/^version=//p' module.prop | tr -d '\r')
           [ "$ver" = "$TAG" ] || { echo "::error::module.prop: version=$ver, tag is $TAG"; exit 1; }
 
+      - name: Reject a forced GOMEMLIMIT in daemon launch scripts
+        run: |
+          # Match only an active export: a comment mentioning the variable is
+          # fine. The runtime honours GOMEMLIMIT from the environment even
+          # though the Go code no longer sets it, so an export here silently
+          # re-enables the heap clamp (the v0.1.7-v0.1.9 GC death spiral).
+          if git grep -nE '^[[:space:]]*export[[:space:]]+GOMEMLIMIT' -- '*.sh'; then
+            echo "::error::a launch script exports GOMEMLIMIT; the Go fix does not take effect while it is set"
+            exit 1
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
