@@ -534,12 +534,9 @@ func readEnabled() bool {
 	return strings.TrimSpace(string(b)) == "1"
 }
 func writeEnabled(v bool) error {
-	ensureDir()
-	s := "0\n"
-	if v {
-		s = "1\n"
-	}
-	return os.WriteFile(path("enabled"), []byte(s), 0600)
+	// Same file format as the readFlag/writeFlag pair; readEnabled keeps its
+	// own default-true rule for a missing file, unlike readFlag.
+	return writeFlag("enabled", v)
 }
 
 // cfgFileCache memoizes config-file parses for the hot per-connection path.
@@ -837,7 +834,6 @@ func tailLog(n int) string {
 var packageNames = []struct{ Pkg, Name string }{
 	{"com.exteragram.messenger", "exteraGram"},
 	{"org.telegram.messenger", "Telegram"},
-	{"org.telegram.messenger.web", "Telegram Web"},
 	{"org.telegram.messenger.beta", "Telegram Beta"},
 	{"org.telegram.plus", "Plus Messenger"},
 	{"org.telegram.plus.beta", "Plus Messenger Beta"},
@@ -1620,6 +1616,10 @@ var telegramV4 = func() []string {
 	return out
 }()
 
+// telegramV6 lists the broad IPv6 aggregates handed to ip6tables. It is the
+// single source for telegramV6Prefixes (the SOCKS/transparency checks); the
+// finer telegramV6Subnets table refines some of these aggregates into per-DC
+// /48-/64 mappings for dcFor and is deliberately kept separate.
 var telegramV6 = []string{
 	"2001:b28::/32",
 	"2001:67c:4e8::/48",
@@ -1891,6 +1891,13 @@ func loadLearnedDCs() {
 	now := time.Now().Unix()
 	for ip, entry := range saved {
 		if entry.DC >= 1 && (entry.DC <= 5 || entry.DC == 203) {
+			// Re-validate on load: a dc-learned.json written by a build
+			// without the learnDC aggregate guard may hold non-Telegram
+			// addresses, and the file itself has no entry cap.
+			if addr, err := netip.ParseAddr(ip); err != nil || !isTelegramAggregate(addr) {
+				cleaned = true
+				continue
+			}
 			if dcInitContradictsKnownIP(ip, entry.DC) {
 				cleaned = true
 				continue
@@ -1901,6 +1908,25 @@ func loadLearnedDCs() {
 			learnedDCs.Store(ip, entry)
 			count++
 		}
+	}
+	// learnDC caps its writes at learnedDCCap; a hand-edited or legacy file
+	// must not exceed that on load. Keep the freshest entries.
+	if count > learnedDCCap {
+		type ipEntry struct {
+			ip    string
+			entry learnedDCEntry
+		}
+		all := make([]ipEntry, 0, count)
+		learnedDCs.Range(func(key, value any) bool {
+			all = append(all, ipEntry{key.(string), value.(learnedDCEntry)})
+			return true
+		})
+		sort.Slice(all, func(i, j int) bool { return all[i].entry.UpdatedAt > all[j].entry.UpdatedAt })
+		for _, e := range all[learnedDCCap:] {
+			learnedDCs.Delete(e.ip)
+			cleaned = true
+		}
+		count = learnedDCCap
 	}
 	if count > 0 {
 		logf("dc-learn: restored %d learned IP->DC endpoints from storage", count)
@@ -1931,10 +1957,24 @@ func persistLearnedDCs() {
 	tmp := path("dc-learned.json.tmp")
 	dst := path("dc-learned.json")
 	if err := os.WriteFile(tmp, b, 0600); err == nil {
-		_ = os.Rename(tmp, dst)
+		if err := os.Rename(tmp, dst); err != nil {
+			// A failed rename (AV lock, ENOSPC) must not silently drop the
+			// learned map: the dirty flag stays set, so the next learnDC
+			// retries the persist, and the orphaned tmp file is removed.
+			logf("dc-learn: persist failed: %v", err)
+			_ = os.Remove(tmp)
+			return
+		}
 		learnedDCDirty = false
 	}
 }
+
+// learnedDCCap bounds the learned IP->DC map (see learnDC); when it overflows,
+// the oldest entries are evicted down to learnedDCLive.
+const (
+	learnedDCCap  = 256
+	learnedDCLive = 192
+)
 
 func learnDC(ip string, dc int, isMedia bool) {
 	if dc < 1 || (dc > 5 && dc != 203) || ip == "" {
@@ -1968,11 +2008,11 @@ func learnDC(ip string, dc int, isMedia bool) {
 		}
 		return true
 	})
-	if count >= 256 {
+	if count >= learnedDCCap {
 		sort.Slice(items, func(i, j int) bool {
 			return items[i].updatedAt < items[j].updatedAt
 		})
-		toDelete := count - 192
+		toDelete := count - learnedDCLive
 		if toDelete > len(items) {
 			toDelete = len(items)
 		}
@@ -2015,8 +2055,10 @@ func setupRules() error {
 			// Telegram traffic (2001:b28::/32, 2a0a:f280::/32) then bypasses the WSS
 			// transport undiagnosed. rulesHealthy deliberately ignores the
 			// IPv6 family so the watchdog does not flap on such devices,
-			// so surface the failure here — once per daemon start.
-			logf("redirect: IPv6 rules failed: %v — Telegram IPv6 will bypass WSS", err)
+			// so surface the failure here and flag it for the rate-limited
+			// retry instead of leaving it broken for the daemon's lifetime.
+			ip6RulesFailed.Store(true)
+			logf("redirect: IPv6 rules failed: %v — Telegram IPv6 will bypass WSS until a retry succeeds", err)
 		}
 	}
 	setupCallsBypass(findBin("iptables"))
@@ -2041,8 +2083,9 @@ func cleanupRules() {
 	}
 	_, uids := installedApps()
 	iptCleanup(findBin("iptables"), uids, "TELEWEB")
-	// Clean up the previous release's IPv6 redirect chain even though this
-	// experimental build does not install new IPv6 redirects.
+	// Remove the previous release's IPv6 chain as well: setupRules installs
+	// TELEWEB into ip6tables whenever ip6tables exists, so cleanup must not
+	// leave a stale chain behind.
 	iptCleanup(findBin("ip6tables"), uids, "TELEWEB")
 	cleanupCallsBypass(findBin("iptables"))
 	cleanupCallsBypass(findBin("ip6tables"))
@@ -2481,6 +2524,46 @@ func rulesHealthy() bool {
 	return false
 }
 
+// ip6RulesFailed remembers that the ip6tables setup failed at least once, so
+// the watchdog can retry it: a boot-time xtables.lock contention or a
+// not-yet-ready netd used to leave Telegram IPv6 bypassing the WSS transport
+// for the daemon's entire lifetime.
+var (
+	ip6RulesFailed atomic.Bool
+	ip6LastRetry   atomic.Int64
+)
+
+const ip6RetryInterval = 5 * time.Minute
+
+// retryFailedIPv6Rules re-attempts the ip6tables setup after a failure. It is
+// rate-limited so a device without a usable ip6tables does not spawn extra
+// subprocesses on every watchdog tick; the flag stays set until a retry
+// succeeds.
+func retryFailedIPv6Rules() {
+	if !ip6RulesFailed.Load() {
+		return
+	}
+	now := time.Now().Unix()
+	if last := ip6LastRetry.Load(); last != 0 && now-last < int64(ip6RetryInterval/time.Second) {
+		return
+	}
+	ip6LastRetry.Store(now)
+	bin := findBin("ip6tables")
+	if bin == "" {
+		// Device has no ip6tables at all: stay quiet, the flag simply
+		// remains set and nothing is retried.
+		return
+	}
+	_, uids := installedApps()
+	if err := iptSetup(bin, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
+		logf("redirect: IPv6 rules retry failed: %v", err)
+		return
+	}
+	setupCallsBypass(bin)
+	ip6RulesFailed.Store(false)
+	logf("redirect: IPv6 rules restored on retry; Telegram IPv6 is back on the WSS transport")
+}
+
 func watchdog() {
 	ensureDir()
 	pid := os.Getpid()
@@ -2523,6 +2606,7 @@ func watchdog() {
 			}
 		}
 		protectProcess(readPIDFile("tgws.pid"))
+		retryFailedIPv6Rules()
 		if !rulesHealthy() {
 			logf("watchdog: iptables rules reset or corrupted, restoring; iptables=%q", findBin("iptables"))
 			if err := setupRules(); err != nil {
@@ -3007,7 +3091,16 @@ func maybeStartPprof() {
 	}
 	go func() {
 		logf("pprof: listening on %s", addr)
-		if err := http.ListenAndServe(addr, nil); err != nil {
+		// Explicit timeouts: a stalled loopback client must not hold a
+		// handler goroutine forever.
+		srv := &http.Server{
+			Addr:              addr,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      120 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logf("pprof: server exited: %v", err)
 		}
 	}()
@@ -3189,11 +3282,22 @@ func serve() {
 	// a burst of connections at boot can race the cache load and trigger a full scan.
 	loadRouteCache()
 	loadLearnedDCs()
-	startCFDomainsUpdater(context.Background())
-	initGlobalWsPool(context.Background())
+	// Both background workers get a cancellable context so a graceful stop
+	// can reach them; the pool additionally gets drained, otherwise up to
+	// poolSize pre-warmed sockets and the rotation goroutine survive until
+	// process death.
+	workerCtx, workerStop := context.WithCancel(context.Background())
+	startCFDomainsUpdater(workerCtx)
+	initGlobalWsPool(workerCtx)
 	if globalWsPool != nil {
 		globalWsPool.Warmup([]int{1, 2, 4})
 	}
+	registerShutdownHook(func() {
+		if globalWsPool != nil {
+			globalWsPool.drainAll()
+		}
+		workerStop()
+	})
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
@@ -3207,14 +3311,21 @@ func serve() {
 		return
 	}
 	defer ln.Close()
+	registerShutdownHook(func() { _ = ln.Close() })
 
 	if ln6, e6 := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", defaultPort)); e6 == nil {
 		defer ln6.Close()
+		registerShutdownHook(func() { _ = ln6.Close() })
 		go func() {
 			for {
 				c, err := ln6.Accept()
 				if err != nil {
-					return
+					if pause := acceptPause(err); pause < 0 {
+						return
+					} else if pause > 0 {
+						time.Sleep(pause)
+					}
+					continue
 				}
 				go func(conn net.Conn) {
 					defer func() {
@@ -3260,7 +3371,14 @@ func serve() {
 	for {
 		c, e := ln.Accept()
 		if e != nil {
-			logf("accept: %v", e)
+			// EMFILE/ENFILE return immediately and would spin the CPU at
+			// 100%; pause briefly instead. A closed listener stops the loop.
+			if pause := acceptPause(e); pause < 0 {
+				return
+			} else if pause > 0 {
+				logf("accept: %v; retrying in %s", e, pause)
+				time.Sleep(pause)
+			}
 			continue
 		}
 		go func(conn net.Conn) {
@@ -3484,6 +3602,21 @@ func handleClient(c net.Conn) {
 
 // serveConn runs the MTProto-over-WSS pipeline for an established client
 // socket with a known original destination (transparent redirect or SOCKS5).
+// acceptPause decides how an accept loop reacts to Accept() returning an
+// error. A closed listener (-1) means the loop must stop; a transient failure
+// such as EMFILE/ENFILE returns immediately and would otherwise busy-spin the
+// CPU, so the loop pauses briefly before retrying; anything else retries at
+// once (0).
+func acceptPause(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return -1
+	}
+	return 50 * time.Millisecond
+}
+
 func serveConn(c net.Conn, orig netip.AddrPort) {
 	id := atomic.AddInt64(&connSeq, 1)
 	atomic.AddInt64(&active, 1)
@@ -3633,34 +3766,85 @@ func cdn203Dispatch(orig netip.AddrPort, dc int) bool {
 	return dc == 203 && isCDN203IP(orig.Addr())
 }
 
-// cdn203Fails is a negative cache of CDN endpoints whose direct dial recently
-// failed. When an endpoint is known-unreachable (e.g. the ISP blocks the CDN
-// range), client connections are closed immediately instead of piling up one
-// 5-second dial attempt per retry — a churning client otherwise opens dozens
-// of half-open sessions per second.
+// failCache is a negative cache of destinations whose direct dial recently
+// failed. When an endpoint is known-unreachable (an ISP blocking the CDN
+// range, or DPI filtering direct Telegram IPs), client connections are failed
+// fast instead of piling up dozens of parallel dial timeouts from churning
+// clients. cdn203Fails and directDialFails previously carried two verbatim
+// copies of this machinery; they are instances of the same thing.
+type failCache struct {
+	mu      sync.Mutex
+	m       map[string]time.Time
+	backoff time.Duration
+}
+
+func newFailCache(backoff time.Duration) *failCache {
+	return &failCache{m: map[string]time.Time{}, backoff: backoff}
+}
+
+func (fc *failCache) blockedRecently(key string) bool {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	t, ok := fc.m[key]
+	return ok && time.Now().Before(t)
+}
+
+func (fc *failCache) markFail(key string) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.m[key] = time.Now().Add(fc.backoff)
+	capFailMapLocked(fc.m)
+}
+
+func (fc *failCache) markReachable(key string) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	delete(fc.m, key)
+}
+
+// size reports the current entry count (diagnostics and tests).
+func (fc *failCache) size() int {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return len(fc.m)
+}
+
+// clear drops every entry (tests).
+func (fc *failCache) clear() {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	for k := range fc.m {
+		delete(fc.m, k)
+	}
+}
+
+// expireOlderThan drops entries whose negative-cache window has passed; the
+// hourly sweep uses it so stale keys do not linger until overwritten.
+func (fc *failCache) expireOlderThan(now time.Time) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	for key, until := range fc.m {
+		if until.Before(now) {
+			delete(fc.m, key)
+		}
+	}
+}
+
+// cdn203Fails covers CDN endpoints whose direct dial recently failed.
 var (
-	cdn203FailMu     sync.Mutex
-	cdn203Fails      = map[string]time.Time{}
+	cdn203Fails      = newFailCache(30 * time.Second)
 	cdn203FailLogAt  time.Time
 	cdn203FailLogged int
 )
 
-const cdn203FailBackoff = 30 * time.Second
-
-func cdn203BlockedRecently(dst string) bool {
-	cdn203FailMu.Lock()
-	defer cdn203FailMu.Unlock()
-	t, ok := cdn203Fails[dst]
-	return ok && time.Now().Before(t)
-}
+func cdn203BlockedRecently(dst string) bool { return cdn203Fails.blockedRecently(dst) }
 
 func cdn203MarkFail(dst string) {
-	cdn203FailMu.Lock()
-	defer cdn203FailMu.Unlock()
-	cdn203Fails[dst] = time.Now().Add(cdn203FailBackoff)
+	cdn203Fails.markFail(dst)
 	now := time.Now()
 	if now.Sub(cdn203FailLogAt) >= 10*time.Second {
-		logf("CDN203 %s unreachable on the direct path (%d failed dials in 10s); failing client connections fast for %s", dst, cdn203FailLogged+1, cdn203Fails[dst].Format("15:04:05"))
+		until := time.Now().Add(cdn203Fails.backoff)
+		logf("CDN203 %s unreachable on the direct path (%d failed dials in 10s); failing client connections fast for %s", dst, cdn203FailLogged+1, until.Format("15:04:05"))
 		cdn203FailLogAt = now
 		cdn203FailLogged = 0
 		return
@@ -3668,41 +3852,16 @@ func cdn203MarkFail(dst string) {
 	cdn203FailLogged++
 }
 
-func cdn203MarkReachable(dst string) {
-	cdn203FailMu.Lock()
-	defer cdn203FailMu.Unlock()
-	delete(cdn203Fails, dst)
-}
+func cdn203MarkReachable(dst string) { cdn203Fails.markReachable(dst) }
 
-// directDialFails is a negative cache of direct Telegram IP endpoints whose dial
-// recently failed. When an ISP/DPI blocks direct Telegram IPs, subsequent dials
-// are failed fast instead of piling up dozens of parallel 1.2-second dial timeouts
-// from churning clients.
-var (
-	directDialFailMu sync.Mutex
-	directDialFails  = map[string]time.Time{}
-)
+// directDialFails covers direct Telegram IP endpoints whose dial recently failed.
+var directDialFails = newFailCache(60 * time.Second)
 
-const directDialFailBackoff = 60 * time.Second
+func directDialBlockedRecently(ipStr string) bool { return directDialFails.blockedRecently(ipStr) }
 
-func directDialBlockedRecently(ipStr string) bool {
-	directDialFailMu.Lock()
-	defer directDialFailMu.Unlock()
-	t, ok := directDialFails[ipStr]
-	return ok && time.Now().Before(t)
-}
+func directDialMarkFail(ipStr string) { directDialFails.markFail(ipStr) }
 
-func directDialMarkFail(ipStr string) {
-	directDialFailMu.Lock()
-	defer directDialFailMu.Unlock()
-	directDialFails[ipStr] = time.Now().Add(directDialFailBackoff)
-}
-
-func directDialMarkReachable(ipStr string) {
-	directDialFailMu.Lock()
-	defer directDialFailMu.Unlock()
-	delete(directDialFails, ipStr)
-}
+func directDialMarkReachable(ipStr string) { directDialFails.markReachable(ipStr) }
 
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
@@ -3763,6 +3922,27 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	pipeTCPToTCP(c, remote, id, 203)
 }
 
+// startIdleWatchdog closes the connection through onIdle once no bytes have
+// moved for the 5-minute idle limit, and stops as soon as the relay tears the
+// connection down for any other reason (stopIdle is closed by closeBoth).
+// Shared by pipeTCPToTCP and pipeWSTunnel, which previously carried two
+// verbatim copies of this goroutine.
+func startIdleWatchdog(stopIdle <-chan struct{}, lastActivity *atomic.Int64, onIdle func()) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopIdle:
+			return
+		case <-ticker.C:
+			if time.Since(time.Unix(0, lastActivity.Load())) > 5*time.Minute {
+				onIdle()
+				return
+			}
+		}
+	}
+}
+
 func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 	setConnSockOpts(c)
 	setConnSockOpts(remote)
@@ -3780,28 +3960,34 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stopIdle:
-				return
-			case <-ticker.C:
-				if time.Since(time.Unix(0, lastActivity.Load())) > 5*time.Minute {
-					logf("conn #%d DC%d (raw TCP) closed due to idle timeout (5m)", id, dc)
-					closeBoth()
-					return
-				}
-			}
+	go startIdleWatchdog(stopIdle, &lastActivity, func() {
+		logf("conn #%d DC%d (raw TCP) closed due to idle timeout (5m)", id, dc)
+		closeBoth()
+	})
+
+	// halfClose marks one direction finished. For a TCP peer that means
+	// shutting down our write side, so the other direction can drain: a client
+	// that half-closes after its request still gets the final reply instead of
+	// an abrupt close. Peers without half-close support fall back to a full
+	// close, and so does a hard error -- those kill the session either way.
+	halfClose := func(dst net.Conn) {
+		if tc, ok := dst.(*net.TCPConn); ok && tc.CloseWrite() == nil {
+			return
 		}
-	}()
+		closeBoth()
+	}
+	directionDone := func(err error, dst net.Conn) {
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			closeBoth()
+			return
+		}
+		halfClose(dst)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		defer closeBoth()
 		bufPtr := ioBufPool.Get().(*[]byte)
 		defer ioBufPool.Put(bufPtr)
 		buf := *bufPtr
@@ -3810,20 +3996,21 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 			if nr > 0 {
 				lastActivity.Store(time.Now().UnixNano())
 				if ew := writeFull(remote, buf[:nr]); ew != nil {
-					break
+					closeBoth()
+					return
 				}
 				atomic.AddInt64(&upBytes, int64(nr))
 				atomic.AddInt64(&trafficUpBytes, int64(nr))
 			}
 			if err != nil {
-				break
+				directionDone(err, remote)
+				return
 			}
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		defer closeBoth()
 		bufPtr := ioBufPool.Get().(*[]byte)
 		defer ioBufPool.Put(bufPtr)
 		buf := *bufPtr
@@ -3832,13 +4019,15 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 			if nr > 0 {
 				lastActivity.Store(time.Now().UnixNano())
 				if ew := writeFull(c, buf[:nr]); ew != nil {
-					break
+					closeBoth()
+					return
 				}
 				atomic.AddInt64(&downBytes, int64(nr))
 				atomic.AddInt64(&trafficDownBytes, int64(nr))
 			}
 			if err != nil {
-				break
+				directionDone(err, c)
+				return
 			}
 		}
 	}()
@@ -3862,22 +4051,12 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 	defer closeBoth()
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stopIdle:
-				return
-			case <-ticker.C:
-				if time.Since(time.Unix(0, lastActivity.Load())) > 5*time.Minute {
-					logf("conn #%d DC%d closed due to idle timeout (5m)", id, dc)
-					closeBoth()
-					return
-				}
-			}
-		}
-	}()
+	// A WebSocket has no half-close: once one side is done the session ends,
+	// so this relay keeps the plain closeBoth semantics.
+	go startIdleWatchdog(stopIdle, &lastActivity, func() {
+		logf("conn #%d DC%d closed due to idle timeout (5m)", id, dc)
+		closeBoth()
+	})
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -3984,8 +4163,11 @@ func mediaForIP(ip netip.Addr) bool {
 	if !ip.Is4() {
 		return false
 	}
-	// Exact media endpoints observed in Telegram client/proxy tables. Authoritative
-	// static classification takes precedence over any dynamically learned cache.
+	// Bootstrap list of media endpoints observed in Telegram client/proxy
+	// tables: lookupLearnedDC below is empty until the first learned session,
+	// so this list cannot be dropped. Authoritative static classification
+	// takes precedence over the learned cache; do NOT extend it by hand when
+	// an endpoint can be learned instead.
 	switch ip.String() {
 	case "149.154.175.52", "149.154.175.211", "149.154.167.151", "149.154.167.222", "149.154.167.223", "149.154.162.123", "149.154.167.35", "149.154.175.102", "149.154.164.250", "149.154.166.120", "149.154.166.121", "149.154.167.118", "149.154.165.111", "149.154.165.136", "149.154.171.255", "91.108.56.102", "91.108.56.128", "91.108.56.151":
 		return true
@@ -4070,12 +4252,22 @@ func androidDNSServers() []string {
 	}
 	dnsCacheMu.RUnlock()
 
-	dnsCacheMu.Lock()
-	defer dnsCacheMu.Unlock()
-	if time.Since(dnsCacheAt) < 45*time.Second && len(dnsCacheServers) > 0 {
-		return append([]string(nil), dnsCacheServers...)
-	}
+	// Discovery runs without holding dnsCacheMu: it spawns several getprop
+	// subprocesses and reads /etc/resolv.conf, and holding the write lock here
+	// stalled every systemDNSResolver lookup for seconds. A rare duplicate
+	// discovery is harmless — both runs produce the same resolver list.
+	out := discoverAndroidDNSServers()
 
+	dnsCacheMu.Lock()
+	dnsCacheServers = out
+	dnsCacheAt = time.Now()
+	dnsCacheMu.Unlock()
+	return append([]string(nil), out...)
+}
+
+// discoverAndroidDNSServers probes Android's netd resolvers and the local
+// resolv.conf, falling back to well-known public resolvers.
+func discoverAndroidDNSServers() []string {
 	var out []string
 	seen := map[string]bool{}
 	add := func(raw string) {
@@ -4126,10 +4318,7 @@ func androidDNSServers() []string {
 	for _, fallback := range []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"} {
 		add(fallback)
 	}
-
-	dnsCacheServers = out
-	dnsCacheAt = time.Now()
-	return append([]string(nil), out...)
+	return out
 }
 
 func androidDNSResolver() *net.Resolver {
@@ -4354,6 +4543,57 @@ func (f *mtprotoPacketFramer) nextPacketSize() (int, bool, error) {
 	return 0, false, fmt.Errorf("unsupported MTProto transport tag %#x", f.proto)
 }
 
+// shrinkBuffers releases oversized framer buffers once the residual data is
+// small, so one large media packet does not pin megabytes for the lifetime of
+// the connection.
+func (f *mtprotoPacketFramer) shrinkBuffers() {
+	if len(f.raw) == 0 {
+		if cap(f.raw) > 128*1024 {
+			f.raw = nil
+			f.plain = nil
+		} else {
+			f.raw = f.raw[:0]
+			f.plain = f.plain[:0]
+		}
+	} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
+		newRaw := make([]byte, len(f.raw))
+		copy(newRaw, f.raw)
+		f.raw = newRaw
+
+		newPlain := make([]byte, len(f.plain))
+		copy(newPlain, f.plain)
+		f.plain = newPlain
+	}
+}
+
+// popPackets drains every complete packet currently buffered and advances the
+// framer past them. It returns, per packet, both the original encrypted frame
+// (with the transport length prefix, forwarded verbatim by the WSS relay) and
+// the decrypted packet (same prefix, POSTed by the H2 bridge). Consumers that
+// only feed the decrypted side -- the H2 bridge -- leave raw empty and get nil
+// frames. This is the single framing loop shared by both transports, which
+// previously carried two divergent copies.
+func (f *mtprotoPacketFramer) popPackets() (frames, packets [][]byte, err error) {
+	for {
+		n, ready, err := f.nextPacketSize()
+		if err != nil {
+			return frames, packets, err
+		}
+		if !ready {
+			return frames, packets, nil
+		}
+		if len(f.raw) >= n {
+			frames = append(frames, f.raw[:n])
+		} else {
+			frames = append(frames, nil)
+		}
+		packets = append(packets, f.plain[:n])
+		f.raw = f.raw[min(n, len(f.raw)):]
+		f.plain = f.plain[n:]
+		f.shrinkBuffers()
+	}
+}
+
 func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 	if len(encrypted) == 0 {
 		return nil
@@ -4362,15 +4602,11 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 	f.plain = append(f.plain, encrypted...)
 	f.stream.XORKeyStream(f.plain[prevPlain:], encrypted)
 	f.raw = append(f.raw, encrypted...)
-	for {
-		n, ready, err := f.nextPacketSize()
-		if err != nil {
-			return err
-		}
-		if !ready {
-			return nil
-		}
-		frame := f.raw[:n]
+	frames, _, err := f.popPackets()
+	if err != nil {
+		return err
+	}
+	for _, frame := range frames {
 		if !f.headerSent {
 			payload := make([]byte, 0, len(f.initial)+len(frame))
 			payload = append(payload, f.initial...)
@@ -4383,26 +4619,8 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 		} else if err := ws.writeFrame(2, frame); err != nil {
 			return err
 		}
-		f.raw = f.raw[n:]
-		f.plain = f.plain[n:]
-		if len(f.raw) == 0 {
-			if cap(f.raw) > 128*1024 {
-				f.raw = nil
-				f.plain = nil
-			} else {
-				f.raw = f.raw[:0]
-				f.plain = f.plain[:0]
-			}
-		} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
-			newRaw := make([]byte, len(f.raw))
-			copy(newRaw, f.raw)
-			f.raw = newRaw
-
-			newPlain := make([]byte, len(f.plain))
-			copy(newPlain, f.plain)
-			f.plain = newPlain
-		}
 	}
+	return nil
 }
 
 func pipeTCPToWSCount(src net.Conn, ws *wsConn, initial []byte, counter *int64, activity *atomic.Int64) error {
@@ -4500,6 +4718,10 @@ const (
 	// frontDialReserve keeps this much of the caller's dial budget for the
 	// actual dial after a parked-front pause.
 	frontDialReserve = 2 * time.Second
+	// routeHealthCap bounds every host-keyed health/negative-cache map, on the
+	// write path (capRouteHealthLocked / capFailMapLocked) as well as in the
+	// hourly sweep.
+	routeHealthCap = 256
 	// maxFrontsPerRace caps how many fronts a single dial attempt races. Every
 	// front costs up to ~2s (DoH + DNS + dial), so an uncapped pool of twenty
 	// could not finish inside the client's 12s budget: attempts ended in
@@ -4524,6 +4746,7 @@ func parkFront(host string, park time.Duration, reason string, err error) {
 		state.busyAt = now
 	}
 	routeHealth[host] = state
+	capRouteHealthLocked()
 	routeHealthMu.Unlock()
 	if logNow {
 		logf("WSS route %s parked for %s (%s): %v", host, park, reason, err)
@@ -4686,19 +4909,7 @@ func sweepRouteCaches() {
 			delete(routeHealth, host)
 		}
 	}
-	for len(routeHealth) > 256 {
-		var oldestHost string
-		var oldest time.Time
-		for host, state := range routeHealth {
-			if oldestHost == "" || state.until.Before(oldest) {
-				oldestHost, oldest = host, state.until
-			}
-		}
-		if oldestHost == "" {
-			break
-		}
-		delete(routeHealth, oldestHost)
-	}
+	capRouteHealthLocked()
 	routeHealthMu.Unlock()
 
 	h2FailsMu.Lock()
@@ -4707,12 +4918,7 @@ func sweepRouteCaches() {
 			delete(h2Fails, host)
 		}
 	}
-	for len(h2Fails) > 256 {
-		for host := range h2Fails {
-			delete(h2Fails, host)
-			break
-		}
-	}
+	capFailMapLocked(h2Fails)
 	h2FailsMu.Unlock()
 
 	h2SuccessMu.Lock()
@@ -4723,33 +4929,8 @@ func sweepRouteCaches() {
 	}
 	h2SuccessMu.Unlock()
 
-	directDialFailMu.Lock()
-	for ipStr, until := range directDialFails {
-		if until.Before(now) {
-			delete(directDialFails, ipStr)
-		}
-	}
-	for len(directDialFails) > 256 {
-		for ipStr := range directDialFails {
-			delete(directDialFails, ipStr)
-			break
-		}
-	}
-	directDialFailMu.Unlock()
-
-	cdn203FailMu.Lock()
-	for dst, until := range cdn203Fails {
-		if until.Before(now) {
-			delete(cdn203Fails, dst)
-		}
-	}
-	for len(cdn203Fails) > 256 {
-		for dst := range cdn203Fails {
-			delete(cdn203Fails, dst)
-			break
-		}
-	}
-	cdn203FailMu.Unlock()
+	directDialFails.expireOlderThan(now)
+	cdn203Fails.expireOlderThan(now)
 
 	workerCooldowns.Range(func(key, val any) bool {
 		if cd, ok := val.(workerCooldownState); ok {
@@ -4759,6 +4940,38 @@ func sweepRouteCaches() {
 		}
 		return true
 	})
+}
+
+// capRouteHealthLocked trims routeHealth to routeHealthCap, keeping the hosts
+// with the longest remaining park. Callers must hold routeHealthMu. The hourly
+// sweep is the primary bound; this keeps the map honest between sweeps, when a
+// burst of unique hosts -- a user-edited custom worker domain among them --
+// would otherwise grow it without limit until the next sweep.
+func capRouteHealthLocked() {
+	for len(routeHealth) > routeHealthCap {
+		var oldestHost string
+		var oldest time.Time
+		for host, state := range routeHealth {
+			if oldestHost == "" || state.until.Before(oldest) {
+				oldestHost, oldest = host, state.until
+			}
+		}
+		if oldestHost == "" {
+			return
+		}
+		delete(routeHealth, oldestHost)
+	}
+}
+
+// capFailMapLocked trims a time-keyed negative cache to routeHealthCap the
+// same way; callers must hold the map's own mutex.
+func capFailMapLocked(m map[string]time.Time) {
+	for len(m) > routeHealthCap {
+		for k := range m {
+			delete(m, k)
+			break
+		}
+	}
 }
 
 // Repeated early remote EOFs indicate a frontend that accepts the WebSocket
@@ -4784,6 +4997,7 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 		state.count = 0
 	}
 	routeHealth[host] = state
+	capRouteHealthLocked()
 	cooling, until, failures := now.Before(state.until), state.until, state.failures
 	routeHealthMu.Unlock()
 	if cooling {
@@ -5248,6 +5462,7 @@ func noteRouteHTTPFailure(host string, err error) {
 	state.until = now.Add(cooldown)
 	state.last = now
 	routeHealth[host] = state
+	capRouteHealthLocked()
 	routeHealthMu.Unlock()
 
 	for dc := 1; dc <= 5; dc++ {
@@ -5607,6 +5822,16 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		return nil, fmt.Errorf("worker %s (DC%d) is in rate limit cooldown", host, dc)
 	}
 
+	// Worker handshakes go to the same Cloudflare edge as the fronts, so they
+	// share cfDialSem: without this, a custom worker plus four fronts plus a
+	// warm H2 pool could open far more concurrent Cloudflare handshakes than
+	// the 429 budget the cap was introduced to protect.
+	release, err := acquireCFDialSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	basePath := "/apiws"
 	if isTest {
 		basePath = "/apiws_test"
@@ -5856,5 +6081,3 @@ func runChecks() {
 	}
 	fmt.Println("DC mapping smoke test passed")
 }
-
-// compile-time references for code paths shared by Linux/Android.

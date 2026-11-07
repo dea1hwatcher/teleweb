@@ -486,16 +486,69 @@ type tcpMetaV6 struct {
 
 func parseTCPv6(pkt []byte) (tcpMetaV6, bool) {
 	var m tcpMetaV6
-	if len(pkt) < 60 || pkt[0]>>4 != 6 || pkt[6] != 6 { // IPv6, next header = TCP
+	off := ipv6TCPHeaderOffset(pkt)
+	if off < 0 {
 		return m, false
 	}
-	m.tcpOff = 40
+	m.tcpOff = off
 	copy(m.srcIP[:], pkt[8:24])
 	copy(m.dstIP[:], pkt[24:40])
 	m.sport = binary.BigEndian.Uint16(pkt[m.tcpOff:])
 	m.dport = binary.BigEndian.Uint16(pkt[m.tcpOff+2:])
 	m.flags = pkt[m.tcpOff+13]
 	return m, true
+}
+
+// ipv6TCPHeaderOffset walks the IPv6 extension-header chain and returns the
+// offset of the TCP header, or -1 when the packet carries no TCP payload we
+// can act on. Without the walk a single Hop-by-Hop or Destination-Options
+// header made the old pkt[6] != 6 check reject the packet and let it escape
+// the tunnel untouched.
+func ipv6TCPHeaderOffset(pkt []byte) int {
+	const ipv6HeaderLen = 40
+	if len(pkt) < ipv6HeaderLen+20 || pkt[0]>>4 != 6 {
+		return -1
+	}
+	next := int(pkt[6])
+	off := ipv6HeaderLen
+	for hops := 0; hops < 8; hops++ {
+		switch next {
+		case 6: // TCP
+			if off+20 > len(pkt) {
+				return -1
+			}
+			return off
+		case 0, 60, 43: // Hop-by-Hop, Destination Options, Routing: 8*(len+1) bytes
+			if off+2 > len(pkt) {
+				return -1
+			}
+			extLen := 8 * (int(pkt[off+1]) + 1)
+			if off+extLen > len(pkt) {
+				return -1
+			}
+			next = int(pkt[off])
+			off += extLen
+		case 44: // Fragment: fixed 8 bytes, next header first
+			if off+8 > len(pkt) {
+				return -1
+			}
+			next = int(pkt[off])
+			off += 8
+		case 51: // Authentication Header: 4*(len+2) bytes, next header first
+			if off+2 > len(pkt) {
+				return -1
+			}
+			extLen := 4 * (int(pkt[off+1]) + 2)
+			if off+extLen > len(pkt) {
+				return -1
+			}
+			next = int(pkt[off])
+			off += extLen
+		default: // No-next-header, UDP, ICMPv6 and anything else: not our business.
+			return -1
+		}
+	}
+	return -1
 }
 
 // v6ToLoopback rewrites a client -> Telegram IPv6 packet so the daemon's
@@ -585,12 +638,12 @@ func hostHasGlobalIPv6() bool {
 	return false
 }
 
-// v6CoverageNotice states what the WinDivert redirector does with Telegram's
-// IPv6 ranges. They cannot be intercepted the way IPv4 is: the filter language
-// offers no range test for an IPv6 field (its documented escape hatch for IPv6
-// is to capture all IPv6 traffic, which is not something to impose on every
-// machine), so those connections leave unproxied. Saying so at startup beats a
-// gap nobody can see.
+// v6CoverageNotice explains the coverage gap on devices where IPv6 capture is
+// unavailable or disabled: the filter language offers no range test for an
+// IPv6 field (its documented escape hatch is to capture all IPv6 traffic,
+// which is not something to impose on every machine), so without the IPv6
+// handles those connections leave unproxied. Logged only on the failure and
+// disabled paths -- when the handles are up, the ranges are intercepted.
 func v6CoverageNotice(hasIPv6 bool) string {
 	ranges := make([]string, 0, len(telegramV6Prefixes))
 	for _, p := range telegramV6Prefixes {
@@ -686,7 +739,6 @@ func tryUnloadWinDivertService() {
 
 func stopRedirector() {
 	redirectorMu.Lock()
-	defer redirectorMu.Unlock()
 	if activeRedirector != nil {
 		activeRedirector.running.Store(false)
 		if activeRedirector.stopJanitor != nil {
@@ -703,6 +755,11 @@ func stopRedirector() {
 		activeRedirector = nil
 		logf("redirector: WinDivert stopped")
 	}
+	redirectorMu.Unlock()
+	// Unloading the driver talks to the service control manager (or runs
+	// sc.exe up to three times). Doing that while holding redirectorMu
+	// stalled startRedirector and every status/watchdog probe for seconds on
+	// every stop, even when no redirector was ever started.
 	tryUnloadWinDivertService()
 }
 
@@ -804,14 +861,30 @@ func (r *wdRedirector) retLoop() {
 	}
 }
 
+// v6Verdict classifies what processOut6 decided about a captured packet.
+type v6Verdict int
+
+const (
+	// v6PassThrough: not tunnel material, reinject unchanged.
+	v6PassThrough v6Verdict = iota
+	// v6Rewritten: folded into the tunnel.
+	v6Rewritten
+	// v6Drop: tunnel material we cannot serve. Fail closed -- a Telegram
+	// packet we cannot map must not silently leak direct, which on a filtered
+	// network means the connection appears half-alive to the client. Dropping
+	// a SYN is TCP-correct: the client retransmits and the flow succeeds once
+	// a NAT port frees up.
+	v6Drop
+)
+
 // processOut6 folds one captured outbound IPv6 packet into the tunnel in place
-// and reports whether it did. Pulled out of the loop so the whole decision
+// and reports what it did with it. Pulled out of the loop so the whole decision
 // chain - parse, range check, mapping, rewrite - can be exercised without
 // WinDivert and without a routed IPv6 stack.
-func processOut6(p []byte) bool {
+func processOut6(p []byte) v6Verdict {
 	m, ok := parseTCPv6(p)
 	if !ok || !v6InterceptTarget(m.dstIP, m.sport) {
-		return false
+		return v6PassThrough
 	}
 	isSYN := (m.flags & (tcpFlagSYN | tcpFlagACK)) == tcpFlagSYN
 	flow := natFlowKeyV6{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
@@ -823,13 +896,13 @@ func processOut6(p []byte) bool {
 			natTable.mu.RLock()
 			flows := len(natTable.ports)
 			natTable.mu.RUnlock()
-			logf("redirector: NAT port range exhausted (%d flows); %s:%d -> %s:%d escapes the tunnel", flows, netip.AddrFrom16(m.srcIP), m.sport, orig.Addr(), m.dport)
-			return false
+			logf("redirector: NAT port range exhausted (%d flows); %s:%d -> %s:%d dropped instead of escaping the tunnel", flows, netip.AddrFrom16(m.srcIP), m.sport, orig.Addr(), m.dport)
+			return v6Drop
 		}
 	}
 	e.touch(m.flags, time.Now().UnixNano())
 	v6ToLoopback(p, m, e.natPort)
-	return true
+	return v6Rewritten
 }
 
 // processRet6 restores the client's view of one reply from the listener and
@@ -870,8 +943,11 @@ func (r *wdRedirector) out6Loop() {
 			return
 		}
 		p := pkt[:n]
-		if processOut6(p) {
+		switch processOut6(p) {
+		case v6Rewritten:
 			wdCalcChecksums(p, &addr)
+		case v6Drop:
+			continue
 		}
 		_ = wdSendPacket(r.hOut6, p, &addr)
 	}

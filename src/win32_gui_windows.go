@@ -55,11 +55,6 @@ var (
 	procDwmSetAttr = dwmapi.NewProc("DwmSetWindowAttribute")
 )
 
-// attachParentConsole attaches standard I/O to the parent console if tgws was
-// executed from Command Prompt or PowerShell, so CLI commands print their
-// output even when compiled with -H=windowsgui. If launched by double-clicking
-// in Explorer, this is a silent no-op and never allocates a console window.
-
 // ---------------------- Windows Modern Integration -------------------------
 
 type wndClassExW struct {

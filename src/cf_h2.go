@@ -203,6 +203,7 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 	if resp.StatusCode != http.StatusOK {
 		h2FailsMu.Lock()
 		h2Fails[host] = time.Now().Add(30 * time.Second)
+		capFailMapLocked(h2Fails)
 		h2FailsMu.Unlock()
 		h2SuccessMu.Lock()
 		delete(h2Success, host)
@@ -301,6 +302,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		if err != nil {
 			h2FailsMu.Lock()
 			h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
+			capFailMapLocked(h2Fails)
 			h2FailsMu.Unlock()
 			return false
 		}
@@ -310,6 +312,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		if headResp.ProtoMajor < 2 || !(headResp.StatusCode >= 200 && headResp.StatusCode < 300 || headResp.StatusCode == http.StatusMethodNotAllowed || headResp.StatusCode == http.StatusNotImplemented) {
 			h2FailsMu.Lock()
 			h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
+			capFailMapLocked(h2Fails)
 			h2FailsMu.Unlock()
 			return false
 		}
@@ -408,25 +411,15 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 			framer.plain = append(framer.plain, chunk...)
 			framer.stream.XORKeyStream(framer.plain[prevPlain:], chunk)
 
-			for {
-				n, ready, ferr := framer.nextPacketSize()
-				if ferr != nil || !ready {
-					break
-				}
-				packetBody := append([]byte(nil), framer.plain[:n]...)
-				framer.plain = framer.plain[n:]
-				if len(framer.plain) == 0 {
-					if cap(framer.plain) > 128*1024 {
-						framer.plain = nil
-					} else {
-						framer.plain = framer.plain[:0]
-					}
-				} else if cap(framer.plain) > 128*1024 && len(framer.plain) < 32*1024 {
-					// Shrink an oversized buffer like mtprotoPacketFramer.feed does.
-					compacted := make([]byte, len(framer.plain))
-					copy(compacted, framer.plain)
-					framer.plain = compacted
-				}
+			_, packets, perr := framer.popPackets()
+			if perr != nil {
+				// A framing error means the CTR stream desynchronised: the old
+				// loop silently swallowed it and kept decrypting garbage. Tear
+				// the session down -- the MTProto client reconnects on its own.
+				logf("H2 media bridge: framing error: %v; closing session", perr)
+				bridgeCancel()
+			}
+			for _, packetBody := range packets {
 
 				// Strip length prefix from packetBody before HTTP/2 POST
 				var rawMTProto []byte
