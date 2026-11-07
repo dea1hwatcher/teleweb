@@ -1,6 +1,5 @@
-# TeleWEB desktop build script.
+# TeleWEB Windows build script.
 # Windows: amd64/386/arm64 — standalone tgws.exe (WinUI 3 GUI + embedded WinDivert driver).
-# Linux: amd64/arm64 — standalone tgws + installers.
 # Produces packages under dist/.
 $ErrorActionPreference = "Stop"
 
@@ -59,16 +58,6 @@ foreach ($t in $winTargets) {
     Copy-Item (Join-Path $RootDir "desktop\windows\install.ps1") $dir -Force
     # Single-file exe asset: driver is embedded in the binary.
     Copy-Item (Join-Path $dir "tgws.exe") (Join-Path $DistDir "tgws-windows-$arch.exe") -Force -ErrorAction SilentlyContinue
-}
-
-# ---- Linux amd64 / arm64 (transparent mode via iptables) ----
-foreach ($arch in @("amd64", "arm64")) {
-    $dir = Join-Path $DistDir "teleweb-linux-$arch"
-    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    Build-Target "linux" $arch (Join-Path $dir "tgws")
-    Copy-Item (Join-Path $RootDir "desktop\linux\install.sh") $dir -Force
-    Copy-Item (Join-Path $RootDir "desktop\linux\uninstall.sh") $dir -Force
 }
 
 # ---- Archives ----
