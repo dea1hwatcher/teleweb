@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -52,7 +53,6 @@ var (
 	procTrackPopupMenuEx         = user32.NewProc("TrackPopupMenuEx")
 	procDestroyMenu              = user32.NewProc("DestroyMenu")
 	procGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
-	procGetWindowTextLength      = user32.NewProc("GetWindowTextLengthW")
 	procEnumWindows              = user32.NewProc("EnumWindows")
 	procIsWindow                 = user32.NewProc("IsWindow")
 
@@ -135,12 +135,8 @@ func findMainWindow() uintptr {
 		isTray := (hwnd == trayHwnd)
 		trayMu.Unlock()
 		if wndPid == pid && !isTray {
-			// Skip hidden helper/IME windows by requiring a non-empty window title
-			l, _, _ := procGetWindowTextLength.Call(hwnd)
-			if int32(l) > 0 {
-				mainHwnd = hwnd
-				return 0 // stop enumeration
-			}
+			mainHwnd = hwnd
+			return 0 // stop enumeration
 		}
 		return 1 // continue
 	}), 0)
@@ -252,12 +248,17 @@ func showMainWindow(restore bool) {
 	}
 	setMainWindowIcon(hwnd)
 	const (
+		SW_NORMAL  = 1
 		SW_RESTORE = 9
-		SW_SHOW    = 5
 	)
-	procShowWindow.Call(hwnd, SW_RESTORE)
-	procShowWindow.Call(hwnd, SW_SHOW)
-	procSetFgWindow.Call(hwnd)
+	cmd := uintptr(SW_NORMAL)
+	if restore {
+		cmd = uintptr(SW_RESTORE)
+	}
+	go func(h, c uintptr) {
+		procShowWindow.Call(h, c)
+		procSetFgWindow.Call(h)
+	}(hwnd, cmd)
 }
 
 func hideMainWindow() {
@@ -266,7 +267,7 @@ func hideMainWindow() {
 		return
 	}
 	const SW_HIDE = 0
-	procShowWindow.Call(hwnd, uintptr(SW_HIDE))
+	go procShowWindow.Call(hwnd, uintptr(SW_HIDE))
 }
 
 func restartElevated() error {
@@ -294,6 +295,7 @@ func acquireSingleInstance() (func(), bool) {
 	const ERROR_ALREADY_EXISTS = 183
 	if err == syscall.Errno(ERROR_ALREADY_EXISTS) {
 		showMainWindow(true)
+		time.Sleep(60 * time.Millisecond)
 		procCloseHandle.Call(h)
 		return nil, false
 	}

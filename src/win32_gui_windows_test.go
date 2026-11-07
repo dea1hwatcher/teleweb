@@ -3,9 +3,13 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"gioui.org/app"
+	"gioui.org/op"
 	"golang.org/x/sys/windows"
 )
 
@@ -81,4 +85,65 @@ func TestSetMainHwnd(t *testing.T) {
 	// setMainWindowIcon on a dummy handle should return immediately without blocking or panicking
 	setMainWindowIcon(dummy)
 	setMainWindowIcon(0)
+}
+
+func TestWindowStartup(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		w := new(app.Window)
+		w.Option(app.Title("TeleWEB_Test"), app.Size(100, 100))
+		timer := time.After(5 * time.Second)
+		for {
+			select {
+			case <-timer:
+				done <- fmt.Errorf("timeout waiting for frame")
+				return
+			default:
+				e := w.Event()
+				t.Logf("Received event: %T", e)
+				switch e := e.(type) {
+				case app.DestroyEvent:
+					done <- e.Err
+					return
+				case app.ViewEvent:
+					if we, ok := e.(app.Win32ViewEvent); ok {
+						t.Logf("Win32ViewEvent HWND: 0x%x", we.HWND)
+					}
+				case app.FrameEvent:
+					t.Logf("FrameEvent received! Calling applyWindowsDarkTheme...")
+					applyWindowsDarkTheme("TeleWEB_Test")
+					t.Logf("applyWindowsDarkTheme completed!")
+					var ops op.Ops
+					e.Frame(&ops)
+					done <- nil
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Window startup failed: %v", err)
+		}
+		t.Log("Frame rendered successfully!")
+	case <-time.After(6 * time.Second):
+		t.Fatal("TestWindowStartup overall timeout")
+	}
+}
+
+func TestSetupSystemTray(t *testing.T) {
+	cleanup := setupSystemTray("TeleWEB Test", nil, nil, nil)
+	defer cleanup()
+
+	trayMu.Lock()
+	hwnd := trayHwnd
+	trayMu.Unlock()
+	if hwnd == 0 {
+		t.Fatal("trayHwnd is 0!")
+	}
+
+	// Post tray click message; must handle smoothly without stalling
+	procPostMessage.Call(hwnd, wmUserTray, 1, wmLButtonUp)
 }
