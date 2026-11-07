@@ -1891,7 +1891,7 @@ func loadLearnedDCs() {
 	now := time.Now().Unix()
 	for ip, entry := range saved {
 		if entry.DC >= 1 && (entry.DC <= 5 || entry.DC == 203) {
-			if known := knownDCMap[ip]; known != 0 && known != entry.DC {
+			if dcInitContradictsKnownIP(ip, entry.DC) {
 				cleaned = true
 				continue
 			}
@@ -3296,6 +3296,27 @@ var (
 		cdn203IP: 203,
 	}
 
+	// sharedIngressIPs are endpoints that appear in more than one DC's
+	// candidate list. 149.154.174.100 is listed for both DC1 and DC3, so for
+	// them the destination IP says nothing authoritative about the DC and the
+	// tag parsed from the init header must win (a DC3 session to that ingress
+	// used to be re-labelled DC1 and rejected by the far side).
+	sharedIngressIPs = func() map[string]bool {
+		count := map[string]int{}
+		for _, spec := range dcSpecs {
+			for _, ip := range spec.candidates {
+				count[ip]++
+			}
+		}
+		shared := make(map[string]bool)
+		for ip, n := range count {
+			if n > 1 {
+				shared[ip] = true
+			}
+		}
+		return shared
+	}()
+
 	// telegramParsedSubnets mirrors telegramSubnets with parsed prefixes; the
 	// octet-resolved 149.154.160.0/20 entry is skipped in dcFor's prefix loop.
 	telegramParsedSubnets = func() []telegramSubnet {
@@ -3331,6 +3352,18 @@ var (
 type telegramSubnet struct {
 	prefix netip.Prefix
 	dc     int
+}
+
+// dcInitContradictsKnownIP reports whether a DC tag parsed from the MTProto
+// init has to be discarded as random CTR keystream noise. Only an
+// unambiguous single-DC endpoint may override the tag; for a shared ingress
+// the tag is the only real signal.
+func dcInitContradictsKnownIP(ip string, dc int) bool {
+	if sharedIngressIPs[ip] {
+		return false
+	}
+	known := knownDCMap[ip]
+	return known != 0 && known != dc
 }
 
 func dcFor(ip netip.Addr) int {
@@ -3471,7 +3504,10 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		return
 	}
 	dc, isMedia, parsed := parseMTProtoDC(init)
-	isTestDC := forceTestDCCached() || dc >= 10000
+	// testDCRouting scopes the WebUI force_test_dc toggle to DCs that actually
+	// define a test endpoint (DC1-DC3). DC4/DC5 have none: marking them "test"
+	// removed every Cloudflare front and left zero routes (28.10 incident).
+	isTestDC := testDCRouting(dc, forceTestDCCached(), dc >= 10000)
 	if dc >= 10000 {
 		dc -= 10000
 	}
@@ -3481,8 +3517,8 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		// bytes 60..62 of init are random CTR keystream padding. If random
 		// bytes happen to form a valid DC tag that differs from the target IP's
 		// DC, it is random keystream noise and MUST NOT be trusted.
-		if known := knownDCMap[orig.Addr().String()]; known != 0 && known != dc {
-			logf("conn #%d %s: ignoring random CTR noise in init (parsed DC%d, expected DC%d)", id, orig, dc, known)
+		if dcInitContradictsKnownIP(orig.Addr().String(), dc) {
+			logf("conn #%d %s: ignoring random CTR noise in init (parsed DC%d, known DC%d)", id, orig, dc, knownDCMap[orig.Addr().String()])
 			parsed = false
 		}
 	}
@@ -4453,7 +4489,15 @@ const (
 	// unthrottled line would fire for every host every other second.
 	serverBusyLogInterval = 30 * time.Second
 	// frontRetryWaitLimit bounds the pause when every front for a DC is parked.
-	frontRetryWaitLimit = 2 * time.Second
+	// It must be at least frontTimeoutPark: with a 2s ceiling a 5s timeout park
+	// produced wait > cap, the pause was skipped entirely, and the candidate
+	// list collapsed to direct-only dials, which are blocked on censored
+	// networks. frontCandidatesForRace additionally keeps one dialable front
+	// for the case where even this ceiling does not free the pool.
+	frontRetryWaitLimit = frontTimeoutPark
+	// frontDialReserve keeps this much of the caller's dial budget for the
+	// actual dial after a parked-front pause.
+	frontDialReserve = 2 * time.Second
 	// maxFrontsPerRace caps how many fronts a single dial attempt races. Every
 	// front costs up to ~2s (DoH + DNS + dial), so an uncapped pool of twenty
 	// could not finish inside the client's 12s budget: attempts ended in
@@ -4550,9 +4594,26 @@ func setDCDomainAffinity(dc int, domain string) {
 	dcDomainAffinity[dc] = domain
 }
 
-// frontCandidatesForRace returns up to max usable fronts for the DC, starting at
-// a rotating offset so successive attempts still cover the whole pool while each
-// individual attempt stays inside the client's dial budget.
+// clampFrontRetryWait bounds a parked-front pause by both the retry ceiling and
+// the caller's remaining dial budget, always leaving room for the actual dial.
+func clampFrontRetryWait(ctx context.Context, wait time.Duration) time.Duration {
+	if wait > frontRetryWaitLimit {
+		wait = frontRetryWaitLimit
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline) - frontDialReserve; remaining < wait {
+			wait = remaining
+		}
+	}
+	if wait < 0 {
+		return 0
+	}
+	return wait
+}
+
+// frontCandidatesForRace returns up to max usable fronts for the DC, starting
+// at a rotating offset so successive attempts still cover the whole pool while
+// each individual attempt stays inside the client's dial budget.
 func frontCandidatesForRace(dc int, domains []string, start, max int) []string {
 	if len(domains) == 0 || max <= 0 {
 		return nil
@@ -4583,6 +4644,14 @@ func frontCandidatesForRace(dc int, domains []string, start, max int) []string {
 		}
 		seen[domain] = true
 		hosts = append(hosts, host)
+	}
+
+	// When every front is parked (an ISP drop wave or a shared 429 answers for
+	// the whole pool at once), still return one candidate. Falling through to
+	// direct-only dials, which are blocked on censored networks, is strictly
+	// worse than one attempt against a front whose park may have just expired.
+	if len(hosts) == 0 {
+		hosts = append(hosts, frontHost(dc, domains[start%len(domains)]))
 	}
 	return hosts
 }
@@ -4816,10 +4885,30 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 	return nil, "", fmt.Errorf("all %d candidates failed: %s", len(candidates), strings.Join(errorsSeen, " | "))
 }
 
+// testDCRouting reports whether a connection should be routed through the
+// test-DC endpoints. force_test_dc is a global WebUI toggle, but Telegram
+// defines test endpoints only for DC1-DC3: applying the toggle to DC4/DC5
+// (or to an unparsed/203 tag) removed every Cloudflare candidate and left zero
+// routes. An explicit test tag from the init header (dc >= 10000) is honoured
+// only when the target DC actually has an endpoint, for the same reason.
+func testDCRouting(dc int, forceTest, explicitTest bool) bool {
+	if !forceTest && !explicitTest {
+		return false
+	}
+	return dcSpecs[dc].testIP != ""
+}
+
 func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*wsConn, error) {
 	hosts := wsHostsForDC(dc, isMedia)
 	if len(hosts) == 0 {
 		return nil, fmt.Errorf("unknown DC: %d", dc)
+	}
+	// A DC without a test endpoint cannot be routed in test mode at all: the
+	// test branch leaves the direct-IP list empty and skips every Cloudflare
+	// candidate. DC4/DC5 define no testIP, so keep production routing for them
+	// instead of a guaranteed-empty candidate list.
+	if isTest && dcSpecs[dc].testIP == "" {
+		isTest = false
 	}
 	key := routeKey(dc, isMedia)
 	if isTest {
@@ -4837,16 +4926,19 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 	worker := customCFWorkerCached()
 
 	// When every Cloudflare front for this DC is parked, the candidate list
-	// below collapses to direct-only dials, which are blocked on censored
-	// networks, so the client gets an instant close. Park windows are short
-	// (serverBusyRetry), so waiting for the nearest one is cheap and beats
-	// handing the client a guaranteed failure.
+	// would collapse to direct-only dials, which are blocked on censored
+	// networks, so the client gets an instant close. Wait for the nearest park
+	// to expire (bounded by the caller's dial budget), and
+	// frontCandidatesForRace additionally keeps one dialable front for the
+	// case where the whole pool is parked for longer than the budget.
 	if !isTest && worker == "" {
-		if wait, parked := allFrontsParked(dc, isMedia); parked && wait > 0 && wait <= frontRetryWaitLimit {
-			select {
-			case <-time.After(wait):
-			case <-ctx.Done():
-				return nil, ctx.Err()
+		if wait, parked := allFrontsParked(dc, isMedia); parked && wait > 0 {
+			if pause := clampFrontRetryWait(ctx, wait); pause > 0 {
+				select {
+				case <-time.After(pause):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
 			}
 		}
 	}
@@ -5270,6 +5362,56 @@ func shouldSkipTLSVerify(host, sni string) bool {
 	return !strings.EqualFold(strings.TrimSpace(host), strings.TrimSpace(sni))
 }
 
+// tlsHandshakeForHost returns the SNI to send on the wire and whether
+// certificate verification has to be skipped for this dial.
+//
+// The fronting-SNI override belongs to Cloudflare-fronted routes only: it is
+// what lets the daemon talk to a front while disguising the SNI. Direct dials
+// to Telegram endpoints and worker sessions have no use for it — and applying
+// it there silently disabled certificate verification for a connection that
+// needs no disguise at all.
+func tlsHandshakeForHost(host string, honorFrontingSNI bool) (sni string, skipVerify bool) {
+	sni = host
+	if honorFrontingSNI {
+		if custom := configuredFrontingSNI(); custom != "" {
+			sni = custom
+		}
+	}
+	return sni, shouldSkipTLSVerify(host, sni)
+}
+
+// verifyFrontingPeerChain is attached when a fronting-SNI override forces
+// InsecureSkipVerify. The presented name deliberately differs from the dialed
+// host, so uTLS's own hostname check cannot succeed — but the certificate must
+// still chain to a system-trusted CA. Without this callback any self-signed
+// certificate from an on-path device would terminate the WSS session.
+func verifyFrontingPeerChain(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+	if len(rawCerts) == 0 {
+		return errors.New("TLS: peer sent no certificate")
+	}
+	certs := make([]*x509.Certificate, 0, len(rawCerts))
+	for _, raw := range rawCerts {
+		c, err := x509.ParseCertificate(raw)
+		if err != nil {
+			return fmt.Errorf("TLS: malformed peer certificate: %w", err)
+		}
+		certs = append(certs, c)
+	}
+	intermediates := x509.NewCertPool()
+	for _, c := range certs[1:] {
+		intermediates.AddCert(c)
+	}
+	_, err := certs[0].Verify(x509.VerifyOptions{
+		Roots:         getSystemRootCAs(),
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	if err != nil {
+		return fmt.Errorf("TLS: peer certificate is not anchored in the system trust store: %w", err)
+	}
+	return nil
+}
+
 func prepareUTLSForHTTP1(conn *utls.UConn) error {
 	if err := conn.BuildHandshakeState(); err != nil {
 		return err
@@ -5314,30 +5456,36 @@ func finishTelegramWS(ctx context.Context, raw net.Conn, host string, helloIDs .
 	return finishTLSAndUpgrade(ctx, raw, host, "/apiws", true, helloIDs...)
 }
 
+// finishTelegramWSPath performs the TLS handshake plus WebSocket upgrade for a
+// direct dial to a Telegram endpoint by IP. Fronting-SNI overrides belong to
+// Cloudflare-fronted hosts only: applying one here would silently disable
+// certificate verification for a session that needs no disguise.
 func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
-	return finishTLSAndUpgrade(ctx, raw, host, path, true, helloIDs...)
+	return finishTLSAndUpgrade(ctx, raw, host, path, false, helloIDs...)
 }
 
 // finishTLSAndUpgrade performs the uTLS handshake plus the WebSocket upgrade
 // on an already-dialed raw connection. honorFrontingSNI switches the SNI to
 // the configured fronting value, which real Telegram endpoints accept for
-// CF-fronted domains; worker endpoints must keep their real hostname.
+// CF-fronted domains; direct and worker endpoints must keep their real
+// hostname (and their certificate verification).
 func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, honorFrontingSNI bool, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
 	setConnSockOpts(raw)
-	sni := host
-	if honorFrontingSNI {
-		if customSNI := configuredFrontingSNI(); customSNI != "" {
-			sni = customSNI
-		}
-	}
+	sni, skipVerify := tlsHandshakeForHost(host, honorFrontingSNI)
 	uConfig := &utls.Config{
 		ServerName:                  sni,
 		MinVersion:                  utls.VersionTLS12,
 		RootCAs:                     getSystemRootCAs(),
-		InsecureSkipVerify:          shouldSkipTLSVerify(host, sni),
+		InsecureSkipVerify:          skipVerify,
 		NextProtos:                  []string{"http/1.1"},
 		DynamicRecordSizingDisabled: true,
 		CurvePreferences:            []utls.CurveID{utls.X25519, utls.CurveP256},
+	}
+	if skipVerify {
+		// The SNI override presents a name that does not match the dialed
+		// host, so uTLS's own hostname check is relaxed here -- but the peer
+		// certificate is still held to the system trust store.
+		uConfig.VerifyPeerCertificate = verifyFrontingPeerChain
 	}
 	helloID := utls.HelloChrome_Auto
 	if len(helloIDs) > 0 {
