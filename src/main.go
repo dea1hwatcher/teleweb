@@ -3301,8 +3301,13 @@ func serve() {
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
-		for range t.C {
-			sweepRouteCaches()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-t.C:
+				sweepRouteCaches()
+			}
 		}
 	}()
 	ln, e := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort))
@@ -3340,7 +3345,7 @@ func serve() {
 		}()
 		logf("local proxy listening on [::1]:%d; IPv6 ready", defaultPort)
 	}
-	go selfDialJanitor()
+	go selfDialJanitor(workerCtx)
 	if redirectorSupported() {
 		if err := startRedirector(); err != nil {
 			logf("redirector: failed to start: %v", err)
@@ -3353,18 +3358,28 @@ func serve() {
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			writeStatus()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-t.C:
+				writeStatus()
+			}
 		}
 	}()
 	go func() {
 		t := time.NewTicker(60 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			// When there are no active flows, return unused heap pages to OS.
-			// This prevents RSS from lingering at peak watermarks on legacy Android kernels.
-			if atomic.LoadInt64(&active) == 0 {
-				debug.FreeOSMemory()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-t.C:
+				// When there are no active flows, return unused heap pages to OS.
+				// This prevents RSS from lingering at peak watermarks on legacy Android kernels.
+				if atomic.LoadInt64(&active) == 0 {
+					debug.FreeOSMemory()
+				}
 			}
 		}
 	}()
@@ -4550,16 +4565,22 @@ func (f *mtprotoPacketFramer) shrinkBuffers() {
 	if len(f.raw) == 0 {
 		if cap(f.raw) > 128*1024 {
 			f.raw = nil
-			f.plain = nil
-		} else {
+		} else if f.raw != nil {
 			f.raw = f.raw[:0]
-			f.plain = f.plain[:0]
 		}
 	} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
 		newRaw := make([]byte, len(f.raw))
 		copy(newRaw, f.raw)
 		f.raw = newRaw
+	}
 
+	if len(f.plain) == 0 {
+		if cap(f.plain) > 128*1024 {
+			f.plain = nil
+		} else if f.plain != nil {
+			f.plain = f.plain[:0]
+		}
+	} else if cap(f.plain) > 128*1024 && len(f.plain) < 32*1024 {
 		newPlain := make([]byte, len(f.plain))
 		copy(newPlain, f.plain)
 		f.plain = newPlain

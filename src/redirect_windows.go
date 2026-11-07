@@ -796,13 +796,13 @@ func (r *wdRedirector) outLoop() {
 		if e == nil || isSYN {
 			e = natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
 			if e == nil {
-				// Every local port is taken: the packet leaves unrewritten, so
-				// this connection bypasses the tunnel. logf collapses repeats.
+				// Every local port is taken: fail closed by dropping the packet
+				// so it does not leak directly outside the tunnel, matching the
+				// IPv6 v6Drop invariant.
 				natTable.mu.RLock()
 				flows := len(natTable.ports)
 				natTable.mu.RUnlock()
-				logf("redirector: NAT port range exhausted (%d flows); %s:%d -> %s:%d escapes the tunnel", flows, netip.AddrFrom4(m.srcIP), m.sport, netip.AddrFrom4(m.dstIP), m.dport)
-				_ = wdSendPacket(r.hOut, p, &addr)
+				logf("redirector: NAT port range exhausted (%d flows); %s:%d -> %s:%d dropped instead of escaping the tunnel", flows, netip.AddrFrom4(m.srcIP), m.sport, netip.AddrFrom4(m.dstIP), m.dport)
 				continue
 			}
 		}
@@ -1104,6 +1104,7 @@ func (s *telewebService) Execute(args []string, r <-chan svc.ChangeRequest, chan
 			changes <- svc.Status{State: svc.StopPending}
 			stopWatchdog()
 			stopServer()
+			runShutdownHooks()
 			return false, 0
 		}
 	}
