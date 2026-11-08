@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -203,23 +202,4 @@ func cmdRun() {
 	stopWatchdog()
 	stopServer()
 	fmt.Println("TeleWEB stopped")
-}
-
-func openInBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-		setCmdNoWindow(cmd)
-	case "darwin":
-		cmd = exec.Command("open", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	if err := cmd.Start(); err != nil {
-		logf("gui: cannot open browser: %v", err)
-		fmt.Printf("TeleWEB GUI: open %s manually\n", url)
-		return
-	}
-	_ = cmd.Process.Release()
 }

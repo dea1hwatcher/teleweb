@@ -3146,7 +3146,9 @@ func executeAPICommand(q apiRequest) (any, error) {
 		}
 		actionPath := filepath.Join(modDir, "action.sh")
 		if _, err := os.Stat(actionPath); err == nil {
-			cmd := exec.Command("/system/bin/sh", actionPath, "net-renew")
+			cmdCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(cmdCtx, "/system/bin/sh", actionPath, "net-renew")
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				return map[string]any{"ok": false, "output": string(out), "error": err.Error()}, nil
@@ -3453,7 +3455,15 @@ func serve() {
 			}
 		}
 	}()
-	ln, e := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort))
+	listenHost4, listenHost6 := "127.0.0.1", "[::1]"
+	if runtime.GOOS != "windows" {
+		// On Linux/Android, iptables PREROUTING redirects tethered flows to the primary
+		// address of the incoming interface (e.g. 192.168.43.1:1080), so the listener
+		// must accept non-loopback packets. Security is guaranteed by SO_ORIGINAL_DST
+		// verification in handleClient.
+		listenHost4, listenHost6 = "0.0.0.0", "[::]"
+	}
+	ln, e := net.Listen("tcp4", fmt.Sprintf("%s:%d", listenHost4, defaultPort))
 	if e != nil {
 		logf("failed to open local port: %v", e)
 		return
@@ -3461,7 +3471,7 @@ func serve() {
 	defer ln.Close()
 	registerShutdownHook(func() { _ = ln.Close() })
 
-	if ln6, e6 := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", defaultPort)); e6 == nil {
+	if ln6, e6 := net.Listen("tcp6", fmt.Sprintf("%s:%d", listenHost6, defaultPort)); e6 == nil {
 		defer ln6.Close()
 		registerShutdownHook(func() { _ = ln6.Close() })
 		go func() {
@@ -3486,7 +3496,7 @@ func serve() {
 				}(c)
 			}
 		}()
-		logf("local proxy listening on [::1]:%d; IPv6 ready", defaultPort)
+		logf("local proxy listening on %s:%d; IPv6 ready", listenHost6, defaultPort)
 	}
 	go selfDialJanitor(workerCtx)
 	if redirectorSupported() {
@@ -3496,7 +3506,7 @@ func serve() {
 			defer stopRedirector()
 		}
 	}
-	logf("local proxy listening on 127.0.0.1:%d; %s; go=%s", defaultPort, procSummary(os.Getpid()), runtimeVersion())
+	logf("local proxy listening on %s:%d; %s; go=%s", listenHost4, defaultPort, procSummary(os.Getpid()), runtimeVersion())
 	writeStatus()
 	go func() {
 		t := time.NewTicker(5 * time.Second)
@@ -3724,6 +3734,14 @@ func setConnSockOpts(conn net.Conn) {
 		_ = tc.SetNoDelay(true)
 		_ = tc.SetReadBuffer(256 * 1024)
 		_ = tc.SetWriteBuffer(256 * 1024)
+	}
+	type tcpKeepAliveSetter interface {
+		SetKeepAlive(bool) error
+		SetKeepAlivePeriod(time.Duration) error
+	}
+	if tk, ok := conn.(tcpKeepAliveSetter); ok {
+		_ = tk.SetKeepAlive(true)
+		_ = tk.SetKeepAlivePeriod(30 * time.Second)
 	}
 }
 
@@ -4453,8 +4471,10 @@ func discoverAndroidDNSServers() []string {
 			out = append(out, v)
 		}
 	}
+	propCtx, propCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer propCancel()
 	// 1. Android property dumps (catches net.wlan0.dns1, net.rmnet_data0.dns1, net.dns1..4, etc.)
-	cmdGetprop := exec.Command("getprop")
+	cmdGetprop := exec.CommandContext(propCtx, "getprop")
 	setCmdNoWindow(cmdGetprop)
 	if b, err := cmdGetprop.Output(); err == nil && len(b) > 0 {
 		for _, line := range strings.Split(string(b), "\n") {
@@ -4469,7 +4489,7 @@ func discoverAndroidDNSServers() []string {
 	} else {
 		// 2. Legacy net.dns1..4 fallback if full getprop dump is unavailable
 		for i := 1; i <= 4; i++ {
-			c := exec.Command("getprop", fmt.Sprintf("net.dns%d", i))
+			c := exec.CommandContext(propCtx, "getprop", fmt.Sprintf("net.dns%d", i))
 			setCmdNoWindow(c)
 			b, err := c.Output()
 			if err == nil {
@@ -5169,6 +5189,25 @@ func sweepRouteCaches() {
 		}
 		return true
 	})
+
+	activeDomains := make(map[string]bool)
+	for _, d := range cfDomainsCached() {
+		activeDomains[d] = true
+	}
+	if w := customCFWorkerCached(); w != "" {
+		parts := strings.SplitN(w, ".", 2)
+		if len(parts) == 2 {
+			activeDomains[parts[1]] = true
+		}
+	}
+	if len(activeDomains) > 0 {
+		domainLastPoP.Range(func(key, _ any) bool {
+			if domain, ok := key.(string); ok && !activeDomains[domain] {
+				domainLastPoP.Delete(key)
+			}
+			return true
+		})
+	}
 }
 
 // capRouteHealthLocked trims routeHealth to routeHealthCap, keeping the hosts
