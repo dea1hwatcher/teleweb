@@ -48,17 +48,22 @@ func isSelfDialPort(port uint16) bool {
 	return ok && time.Now().Before(exp)
 }
 
-func selfDialJanitor() {
+func selfDialJanitor(ctx context.Context) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
-	for now := range t.C {
-		selfDialMu.Lock()
-		for p, exp := range selfDialPorts {
-			if now.After(exp) {
-				delete(selfDialPorts, p)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			selfDialMu.Lock()
+			for p, exp := range selfDialPorts {
+				if now.After(exp) {
+					delete(selfDialPorts, p)
+				}
 			}
+			selfDialMu.Unlock()
 		}
-		selfDialMu.Unlock()
 	}
 }
 
@@ -110,6 +115,7 @@ func trackedDial(ctx context.Context, network, addr string, timeout time.Duratio
 	// through standard ephemeral ports skips the Listen/Close/selfDial overhead.
 	if !isTelegramTarget(addr) {
 		d := net.Dialer{
+			Resolver:  systemDNSResolver(),
 			KeepAlive: 30 * time.Second,
 			Control: func(network, address string, c syscall.RawConn) error {
 				return setDialSockOpts(c)
@@ -128,6 +134,7 @@ func trackedDial(ctx context.Context, network, addr string, timeout time.Duratio
 
 		selfDialRegister(port)
 		d := net.Dialer{
+			Resolver:  systemDNSResolver(),
 			LocalAddr: &net.TCPAddr{Port: int(port)},
 			Control: func(network, address string, c syscall.RawConn) error {
 				return setDialSockOpts(c)
@@ -170,7 +177,7 @@ func runDesktop() error {
 	if err := ensureWatchdog(); err != nil {
 		logf("watchdog: failed to start: %v", err)
 	}
-	logf("desktop runtime active (platform=%s, dir=%s)", runtime.GOOS, baseDir)
+	logf("desktop runtime active (platform=%s, dir=%s)", runtime.GOOS, getBaseDir())
 	updateModuleDescription(currentStatusDesc())
 	return nil
 }
@@ -203,6 +210,7 @@ func openInBrowser(url string) {
 	switch runtime.GOOS {
 	case "windows":
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		setCmdNoWindow(cmd)
 	case "darwin":
 		cmd = exec.Command("open", url)
 	default:

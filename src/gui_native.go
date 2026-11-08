@@ -19,30 +19,57 @@ import (
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
-	"gioui.org/text"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 )
 
-// Material 3 Expressive Dark Theme Tokens (Telegram Cyan & Ocean Palette)
+// WinUI 3 Fluent Design Dark Theme Tokens
 var (
-	colBg               = color.NRGBA{R: 0x10, G: 0x14, B: 0x18, A: 0xFF} // #101418 Surface
-	colSurfaceLow       = color.NRGBA{R: 0x18, G: 0x1C, B: 0x20, A: 0xFF} // #181c20 Surface Container Low
-	colCard             = color.NRGBA{R: 0x1C, G: 0x20, B: 0x24, A: 0xFF} // #1c2024 Surface Container (Card)
-	colCardHigh         = color.NRGBA{R: 0x26, G: 0x2A, B: 0x2F, A: 0xFF} // #262a2f Surface Container High
-	colCardHighest      = color.NRGBA{R: 0x31, G: 0x35, B: 0x3A, A: 0xFF} // #31353a Surface Container Highest
-	colTerminalBg       = color.NRGBA{R: 0x0B, G: 0x0F, B: 0x12, A: 0xFF} // #0b0f12 Lowest Terminal
-	colPrimary          = color.NRGBA{R: 0x7E, G: 0xD0, B: 0xFF, A: 0xFF} // #7ed0ff Telegram Cyan
-	colOnPrimary        = color.NRGBA{R: 0x00, G: 0x34, B: 0x4F, A: 0xFF} // #00344f Deep Ocean Navy
-	colPrimaryContainer = color.NRGBA{R: 0x00, G: 0x4C, B: 0x70, A: 0xFF} // #004c70 Primary Container
-	colOnPrimaryCont    = color.NRGBA{R: 0xC6, G: 0xE7, B: 0xFF, A: 0xFF} // #c6e7ff On Primary Container
-	colText             = color.NRGBA{R: 0xE0, G: 0xE2, B: 0xE8, A: 0xFF} // #e0e2e8 On Surface Text
-	colTextMuted        = color.NRGBA{R: 0x90, G: 0x98, B: 0xA2, A: 0xFF} // #9098a2 Subtitle / Hint
-	colSuccess          = color.NRGBA{R: 0x85, G: 0xD9, B: 0x96, A: 0xFF} // #85d996 Active Mint Green
-	colSuccessContainer = color.NRGBA{R: 0x00, G: 0x53, B: 0x22, A: 0xFF} // #005322 Active Pill Background
-	colError            = color.NRGBA{R: 0xFF, G: 0xB4, B: 0xAB, A: 0xFF} // #ffb4ab Warning Coral Red
-	colErrorContainer   = color.NRGBA{R: 0x93, G: 0x00, B: 0x0A, A: 0xFF} // #93000a Stopped Pill Background
+	colMicaBg           = color.NRGBA{R: 0x20, G: 0x20, B: 0x20, A: 0xFF} // SolidBackgroundFillColorBase (#202020)
+	colNavPaneBg        = color.NRGBA{R: 0x1A, G: 0x1A, B: 0x1A, A: 0xFF} // NavigationViewDefaultPaneBackground (#1A1A1A)
+	colNavPaneActive    = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0x0F} // Active nav item fill (6% white)
+	colNavPaneHover     = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0x08} // Hover nav item fill (3% white)
+	colCardBg           = color.NRGBA{R: 0x2B, G: 0x2B, B: 0x2B, A: 0xFF} // CardBackgroundFillColorDefault (#2B2B2B)
+	colCardSecondary    = color.NRGBA{R: 0x32, G: 0x32, B: 0x32, A: 0xFF} // CardBackgroundFillColorSecondary (#323232)
+	colCardStroke       = color.NRGBA{R: 0x38, G: 0x38, B: 0x38, A: 0xFF} // CardStrokeColorDefault (#383838)
+	colControlBg        = color.NRGBA{R: 0x2E, G: 0x2E, B: 0x2E, A: 0xFF} // ControlFillColorDefault (#2E2E2E)
+	colControlBgHover   = color.NRGBA{R: 0x38, G: 0x38, B: 0x38, A: 0xFF} // ControlFillColorSecondary
+	colControlBgPressed = color.NRGBA{R: 0x27, G: 0x27, B: 0x27, A: 0xFF} // ControlFillColorTertiary
+	colControlStroke    = color.NRGBA{R: 0x48, G: 0x48, B: 0x48, A: 0xFF} // ControlStrokeColorDefault (#484848)
+	colDivider          = color.NRGBA{R: 0x30, G: 0x30, B: 0x30, A: 0xFF} // DividerStrokeColorDefault (#303030)
+	colTerminalBg       = color.NRGBA{R: 0x16, G: 0x16, B: 0x16, A: 0xFF} // Dark Log View Container (#161616)
+
+	// Windows 11 Accent: SystemAccentColor (Dark)
+	colAccent          = color.NRGBA{R: 0x60, G: 0xCD, B: 0xFF, A: 0xFF} // #60CDFF
+	colAccentLight     = color.NRGBA{R: 0x78, G: 0xD5, B: 0xFF, A: 0xFF} // #78D5FF
+	colAccentDark      = color.NRGBA{R: 0x41, G: 0xB1, B: 0xE1, A: 0xFF} // #41B1E1
+	colOnAccent        = color.NRGBA{R: 0x00, G: 0x27, B: 0x3F, A: 0xFF} // Contrast navy on accent (#00273F)
+	colAccentContainer = color.NRGBA{R: 0x00, G: 0x3C, B: 0x5C, A: 0xFF} // #003C5C
+	colOnAccentCont    = color.NRGBA{R: 0xC6, G: 0xE7, B: 0xFF, A: 0xFF} // #C6E7FF
+
+	// Text Tokens
+	colTextPrimary   = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF} // TextFillColorPrimary (#FFFFFF)
+	colTextSecondary = color.NRGBA{R: 0xD1, G: 0xD1, B: 0xD1, A: 0xFF} // TextFillColorSecondary (#D1D1D1)
+	colTextTertiary  = color.NRGBA{R: 0x8E, G: 0x8E, B: 0x8E, A: 0xFF} // TextFillColorTertiary (#8E8E8E)
+
+	// Status Tokens
+	colSuccess          = color.NRGBA{R: 0x6C, G: 0xCB, B: 0x5F, A: 0xFF} // #6CCB5F
+	colSuccessContainer = color.NRGBA{R: 0x16, G: 0x38, B: 0x1C, A: 0xFF} // #16381C
+	colSuccessStroke    = color.NRGBA{R: 0x2B, G: 0x59, B: 0x32, A: 0xFF} // #2B5932
+
+	colError          = color.NRGBA{R: 0xFF, G: 0x99, B: 0xA4, A: 0xFF} // #FF99A4
+	colErrorContainer = color.NRGBA{R: 0x3E, G: 0x1B, B: 0x20, A: 0xFF} // #3E1B20
+	colErrorStroke    = color.NRGBA{R: 0x64, G: 0x28, B: 0x2D, A: 0xFF} // #64282D
+
+	colWarning          = color.NRGBA{R: 0xFC, G: 0xE1, B: 0x00, A: 0xFF} // #FCE100
+	colWarningContainer = color.NRGBA{R: 0x3A, G: 0x33, B: 0x18, A: 0xFF} // #3A3318
+	colWarningStroke    = color.NRGBA{R: 0x70, G: 0x5E, B: 0x00, A: 0xFF} // #705E00
+)
+
+const (
+	fontSegoe = font.Typeface("Segoe UI Variable, Segoe UI, sans-serif")
+	fontMono  = font.Typeface("Consolas, Segoe UI Mono, monospace")
 )
 
 type guiTab int
@@ -71,7 +98,6 @@ type guiState struct {
 	heroToggleBtn  widget.Clickable
 	heroRestartBtn widget.Clickable
 	heroElevateBtn widget.Clickable
-	openWebUIBtn   widget.Clickable
 
 	// Routing & Settings
 	settingsInitialized bool
@@ -102,7 +128,7 @@ type guiState struct {
 	contentList  layout.List
 }
 
-// cmdGui opens the native Material 3 desktop dashboard window. This is the
+// cmdGui opens the native WinUI 3 / Fluent desktop dashboard window. This is the
 // double-click entry point on Windows (built with -tags nativegui).
 func cmdGui(_ string) {
 	ensureDir()
@@ -120,19 +146,11 @@ func cmdGui(_ string) {
 			_, _ = apiDispatch(apiRequest{Cmd: "set", Enabled: &target})
 		},
 		func() {
-			openInBrowser("http://127.0.0.1:17842")
-		},
-		func() {
 			runShutdownHooks()
 			os.Exit(0)
 		},
 	)
 
-	// Every exit path here goes through os.Exit, which skips defers, so the
-	// cleanup has to be reachable from the shutdown-hook path the signal
-	// logger uses. Without these hooks Ctrl+C killed the dashboard while the
-	// child tgws daemon and the WinDivert interception kept running, and the
-	// tray icon stayed behind as a ghost.
 	var teardownOnce sync.Once
 	teardown := func() {
 		teardownOnce.Do(func() {
@@ -168,10 +186,10 @@ func cmdGui(_ string) {
 func guiLoop(w *app.Window) error {
 	th := material.NewTheme()
 	th.Palette = material.Palette{
-		Bg:         colBg,
-		Fg:         colText,
-		ContrastBg: colPrimary,
-		ContrastFg: colOnPrimary,
+		Bg:         colMicaBg,
+		Fg:         colTextPrimary,
+		ContrastBg: colAccent,
+		ContrastFg: colOnAccent,
 	}
 
 	st := &guiState{
@@ -327,11 +345,6 @@ func handleGuiEvents(w *app.Window, st *guiState, gtx layout.Context) {
 		}()
 	}
 
-	// Open WebUI in browser
-	if st.openWebUIBtn.Clicked(gtx) {
-		go openInBrowser("http://127.0.0.1:17842")
-	}
-
 	// UAC Elevation
 	if st.heroElevateBtn.Clicked(gtx) {
 		if err := restartElevated(); err != nil {
@@ -410,16 +423,24 @@ func handleGuiEvents(w *app.Window, st *guiState, gtx layout.Context) {
 	}
 }
 
+// guiLayout renders the WinUI 3 Navigation View with a sidebar and content frame.
 func guiLayout(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
-	// Fill window background with Material 3 dark surface
-	paint.Fill(gtx.Ops, colBg)
+	// Base Mica dark background
+	paint.Fill(gtx.Ops, colMicaBg)
 
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		// Top App Bar
+	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+		// Left Navigation Pane (WinUI 3 NavigationView)
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return renderAppBar(st, gtx, th)
+			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(230))
+			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(230))
+			return renderNavPane(st, gtx, th)
 		}),
-		// Active Tab Content
+		// 1px Vertical Separator
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			paint.FillShape(gtx.Ops, colDivider, clip.Rect{Max: image.Pt(gtx.Dp(unit.Dp(1)), gtx.Constraints.Max.Y)}.Op())
+			return layout.Dimensions{Size: image.Pt(gtx.Dp(unit.Dp(1)), gtx.Constraints.Max.Y)}
+		}),
+		// Content Area
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			st.mu.Lock()
 			tab := st.activeTab
@@ -427,164 +448,396 @@ func guiLayout(st *guiState, gtx layout.Context, th *material.Theme) layout.Dime
 
 			switch tab {
 			case tabStatus:
-				return renderStatusTab(st, gtx, th)
+				return renderStatusPage(st, gtx, th)
 			case tabRouting:
-				return renderRoutingTab(st, gtx, th)
+				return renderRoutingPage(st, gtx, th)
 			case tabLogs:
-				return renderLogsTab(st, gtx, th)
+				return renderLogsPage(st, gtx, th)
 			default:
-				return renderStatusTab(st, gtx, th)
+				return renderStatusPage(st, gtx, th)
 			}
 		}),
 	)
 }
 
-func renderAppBar(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
-	return layout.Stack{}.Layout(gtx,
-		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-			paint.FillShape(gtx.Ops, colSurfaceLow, clip.Rect{Max: gtx.Constraints.Min}.Op())
-			return layout.Dimensions{Size: gtx.Constraints.Min}
-		}),
-		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					// Brand Title + Status Badge
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								title := material.H5(th, "TeleWEB")
-								title.Color = colPrimary
-								title.Font.Weight = font.Bold
-								return title.Layout(gtx)
-							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								st.mu.Lock()
-								running := st.st.Running
-								redirector := st.st.Redirector
-								st.mu.Unlock()
+// ============================================================================
+// NAVIGATION PANE (WinUI 3 NavigationView)
+// ============================================================================
 
-								badgeBg := colErrorContainer
-								badgeCol := colError
-								badgeText := "● Остановлен"
-								if running && redirector {
-									badgeBg = colSuccessContainer
-									badgeCol = colSuccess
-									badgeText = "● Активен (WinDivert)"
-								} else if running {
-									badgeBg = colPrimaryContainer
-									badgeCol = colPrimary
-									badgeText = "● Работает (без драйвера)"
-								}
+func renderNavPane(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
+	paint.FillShape(gtx.Ops, colNavPaneBg, clip.Rect{Max: gtx.Constraints.Max}.Op())
 
-								return card(gtx, badgeBg, 12, func(gtx layout.Context) layout.Dimensions {
-									return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Caption(th, badgeText)
-										lbl.Color = badgeCol
-										lbl.Font.Weight = font.Medium
-										return lbl.Layout(gtx)
+	return layout.Inset{Top: unit.Dp(18), Bottom: unit.Dp(16), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			// App Header
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Left: unit.Dp(12), Bottom: unit.Dp(18)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return fluentCard(gtx, colAccent, color.NRGBA{}, 4, func(gtx layout.Context) layout.Dimensions {
+										return layout.Dimensions{Size: image.Pt(gtx.Dp(unit.Dp(16)), gtx.Dp(unit.Dp(16)))}
 									})
-								})
-							}),
-						)
-					}),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-					// Navigation Tabs
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						st.mu.Lock()
-						active := st.activeTab
-						st.mu.Unlock()
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Body1(th, "TeleWEB")
+									lbl.Color = colTextPrimary
+									lbl.Font.Weight = font.Bold
+									lbl.Font.Typeface = fontSegoe
+									return lbl.Layout(gtx)
+								}),
+							)
+						}),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Caption(th, "WSS Transport · Windows")
+							lbl.Color = colTextTertiary
+							lbl.Font.Typeface = fontSegoe
+							return lbl.Layout(gtx)
+						}),
+					)
+				})
+			}),
+			// Nav items
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				st.mu.Lock()
+				active := st.activeTab
+				st.mu.Unlock()
 
-						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderTabBtn(gtx, th, &st.tabStatusBtn, "Состояние", active == tabStatus)
-							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderTabBtn(gtx, th, &st.tabRoutingBtn, "Маршрутизация", active == tabRouting)
-							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderTabBtn(gtx, th, &st.tabLogsBtn, "Журнал", active == tabLogs)
-							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderIconButton(gtx, th, &st.refreshBtn, "↻")
-							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderIconButton(gtx, th, &st.trayMinimizeBtn, "⤓")
-							}),
-						)
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return renderNavItem(gtx, th, &st.tabStatusBtn, "⊞", "Состояние", active == tabStatus)
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return renderNavItem(gtx, th, &st.tabRoutingBtn, "⚙", "Маршрутизация", active == tabRouting)
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return renderNavItem(gtx, th, &st.tabLogsBtn, "▤", "Журнал событий", active == tabLogs)
 					}),
 				)
-			})
+			}),
+			// Flexible spacer pushing footer down
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return layout.Dimensions{}
+			}),
+			// Footer divider
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				paint.FillShape(gtx.Ops, colDivider, clip.Rect{Max: image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))}.Op())
+				return layout.Dimensions{Size: image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))}
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+			// Footer action buttons
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return renderNavFooterBtn(gtx, th, &st.refreshBtn, "↻", "Обновить статус")
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return renderNavFooterBtn(gtx, th, &st.trayMinimizeBtn, "⤓", "Свернуть в трей")
+					}),
+				)
+			}),
+		)
+	})
+}
+
+func renderNavItem(gtx layout.Context, th *material.Theme, btn *widget.Clickable, icon, label string, selected bool) layout.Dimensions {
+	bg := color.NRGBA{}
+	fg := colTextSecondary
+	if selected {
+		bg = colNavPaneActive
+		fg = colTextPrimary
+	} else if btn.Hovered() {
+		bg = colNavPaneHover
+	}
+
+	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Stack{}.Layout(gtx,
+			// Background
+			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+				if bg.A > 0 {
+					rr := clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, 4)
+					paint.FillShape(gtx.Ops, bg, rr.Op(gtx.Ops))
+				}
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			}),
+			// Selected Left Vertical Accent Pill (WinUI 3 NavigationView indicator)
+			layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+				if !selected {
+					return layout.Dimensions{}
+				}
+				pillW := gtx.Dp(unit.Dp(3))
+				pillH := gtx.Dp(unit.Dp(16))
+				centerY := (gtx.Constraints.Min.Y - pillH) / 2
+				if centerY < 0 {
+					centerY = 0
+				}
+				rr := clip.UniformRRect(image.Rectangle{
+					Min: image.Pt(0, centerY),
+					Max: image.Pt(pillW, centerY+pillH),
+				}, 2)
+				paint.FillShape(gtx.Ops, colAccent, rr.Op(gtx.Ops))
+				return layout.Dimensions{}
+			}),
+			// Content: Icon + Label
+			layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(9), Bottom: unit.Dp(9), Left: unit.Dp(14), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body1(th, icon)
+							iconCol := colTextTertiary
+							if selected {
+								iconCol = colAccent
+							}
+							lbl.Color = iconCol
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(th, label)
+							lbl.Color = fg
+							lbl.Font.Typeface = fontSegoe
+							if selected {
+								lbl.Font.Weight = font.SemiBold
+							}
+							return lbl.Layout(gtx)
+						}),
+					)
+				})
+			}),
+		)
+	})
+}
+
+func renderNavFooterBtn(gtx layout.Context, th *material.Theme, btn *widget.Clickable, icon, label string) layout.Dimensions {
+	bg := color.NRGBA{}
+	if btn.Hovered() {
+		bg = colNavPaneHover
+	}
+	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Stack{}.Layout(gtx,
+			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+				if bg.A > 0 {
+					rr := clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, 4)
+					paint.FillShape(gtx.Ops, bg, rr.Op(gtx.Ops))
+				}
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			}),
+			layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(14), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(th, icon)
+							lbl.Color = colTextTertiary
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Caption(th, label)
+							lbl.Color = colTextSecondary
+							lbl.Font.Typeface = fontSegoe
+							return lbl.Layout(gtx)
+						}),
+					)
+				})
+			}),
+		)
+	})
+}
+
+// ============================================================================
+// COMMON CONTROLS & HELPERS (WinUI 3 Fluent Cards, Buttons, Inputs)
+// ============================================================================
+
+// fluentCard renders a WinUI 3 rounded card with background fill and 1px border stroke.
+func fluentCard(gtx layout.Context, bg, stroke color.NRGBA, radius int, content layout.Widget) layout.Dimensions {
+	return layout.Stack{}.Layout(gtx,
+		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+			rr := clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, radius)
+			// Background fill
+			paint.FillShape(gtx.Ops, bg, rr.Op(gtx.Ops))
+			// 1px Border stroke
+			if stroke.A > 0 {
+				border := clip.Stroke{
+					Path:  rr.Path(gtx.Ops),
+					Width: 1,
+				}.Op()
+				paint.FillShape(gtx.Ops, stroke, border)
+			}
+			return layout.Dimensions{Size: gtx.Constraints.Min}
 		}),
+		layout.Stacked(content),
 	)
 }
 
-func renderTabBtn(gtx layout.Context, th *material.Theme, btn *widget.Clickable, label string, selected bool) layout.Dimensions {
-	bg := colCardHigh
-	fg := colTextMuted
-	if selected {
-		bg = colPrimaryContainer
-		fg = colOnPrimaryCont
-	}
+func renderAccentButton(gtx layout.Context, th *material.Theme, btn *widget.Clickable, text string) layout.Dimensions {
 	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return card(gtx, bg, 18, func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(th, label)
+		bg := colAccent
+		fg := colOnAccent
+		if btn.Hovered() {
+			bg = colAccentLight
+		}
+		if btn.Pressed() {
+			bg = colAccentDark
+		}
+		return fluentCard(gtx, bg, color.NRGBA{}, 4, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(18), Right: unit.Dp(18)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(th, text)
 				lbl.Color = fg
-				if selected {
-					lbl.Font.Weight = font.SemiBold
-				}
+				lbl.Font.Weight = font.SemiBold
+				lbl.Font.Typeface = fontSegoe
 				return lbl.Layout(gtx)
 			})
 		})
 	})
 }
 
-func renderIconButton(gtx layout.Context, th *material.Theme, btn *widget.Clickable, label string) layout.Dimensions {
+func renderStandardButton(gtx layout.Context, th *material.Theme, btn *widget.Clickable, text string) layout.Dimensions {
 	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return card(gtx, colCardHigh, 16, func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body1(th, label)
-				lbl.Color = colPrimary
+		bg := colControlBg
+		stroke := colControlStroke
+		fg := colTextPrimary
+		if btn.Hovered() {
+			bg = colControlBgHover
+		}
+		if btn.Pressed() {
+			bg = colControlBgPressed
+		}
+		return fluentCard(gtx, bg, stroke, 4, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(th, text)
+				lbl.Color = fg
+				lbl.Font.Weight = font.Medium
+				lbl.Font.Typeface = fontSegoe
 				return lbl.Layout(gtx)
 			})
 		})
 	})
 }
 
+func renderDangerButton(gtx layout.Context, th *material.Theme, btn *widget.Clickable, text string) layout.Dimensions {
+	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		bg := colErrorContainer
+		stroke := colErrorStroke
+		fg := colError
+		if btn.Hovered() {
+			bg = color.NRGBA{R: 0x4E, G: 0x22, B: 0x28, A: 0xFF}
+		}
+		return fluentCard(gtx, bg, stroke, 4, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(th, text)
+				lbl.Color = fg
+				lbl.Font.Weight = font.SemiBold
+				lbl.Font.Typeface = fontSegoe
+				return lbl.Layout(gtx)
+			})
+		})
+	})
+}
+
+func renderPageHeader(gtx layout.Context, th *material.Theme, title, subtitle string, rightWidget layout.Widget) layout.Dimensions {
+	return layout.Inset{Bottom: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.H5(th, title)
+						lbl.Color = colTextPrimary
+						lbl.Font.Weight = font.Bold
+						lbl.Font.Typeface = fontSegoe
+						return lbl.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(th, subtitle)
+						lbl.Color = colTextSecondary
+						lbl.Font.Typeface = fontSegoe
+						return lbl.Layout(gtx)
+					}),
+				)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if rightWidget != nil {
+					return rightWidget(gtx)
+				}
+				return layout.Dimensions{}
+			}),
+		)
+	})
+}
+
+// renderSettingsCard renders a WinUI 3 SettingsCard: title + subtitle on the left, control on the right.
+func renderSettingsCard(gtx layout.Context, th *material.Theme, title, subtitle string, control layout.Widget) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(th, title)
+							lbl.Color = colTextPrimary
+							lbl.Font.Weight = font.SemiBold
+							lbl.Font.Typeface = fontSegoe
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Caption(th, subtitle)
+							lbl.Color = colTextSecondary
+							lbl.Font.Typeface = fontSegoe
+							return lbl.Layout(gtx)
+						}),
+					)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+				layout.Rigid(control),
+			)
+		})
+	})
+}
+
 // ============================================================================
-// TAB 1: СОСТОЯНИЕ (Control / Status)
+// TAB 1: СОСТОЯНИЕ (Status & Telemetry)
 // ============================================================================
 
-func renderStatusTab(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
+func renderStatusPage(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
 	st.mu.Lock()
 	s := st.st
 	busy := st.busy
 	st.mu.Unlock()
 
-	return layout.Inset{Top: unit.Dp(16), Bottom: unit.Dp(16), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	return layout.Inset{Top: unit.Dp(20), Bottom: unit.Dp(20), Left: unit.Dp(24), Right: unit.Dp(24)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		widgets := []layout.Widget{
-			// 1. Hero Card
+			// Page Header with Status Badge
+			func(gtx layout.Context) layout.Dimensions {
+				return renderPageHeader(gtx, th, "Состояние", "Мониторинг соединений, телеметрия и управление службой", func(gtx layout.Context) layout.Dimensions {
+					return renderStatusBadge(gtx, th, s.Running, s.Redirector)
+				})
+			},
+			// UAC Elevation Warning InfoBar (WinUI 3 InfoBar)
+			func(gtx layout.Context) layout.Dimensions {
+				return renderElevationInfoBar(st, gtx, th)
+			},
+			// Hero Card
 			func(gtx layout.Context) layout.Dimensions {
 				return renderHeroCard(st, gtx, th, s, busy)
 			},
-			// Spacer
 			func(gtx layout.Context) layout.Dimensions {
 				return layout.Spacer{Height: unit.Dp(16)}.Layout(gtx)
 			},
-			// 2. DC Matrix Card
+			// DC Matrix Card
 			func(gtx layout.Context) layout.Dimensions {
 				return renderDCMatrixCard(gtx, th, s)
 			},
-			// Spacer
 			func(gtx layout.Context) layout.Dimensions {
 				return layout.Spacer{Height: unit.Dp(16)}.Layout(gtx)
 			},
-			// 3. Service & Network Endpoints Card
+			// Service Endpoints Card
 			func(gtx layout.Context) layout.Dimensions {
 				return renderServiceInfoCard(st, gtx, th, s)
 			},
@@ -596,123 +849,151 @@ func renderStatusTab(st *guiState, gtx layout.Context, th *material.Theme) layou
 	})
 }
 
+func renderStatusBadge(gtx layout.Context, th *material.Theme, running, redirector bool) layout.Dimensions {
+	bg := colErrorContainer
+	stroke := colErrorStroke
+	fg := colError
+	text := "● Остановлен"
+	if running && redirector {
+		bg = colSuccessContainer
+		stroke = colSuccessStroke
+		fg = colSuccess
+		text = "● Активен (WinDivert)"
+	} else if running {
+		bg = colAccentContainer
+		stroke = color.NRGBA{R: 0x00, G: 0x5C, B: 0x94, A: 0xFF}
+		fg = colAccent
+		text = "● Активен (SOCKS5 / WSS)"
+	}
+
+	return fluentCard(gtx, bg, stroke, 12, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Caption(th, text)
+			lbl.Color = fg
+			lbl.Font.Weight = font.SemiBold
+			lbl.Font.Typeface = fontSegoe
+			return lbl.Layout(gtx)
+		})
+	})
+}
+
+func renderElevationInfoBar(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
+	if runtime.GOOS != "windows" || isElevated() {
+		return layout.Dimensions{}
+	}
+
+	return layout.Inset{Bottom: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return fluentCard(gtx, colWarningContainer, colWarningStroke, 8, func(gtx layout.Context) layout.Dimensions {
+			return layout.Stack{}.Layout(gtx,
+				// Left warning accent line
+				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+					barW := gtx.Dp(unit.Dp(4))
+					rr := clip.RRect{
+						Rect: image.Rectangle{Max: image.Pt(barW, gtx.Constraints.Min.Y)},
+						NW:   gtx.Dp(unit.Dp(8)),
+						SW:   gtx.Dp(unit.Dp(8)),
+					}
+					paint.FillShape(gtx.Ops, colWarning, rr.Op(gtx.Ops))
+					return layout.Dimensions{}
+				}),
+				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.H6(th, "⚠")
+								lbl.Color = colWarning
+								return lbl.Layout(gtx)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										lbl := material.Body2(th, "Требуются права Администратора")
+										lbl.Color = colTextPrimary
+										lbl.Font.Weight = font.Bold
+										lbl.Font.Typeface = fontSegoe
+										return lbl.Layout(gtx)
+									}),
+									layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										lbl := material.Caption(th, "Для сетевого перехвата WinDivert требуются права Администратора. Без них доступен только локальный SOCKS5.")
+										lbl.Color = colTextSecondary
+										lbl.Font.Typeface = fontSegoe
+										return lbl.Layout(gtx)
+									}),
+								)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return renderAccentButton(gtx, th, &st.heroElevateBtn, "Перезапустить с UAC")
+							}),
+						)
+					})
+				}),
+			)
+		})
+	})
+}
+
 func renderHeroCard(st *guiState, gtx layout.Context, th *material.Theme, s Status, busy bool) layout.Dimensions {
-	return card(gtx, colCard, 16, func(gtx layout.Context) layout.Dimensions {
-		return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(18)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				// Header row: status titles + action buttons
+				// Header row
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									stateText := "Транспорт активен"
-									stateColor := colPrimary
+									stateText := "Служба активна"
+									stateColor := colAccent
 									if !s.Running {
-										stateText = "Транспорт остановлен"
-										stateColor = colTextMuted
+										stateText = "Служба остановлена"
+										stateColor = colTextTertiary
 									}
 									lbl := material.H6(th, stateText)
 									lbl.Color = stateColor
 									lbl.Font.Weight = font.Bold
+									lbl.Font.Typeface = fontSegoe
 									return lbl.Layout(gtx)
 								}),
-								layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+								layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 									sub := "DC1–DC5 через WebSocket · Прозрачный перехват (WinDivert)"
 									if !s.Running {
-										sub = "Нажмите «Запустить» для перехвата и туннелирования Telegram"
+										sub = "Нажмите «Запустить службу» для старта перехвата и туннелирования"
 									}
 									lbl := material.Body2(th, sub)
-									lbl.Color = colTextMuted
+									lbl.Color = colTextSecondary
+									lbl.Font.Typeface = fontSegoe
 									return lbl.Layout(gtx)
 								}),
 							)
 						}),
-						// Primary Start/Stop Button
+						// Primary Start / Stop Button
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							btnText := "Запустить"
-							btnBg := colPrimary
-							btnFg := colOnPrimary
 							if s.Running {
-								btnText = "Остановить"
-								btnBg = colErrorContainer
-								btnFg = colError
+								text := "Остановить"
+								if busy {
+									text = "Секунду…"
+								}
+								return renderDangerButton(gtx, th, &st.heroToggleBtn, text)
 							}
+							text := "Запустить службу"
 							if busy {
-								btnText = "Секунду…"
+								text = "Секунду…"
 							}
-
-							return st.heroToggleBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return card(gtx, btnBg, 20, func(gtx layout.Context) layout.Dimensions {
-									return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(24), Right: unit.Dp(24)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Body1(th, btnText)
-										lbl.Color = btnFg
-										lbl.Font.Weight = font.Bold
-										return lbl.Layout(gtx)
-									})
-								})
-							})
+							return renderAccentButton(gtx, th, &st.heroToggleBtn, text)
 						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 						// Restart / Reapply Button
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return st.heroRestartBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return card(gtx, colCardHigh, 20, func(gtx layout.Context) layout.Dimensions {
-									return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Body2(th, "Перезапустить")
-										lbl.Color = colText
-										return lbl.Layout(gtx)
-									})
-								})
-							})
+							return renderStandardButton(gtx, th, &st.heroRestartBtn, "Перезапустить")
 						}),
 					)
 				}),
-				// UAC Elevation Banner (Windows without Admin rights)
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					if runtime.GOOS != "windows" || isElevated() {
-						return layout.Dimensions{}
-					}
-					return layout.Inset{Top: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return card(gtx, colCardHighest, 12, func(gtx layout.Context) layout.Dimensions {
-							return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-										return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Body2(th, "Требуются права Администратора для сетевого драйвера WinDivert")
-												lbl.Color = colText
-												lbl.Font.Weight = font.Bold
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Caption(th, "Без повышения прав доступен только SOCKS5 режим или служба Windows")
-												lbl.Color = colTextMuted
-												return lbl.Layout(gtx)
-											}),
-										)
-									}),
-									layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										return st.heroElevateBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-											return card(gtx, colPrimary, 16, func(gtx layout.Context) layout.Dimensions {
-												return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-													lbl := material.Caption(th, "Запустить от Администратора")
-													lbl.Color = colOnPrimary
-													lbl.Font.Weight = font.Bold
-													return lbl.Layout(gtx)
-												})
-											})
-										})
-									}),
-								)
-							})
-						})
-					})
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(18)}.Layout),
-				// Stats Grid (6 stat cards)
+				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+				// 6 Metrics in subcards
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					traffic := fmt.Sprintf("↑%s  ↓%s", formatBytes(s.TrafficUpBytes), formatBytes(s.TrafficDownBytes))
 					pop := s.LastCFPoP
@@ -723,7 +1004,7 @@ func renderHeroCard(st *guiState, gtx layout.Context, th *material.Theme, s Stat
 						{"Сессии", strconv.FormatInt(s.Active, 10)},
 						{"WS-сессии", strconv.FormatInt(s.WS, 10)},
 						{"Память RSS", formatBytes(s.MemNowBytes)},
-						{"Uptime", formatUptime(s.Uptime)},
+						{"Время работы", formatUptime(s.Uptime)},
 						{"Трафик", traffic},
 						{"CF PoP", pop},
 					}
@@ -732,20 +1013,22 @@ func renderHeroCard(st *guiState, gtx layout.Context, th *material.Theme, s Stat
 					for _, m := range metrics {
 						item := m
 						children = append(children, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return card(gtx, colCardHigh, 12, func(gtx layout.Context) layout.Dimensions {
-									return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return fluentCard(gtx, colCardSecondary, colControlStroke, 6, func(gtx layout.Context) layout.Dimensions {
+									return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 										return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 												lbl := material.Caption(th, item.label)
-												lbl.Color = colTextMuted
+												lbl.Color = colTextTertiary
+												lbl.Font.Typeface = fontSegoe
 												return lbl.Layout(gtx)
 											}),
-											layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+											layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 												lbl := material.Body1(th, item.val)
-												lbl.Color = colText
+												lbl.Color = colTextPrimary
 												lbl.Font.Weight = font.Bold
+												lbl.Font.Typeface = fontSegoe
 												return lbl.Layout(gtx)
 											}),
 										)
@@ -770,13 +1053,14 @@ func renderDCMatrixCard(gtx layout.Context, th *material.Theme, s Status) layout
 		"5": "Сингапур (Азия)",
 	}
 
-	return card(gtx, colCard, 16, func(gtx layout.Context) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
 		return layout.UniformInset(unit.Dp(18)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					lbl := material.Body1(th, "Датацентры Telegram (DC Matrix)")
-					lbl.Color = colText
-					lbl.Font.Weight = font.Bold
+					lbl.Color = colTextPrimary
+					lbl.Font.Weight = font.SemiBold
+					lbl.Font.Typeface = fontSegoe
 					return lbl.Layout(gtx)
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
@@ -790,52 +1074,57 @@ func renderDCMatrixCard(gtx layout.Context, th *material.Theme, s Status) layout
 						city := cities[dcNum]
 
 						children = append(children, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								bg := colCardHigh
+							return layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								bg := colCardSecondary
+								stroke := colControlStroke
 								if count > 0 {
-									bg = colPrimaryContainer
+									stroke = colAccent
 								}
 
-								return card(gtx, bg, 12, func(gtx layout.Context) layout.Dimensions {
-									return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return fluentCard(gtx, bg, stroke, 6, func(gtx layout.Context) layout.Dimensions {
+									return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 										return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 												lbl := material.H6(th, "DC"+dcNum)
-												lbl.Color = colPrimary
+												lbl.Color = colAccent
 												lbl.Font.Weight = font.Bold
+												lbl.Font.Typeface = fontSegoe
 												return lbl.Layout(gtx)
 											}),
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 												lbl := material.Caption(th, city)
-												lbl.Color = colTextMuted
+												lbl.Color = colTextTertiary
+												lbl.Font.Typeface = fontSegoe
 												return lbl.Layout(gtx)
 											}),
 											layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												valCol := colTextMuted
+												valCol := colTextTertiary
 												if count > 0 {
 													valCol = colSuccess
 												}
 												lbl := material.H5(th, strconv.Itoa(count))
 												lbl.Color = valCol
 												lbl.Font.Weight = font.Bold
+												lbl.Font.Typeface = fontSegoe
 												return lbl.Layout(gtx)
 											}),
 											layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 												tagText := "Direct"
-												tagBg := colCardHighest
-												tagFg := colTextMuted
+												tagBg := colControlBg
+												tagFg := colTextTertiary
 												if s.Running {
 													tagText = "WSS"
-													tagBg = colPrimaryContainer
-													tagFg = colOnPrimaryCont
+													tagBg = colAccentContainer
+													tagFg = colOnAccentCont
 												}
-												return card(gtx, tagBg, 8, func(gtx layout.Context) layout.Dimensions {
+												return fluentCard(gtx, tagBg, color.NRGBA{}, 4, func(gtx layout.Context) layout.Dimensions {
 													return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 														tLbl := material.Caption(th, tagText)
 														tLbl.Color = tagFg
 														tLbl.Font.Weight = font.SemiBold
+														tLbl.Font.Typeface = fontSegoe
 														return tLbl.Layout(gtx)
 													})
 												})
@@ -855,11 +1144,11 @@ func renderDCMatrixCard(gtx layout.Context, th *material.Theme, s Status) layout
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return renderMetaChip(gtx, th, "Пул WSS", strconv.Itoa(s.PoolSize))
 						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return renderMetaChip(gtx, th, "Попадания в пул", strconv.FormatInt(s.PoolHits, 10))
 						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return renderMetaChip(gtx, th, "Ошибки перехвата", strconv.FormatInt(s.Fail, 10))
 						}),
@@ -874,54 +1163,46 @@ func renderMetaChip(gtx layout.Context, th *material.Theme, label, val string) l
 	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			lbl := material.Body2(th, label+": ")
-			lbl.Color = colTextMuted
+			lbl.Color = colTextTertiary
+			lbl.Font.Typeface = fontSegoe
 			return lbl.Layout(gtx)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			lbl := material.Body2(th, val)
-			lbl.Color = colText
+			lbl.Color = colTextPrimary
 			lbl.Font.Weight = font.Bold
+			lbl.Font.Typeface = fontSegoe
 			return lbl.Layout(gtx)
 		}),
 	)
 }
 
 func renderServiceInfoCard(st *guiState, gtx layout.Context, th *material.Theme, s Status) layout.Dimensions {
-	return card(gtx, colCard, 16, func(gtx layout.Context) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
 		return layout.UniformInset(unit.Dp(18)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							lbl := material.Body1(th, "Интерфейсы и Службы")
-							lbl.Color = colText
-							lbl.Font.Weight = font.Bold
+							lbl.Color = colTextPrimary
+							lbl.Font.Weight = font.SemiBold
+							lbl.Font.Typeface = fontSegoe
 							return lbl.Layout(gtx)
 						}),
-						layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							socksPort := strconv.Itoa(s.Port)
 							if socksPort == "0" {
 								socksPort = "1080"
 							}
-							info := fmt.Sprintf("Локальный SOCKS5: 127.0.0.1:%s  •  WebUI: http://127.0.0.1:17842", socksPort)
+							info := fmt.Sprintf("Локальный SOCKS5-прокси: 127.0.0.1:%s (для приложений без сетевого перехвата)", socksPort)
 							lbl := material.Body2(th, info)
-							lbl.Color = colTextMuted
+							lbl.Color = colTextSecondary
+							lbl.Font.Typeface = fontSegoe
 							return lbl.Layout(gtx)
 						}),
 					)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return st.openWebUIBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return card(gtx, colCardHigh, 18, func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body2(th, "Открыть WebUI в браузере ↗")
-								lbl.Color = colPrimary
-								lbl.Font.Weight = font.SemiBold
-								return lbl.Layout(gtx)
-							})
-						})
-					})
 				}),
 			)
 		})
@@ -932,7 +1213,7 @@ func renderServiceInfoCard(st *guiState, gtx layout.Context, th *material.Theme,
 // TAB 2: МАРШРУТИЗАЦИЯ (Routing / Settings)
 // ============================================================================
 
-func renderRoutingTab(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
+func renderRoutingPage(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
 	st.mu.Lock()
 	busy := st.busy
 	saveMsg := st.saveMsg
@@ -940,147 +1221,100 @@ func renderRoutingTab(st *guiState, gtx layout.Context, th *material.Theme) layo
 	currentPool := st.poolSize
 	st.mu.Unlock()
 
-	return layout.Inset{Top: unit.Dp(16), Bottom: unit.Dp(16), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	return layout.Inset{Top: unit.Dp(20), Bottom: unit.Dp(20), Left: unit.Dp(24), Right: unit.Dp(24)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		items := []layout.Widget{
-			// Card 1: WebSocket & Cloudflare Toggles
+			// Page Header
 			func(gtx layout.Context) layout.Dimensions {
-				return card(gtx, colCard, 16, func(gtx layout.Context) layout.Dimensions {
-					return layout.UniformInset(unit.Dp(18)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body1(th, "Режим WebSocket & Cloudflare")
-								lbl.Color = colPrimary
-								lbl.Font.Weight = font.Bold
-								return lbl.Layout(gtx)
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderSwitchRow(gtx, th, &st.swCFPriority, "Форсировать Cloudflare (CF Priority)", "Приоритетная маршрутизация всех Telegram DC через WSS")
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderSwitchRow(gtx, th, &st.swCFBalance, "Балансировка доменов (CF Balance)", "Распределение подключений по пулу доступных доменов Cloudflare")
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderSwitchRow(gtx, th, &st.swDoH, "Защищенный DNS (Multi-DoH гонка)", "Параллельная резолвация доменов через Cloudflare, Google и Quad9")
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderSwitchRow(gtx, th, &st.swH2Media, "HTTP/2 ускорение медиа (CF H2)", "Мультиплексирование загрузки фото и видео через HTTP/2 соединения")
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderSwitchRow(gtx, th, &st.swForceTestDC, "Тестовые датацентры (Test DC)", "Перехват и перенаправление тестовых серверов Telegram (149.154.175.10)")
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderSwitchRow(gtx, th, &st.swDC203, "Прямой TCP-путь для CDN203", "Прямой маршрут без WSS для CDN-кэша медиафайлов")
-							}),
-						)
-					})
+				return renderPageHeader(gtx, th, "Маршрутизация", "Конфигурация Cloudflare WSS, DNS и параметров сети", nil)
+			},
+			// Section 1 Header
+			func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body1(th, "Режим WebSocket & Cloudflare")
+					lbl.Color = colAccent
+					lbl.Font.Weight = font.Bold
+					lbl.Font.Typeface = fontSegoe
+					return lbl.Layout(gtx)
 				})
 			},
-			// Spacer
+			// Toggles as SettingsCards
 			func(gtx layout.Context) layout.Dimensions {
-				return layout.Spacer{Height: unit.Dp(16)}.Layout(gtx)
+				return renderSettingsSwitchCard(gtx, th, &st.swCFPriority, "Форсировать Cloudflare (CF Priority)", "Приоритетная маршрутизация всех Telegram DC через WSS")
 			},
-			// Card 2: Fine-Tuning Address Inputs & Socket Pool
+			func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) },
 			func(gtx layout.Context) layout.Dimensions {
-				return card(gtx, colCard, 16, func(gtx layout.Context) layout.Dimensions {
-					return layout.UniformInset(unit.Dp(18)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body1(th, "Тонкая настройка адресов и пула")
-								lbl.Color = colPrimary
-								lbl.Font.Weight = font.Bold
-								return lbl.Layout(gtx)
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderTextInput(gtx, th, &st.edCustomDomain, "например: my-worker.example.com", "Свой Cloudflare-домен (Фронтинг)")
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderTextInput(gtx, th, &st.edCustomWorker, "например: my-worker.username.workers.dev", "Шлюз Cloudflare Worker (cloudflare:sockets)")
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return renderTextInput(gtx, th, &st.edDCOverrides, "1:149.154.175.50, 2:149.154.167.220", "Ручные IP для DC (опционально)")
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
-							// Pool size selector
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Caption(th, "Пул предпрогретых WSS-сокетов")
-										lbl.Color = colPrimary
-										return lbl.Layout(gtx)
-									}),
-									layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-											layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-												return renderPoolOption(gtx, th, &st.poolBtn0, "Отключен (0)", currentPool == 0)
-											}),
-											layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-											layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-												return renderPoolOption(gtx, th, &st.poolBtn1, "Эконом (1)", currentPool == 1)
-											}),
-											layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-											layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-												return renderPoolOption(gtx, th, &st.poolBtn2, "Стандарт (2)", currentPool == 2)
-											}),
-											layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-											layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-												return renderPoolOption(gtx, th, &st.poolBtn4, "Максимум (4)", currentPool == 4)
-											}),
-										)
-									}),
-								)
-							}),
-						)
-					})
+				return renderSettingsSwitchCard(gtx, th, &st.swCFBalance, "Балансировка доменов (CF Balance)", "Распределение подключений по пулу доступных доменов Cloudflare")
+			},
+			func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) },
+			func(gtx layout.Context) layout.Dimensions {
+				return renderSettingsSwitchCard(gtx, th, &st.swDoH, "Защищенный DNS (Multi-DoH гонка)", "Параллельная резолвация доменов через Cloudflare, Google и Quad9")
+			},
+			func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) },
+			func(gtx layout.Context) layout.Dimensions {
+				return renderSettingsSwitchCard(gtx, th, &st.swH2Media, "HTTP/2 ускорение медиа (CF H2)", "Мультиплексирование загрузки фото и видео через HTTP/2 соединения")
+			},
+			func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) },
+			func(gtx layout.Context) layout.Dimensions {
+				return renderSettingsSwitchCard(gtx, th, &st.swForceTestDC, "Тестовые датацентры (Test DC)", "Перехват и перенаправление тестовых серверов Telegram (149.154.175.10)")
+			},
+			func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) },
+			func(gtx layout.Context) layout.Dimensions {
+				return renderSettingsSwitchCard(gtx, th, &st.swDC203, "Прямой TCP-путь для CDN203", "Прямой маршрут без WSS для CDN-кэша медиафайлов")
+			},
+			// Section 2 Header
+			func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(16), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body1(th, "Тонкая настройка адресов и пула")
+					lbl.Color = colAccent
+					lbl.Font.Weight = font.Bold
+					lbl.Font.Typeface = fontSegoe
+					return lbl.Layout(gtx)
 				})
 			},
-			// Spacer
+			// Inputs as SettingsCards
 			func(gtx layout.Context) layout.Dimensions {
-				return layout.Spacer{Height: unit.Dp(16)}.Layout(gtx)
+				return renderTextInputCard(gtx, th, &st.edCustomDomain, "например: my-worker.example.com", "Свой Cloudflare-домен (Фронтинг)", "Кастомный SNI / HTTP Host для обхода локальных блокировок")
+			},
+			func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) },
+			func(gtx layout.Context) layout.Dimensions {
+				return renderTextInputCard(gtx, th, &st.edCustomWorker, "например: my-worker.username.workers.dev", "Шлюз Cloudflare Worker", "Персональный воркер (cloudflare:sockets) для WSS релея")
+			},
+			func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) },
+			func(gtx layout.Context) layout.Dimensions {
+				return renderTextInputCard(gtx, th, &st.edDCOverrides, "1:149.154.175.50, 2:149.154.167.220", "Ручные IP для DC (опционально)", "Прямое переопределение IP-адресов датацентров")
+			},
+			func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: unit.Dp(6)}.Layout(gtx) },
+			func(gtx layout.Context) layout.Dimensions {
+				return renderPoolSegmentedCard(st, gtx, th, currentPool)
 			},
 			// Save Action Button
 			func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						btnText := "Сохранить настройки"
-						if busy {
-							btnText = "Сохранение…"
-						}
-						return st.saveConfigBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return card(gtx, colPrimary, 20, func(gtx layout.Context) layout.Dimensions {
-								return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(32), Right: unit.Dp(32)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									lbl := material.Body1(th, btnText)
-									lbl.Color = colOnPrimary
-									lbl.Font.Weight = font.Bold
-									return lbl.Layout(gtx)
-								})
-							})
-						})
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						if saveMsg != "" && time.Since(saveMsgTime) < 4*time.Second {
-							msgColor := colSuccess
-							if strings.HasPrefix(saveMsg, "Ошибка") {
-								msgColor = colError
+				return layout.Inset{Top: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							btnText := "Сохранить настройки"
+							if busy {
+								btnText = "Сохранение…"
 							}
-							lbl := material.Body2(th, saveMsg)
-							lbl.Color = msgColor
-							lbl.Font.Weight = font.Medium
-							return lbl.Layout(gtx)
-						}
-						return layout.Dimensions{}
-					}),
-				)
+							return renderAccentButton(gtx, th, &st.saveConfigBtn, btnText)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if saveMsg != "" && time.Since(saveMsgTime) < 4*time.Second {
+								msgColor := colSuccess
+								if strings.HasPrefix(saveMsg, "Ошибка") {
+									msgColor = colError
+								}
+								lbl := material.Body2(th, saveMsg)
+								lbl.Color = msgColor
+								lbl.Font.Weight = font.Medium
+								lbl.Font.Typeface = fontSegoe
+								return lbl.Layout(gtx)
+							}
+							return layout.Dimensions{}
+						}),
+					)
+				})
 			},
 		}
 
@@ -1090,66 +1324,121 @@ func renderRoutingTab(st *guiState, gtx layout.Context, th *material.Theme) layo
 	})
 }
 
-func renderSwitchRow(gtx layout.Context, th *material.Theme, sw *widget.Bool, title, subtitle string) layout.Dimensions {
-	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body2(th, title)
-					lbl.Color = colText
-					lbl.Font.Weight = font.Medium
-					return lbl.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Caption(th, subtitle)
-					lbl.Color = colTextMuted
-					return lbl.Layout(gtx)
-				}),
-			)
-		}),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			s := material.Switch(th, sw, "")
-			s.Color.Enabled = colPrimary
-			s.Color.Disabled = colCardHighest
-			s.Color.Track = colPrimaryContainer
-			return s.Layout(gtx)
-		}),
-	)
+func renderSettingsSwitchCard(gtx layout.Context, th *material.Theme, sw *widget.Bool, title, subtitle string) layout.Dimensions {
+	return renderSettingsCard(gtx, th, title, subtitle, func(gtx layout.Context) layout.Dimensions {
+		s := material.Switch(th, sw, "")
+		s.Color.Enabled = colAccent
+		s.Color.Disabled = colCardStroke
+		s.Color.Track = colAccentContainer
+		return s.Layout(gtx)
+	})
 }
 
-func renderTextInput(gtx layout.Context, th *material.Theme, ed *widget.Editor, hint, label string) layout.Dimensions {
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Caption(th, label)
-			lbl.Color = colPrimary
-			return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, lbl.Layout)
-		}),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return card(gtx, colCardHigh, 10, func(gtx layout.Context) layout.Dimensions {
-				return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					editor := material.Editor(th, ed, hint)
-					editor.Color = colText
-					editor.HintColor = colTextMuted
-					return editor.Layout(gtx)
-				})
-			})
-		}),
-	)
+func renderTextInputCard(gtx layout.Context, th *material.Theme, ed *widget.Editor, hint, title, subtitle string) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(th, title)
+							lbl.Color = colTextPrimary
+							lbl.Font.Weight = font.SemiBold
+							lbl.Font.Typeface = fontSegoe
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Caption(th, subtitle)
+							lbl.Color = colTextSecondary
+							lbl.Font.Typeface = fontSegoe
+							return lbl.Layout(gtx)
+						}),
+					)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					gtx.Constraints.Min.X = gtx.Dp(unit.Dp(260))
+					gtx.Constraints.Max.X = gtx.Dp(unit.Dp(260))
+					return fluentCard(gtx, colControlBg, colControlStroke, 4, func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							editor := material.Editor(th, ed, hint)
+							editor.Color = colTextPrimary
+							editor.HintColor = colTextTertiary
+							editor.Font.Typeface = fontSegoe
+							return editor.Layout(gtx)
+						})
+					})
+				}),
+			)
+		})
+	})
+}
+
+func renderPoolSegmentedCard(st *guiState, gtx layout.Context, th *material.Theme, currentPool int) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(th, "Пул предпрогретых WSS-сокетов")
+							lbl.Color = colTextPrimary
+							lbl.Font.Weight = font.SemiBold
+							lbl.Font.Typeface = fontSegoe
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Caption(th, "Фоновое поддержание открытых WebSocket для мгновенного отклика Telegram")
+							lbl.Color = colTextSecondary
+							lbl.Font.Typeface = fontSegoe
+							return lbl.Layout(gtx)
+						}),
+					)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return renderPoolOption(gtx, th, &st.poolBtn0, "0", currentPool == 0)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return renderPoolOption(gtx, th, &st.poolBtn1, "1", currentPool == 1)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return renderPoolOption(gtx, th, &st.poolBtn2, "2", currentPool == 2)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return renderPoolOption(gtx, th, &st.poolBtn4, "4", currentPool == 4)
+						}),
+					)
+				}),
+			)
+		})
+	})
 }
 
 func renderPoolOption(gtx layout.Context, th *material.Theme, btn *widget.Clickable, label string, selected bool) layout.Dimensions {
-	bg := colCardHigh
-	fg := colTextMuted
+	bg := colControlBg
+	stroke := colControlStroke
+	fg := colTextSecondary
 	if selected {
-		bg = colPrimaryContainer
-		fg = colOnPrimaryCont
+		bg = colAccent
+		stroke = colAccent
+		fg = colOnAccent
+	} else if btn.Hovered() {
+		bg = colControlBgHover
 	}
 	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return card(gtx, bg, 10, func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Caption(th, label)
+		return fluentCard(gtx, bg, stroke, 4, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(th, label)
 				lbl.Color = fg
-				lbl.Alignment = text.Middle
+				lbl.Font.Typeface = fontSegoe
 				if selected {
 					lbl.Font.Weight = font.Bold
 				}
@@ -1163,7 +1452,7 @@ func renderPoolOption(gtx layout.Context, th *material.Theme, btn *widget.Clicka
 // TAB 3: ЖУРНАЛ (Logs)
 // ============================================================================
 
-func renderLogsTab(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
+func renderLogsPage(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
 	st.mu.Lock()
 	logText := st.st.Log
 	st.mu.Unlock()
@@ -1173,39 +1462,21 @@ func renderLogsTab(st *guiState, gtx layout.Context, th *material.Theme) layout.
 		lines = []string{"Журнал пуст (служба не записывала событий)"}
 	}
 
-	return layout.Inset{Top: unit.Dp(16), Bottom: unit.Dp(16), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	return layout.Inset{Top: unit.Dp(20), Bottom: unit.Dp(20), Left: unit.Dp(24), Right: unit.Dp(24)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			// Logs Action Header
+			// Header
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body1(th, fmt.Sprintf("Журнал службы (%d строк)", len(lines)))
-						lbl.Color = colText
-						lbl.Font.Weight = font.Bold
-						return lbl.Layout(gtx)
-					}),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return st.clearLogsBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return card(gtx, colCardHigh, 16, func(gtx layout.Context) layout.Dimensions {
-								return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									lbl := material.Body2(th, "Очистить журнал")
-									lbl.Color = colError
-									return lbl.Layout(gtx)
-								})
-							})
-						})
-					}),
-				)
+				return renderPageHeader(gtx, th, "Журнал событий", fmt.Sprintf("События службы и WinDivert в реальном времени (%d строк)", len(lines)), func(gtx layout.Context) layout.Dimensions {
+					return renderDangerButton(gtx, th, &st.clearLogsBtn, "Очистить журнал")
+				})
 			}),
-			layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
 			// Terminal View
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-				return card(gtx, colTerminalBg, 12, func(gtx layout.Context) layout.Dimensions {
+				return fluentCard(gtx, colTerminalBg, colDivider, 8, func(gtx layout.Context) layout.Dimensions {
 					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return st.logsList.Layout(gtx, len(lines), func(gtx layout.Context, i int) layout.Dimensions {
 							line := lines[i]
-							lineColor := colTextMuted
+							lineColor := colTextSecondary
 
 							lower := strings.ToLower(line)
 							if strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "fatal") {
@@ -1213,13 +1484,13 @@ func renderLogsTab(st *guiState, gtx layout.Context, th *material.Theme) layout.
 							} else if strings.Contains(lower, "active") || strings.Contains(lower, "started") || strings.Contains(lower, "listening") {
 								lineColor = colSuccess
 							} else if strings.Contains(lower, "wss") || strings.Contains(lower, "dc") {
-								lineColor = colPrimary
+								lineColor = colAccent
 							}
 
 							return layout.Inset{Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 								lbl := material.Caption(th, line)
 								lbl.Color = lineColor
-								lbl.Font.Typeface = font.Typeface("Consolas, monospace")
+								lbl.Font.Typeface = fontMono
 								return lbl.Layout(gtx)
 							})
 						})
@@ -1228,18 +1499,6 @@ func renderLogsTab(st *guiState, gtx layout.Context, th *material.Theme) layout.
 			}),
 		)
 	})
-}
-
-// card draws a container with rounded corners and uniform background.
-func card(gtx layout.Context, bg color.NRGBA, radius int, content layout.Widget) layout.Dimensions {
-	return layout.Stack{}.Layout(gtx,
-		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-			rr := clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, radius)
-			paint.FillShape(gtx.Ops, bg, rr.Op(gtx.Ops))
-			return layout.Dimensions{Size: gtx.Constraints.Min}
-		}),
-		layout.Stacked(content),
-	)
 }
 
 func formatBytes(b int64) string {

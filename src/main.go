@@ -47,6 +47,7 @@ const (
 )
 
 var (
+	baseDirMu        sync.RWMutex
 	baseDir          = envOr("TELEWEB_DIR", defaultBaseDir())
 	startAt          = time.Now()
 	active           int64
@@ -152,7 +153,7 @@ func saveRouteCache(key, host string) {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(baseDir, 0700); err != nil {
+	if err := os.MkdirAll(getBaseDir(), 0700); err != nil {
 		return
 	}
 	tmp := path("route-cache.json.tmp")
@@ -265,8 +266,20 @@ func envOr(k, d string) string {
 	}
 	return d
 }
-func path(name string) string { return filepath.Join(baseDir, name) }
-func ensureDir()              { _ = os.MkdirAll(baseDir, 0700) }
+func getBaseDir() string {
+	baseDirMu.RLock()
+	defer baseDirMu.RUnlock()
+	return baseDir
+}
+
+func setBaseDir(d string) {
+	baseDirMu.Lock()
+	defer baseDirMu.Unlock()
+	baseDir = d
+}
+
+func path(name string) string { return filepath.Join(getBaseDir(), name) }
+func ensureDir()              { _ = os.MkdirAll(getBaseDir(), 0700) }
 
 const defaultDescBase = "Прозрачный WSS-транспорт для Telegram (DC1-DC5)"
 
@@ -1142,9 +1155,14 @@ var (
 )
 
 func packageUID(pkg string) int {
+	if !isAndroidRuntime() {
+		return 0
+	}
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err == nil {
 			m := pmUIDRe.FindSubmatch(out)
@@ -1157,7 +1175,9 @@ func packageUID(pkg string) int {
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	out, _ := exec.CommandContext(ctx, "dumpsys", "package", pkg).CombinedOutput()
+	c := exec.CommandContext(ctx, "dumpsys", "package", pkg)
+	setCmdNoWindow(c)
+	out, _ := c.CombinedOutput()
 	cancel()
 	for _, re := range []*regexp.Regexp{dumpsysUserIdRe, dumpsysAppIdRe} {
 		m := re.FindSubmatch(out)
@@ -1172,9 +1192,14 @@ func packageUID(pkg string) int {
 }
 
 func findPackageAPK(pkg string) string {
+	if !isAndroidRuntime() {
+		return ""
+	}
 	for _, cmd := range [][]string{{"cmd", "package", "path", pkg}, {"pm", "path", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
@@ -1443,6 +1468,9 @@ func parsePMPackagesListing(out string) []pmPackage {
 }
 
 func discoverApps() ([]App, []int) {
+	if !isAndroidRuntime() {
+		return nil, nil
+	}
 	var apps []App
 	var uids []int
 	seen := map[int]bool{}
@@ -1456,7 +1484,9 @@ func discoverApps() ([]App, []int) {
 		{"pm", "list", "packages", "-U"},
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err != nil {
 			continue
@@ -1551,6 +1581,10 @@ func installedApps() ([]App, []int) {
 	}
 	appCacheMu.Unlock()
 
+	if !isAndroidRuntime() {
+		return nil, nil
+	}
+
 	discoverMu.Lock()
 	defer discoverMu.Unlock()
 
@@ -1640,6 +1674,7 @@ func runCmd(name string, args ...string) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		c := exec.CommandContext(ctx, name, args...)
+		setCmdNoWindow(c)
 		b, e := c.CombinedOutput()
 		cancel()
 		if e == nil {
@@ -1935,8 +1970,18 @@ func loadLearnedDCs() {
 		learnedDCMu.Lock()
 		learnedDCDirty = true
 		learnedDCMu.Unlock()
-		go persistLearnedDCs()
+		queuePersistLearnedDCs()
 	}
+}
+
+var persistLearnedDCWG sync.WaitGroup
+
+func queuePersistLearnedDCs() {
+	persistLearnedDCWG.Add(1)
+	go func() {
+		defer persistLearnedDCWG.Done()
+		persistLearnedDCs()
+	}()
 }
 
 func persistLearnedDCs() {
@@ -2024,7 +2069,7 @@ func learnDC(ip string, dc int, isMedia bool) {
 	learnedDCMu.Lock()
 	learnedDCDirty = true
 	learnedDCMu.Unlock()
-	go persistLearnedDCs()
+	queuePersistLearnedDCs()
 	logf("dc-learn: learned endpoint %s -> DC%d media=%t", ip, dc, isMedia)
 }
 
@@ -2057,9 +2102,16 @@ func setupRules() error {
 			// IPv6 family so the watchdog does not flap on such devices,
 			// so surface the failure here and flag it for the rate-limited
 			// retry instead of leaving it broken for the daemon's lifetime.
+			ip6RulesInstalled.Store(false)
 			ip6RulesFailed.Store(true)
 			logf("redirect: IPv6 rules failed: %v — Telegram IPv6 will bypass WSS until a retry succeeds", err)
+		} else {
+			ip6RulesInstalled.Store(true)
+			ip6RulesFailed.Store(false)
 		}
+	} else {
+		ip6RulesInstalled.Store(false)
+		ip6RulesFailed.Store(false)
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
@@ -2081,6 +2133,8 @@ func cleanupRules() {
 	if redirectorSupported() {
 		return
 	}
+	ip6RulesInstalled.Store(false)
+	ip6RulesFailed.Store(false)
 	_, uids := installedApps()
 	iptCleanup(findBin("iptables"), uids, "TELEWEB")
 	// Remove the previous release's IPv6 chain as well: setupRules installs
@@ -2524,13 +2578,42 @@ func rulesHealthy() bool {
 	return false
 }
 
+func ip6RulesHealthy() bool {
+	bin := findBin("ip6tables")
+	if bin == "" {
+		return false
+	}
+	for _, cidr := range telegramV6 {
+		if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
+			return false
+		}
+	}
+	// Universal jump check (with root exclusion or global jump)
+	if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
+		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil {
+		return true
+	}
+	// UID-scoped fallback check
+	_, uids := installedApps()
+	if len(uids) > 0 {
+		for _, uid := range uids {
+			if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // ip6RulesFailed remembers that the ip6tables setup failed at least once, so
 // the watchdog can retry it: a boot-time xtables.lock contention or a
 // not-yet-ready netd used to leave Telegram IPv6 bypassing the WSS transport
 // for the daemon's entire lifetime.
 var (
-	ip6RulesFailed atomic.Bool
-	ip6LastRetry   atomic.Int64
+	ip6RulesInstalled atomic.Bool
+	ip6RulesFailed    atomic.Bool
+	ip6LastRetry      atomic.Int64
 )
 
 const ip6RetryInterval = 5 * time.Minute
@@ -2556,10 +2639,12 @@ func retryFailedIPv6Rules() {
 	}
 	_, uids := installedApps()
 	if err := iptSetup(bin, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
+		ip6RulesInstalled.Store(false)
 		logf("redirect: IPv6 rules retry failed: %v", err)
 		return
 	}
 	setupCallsBypass(bin)
+	ip6RulesInstalled.Store(true)
 	ip6RulesFailed.Store(false)
 	logf("redirect: IPv6 rules restored on retry; Telegram IPv6 is back on the WSS transport")
 }
@@ -2606,6 +2691,11 @@ func watchdog() {
 			}
 		}
 		protectProcess(readPIDFile("tgws.pid"))
+		if ip6RulesInstalled.Load() && !ip6RulesFailed.Load() && !ip6RulesHealthy() {
+			logf("watchdog: ip6tables rules reset or corrupted, scheduling restore")
+			ip6RulesFailed.Store(true)
+			ip6LastRetry.Store(0)
+		}
 		retryFailedIPv6Rules()
 		if !rulesHealthy() {
 			logf("watchdog: iptables rules reset or corrupted, restoring; iptables=%q", findBin("iptables"))
@@ -3216,6 +3306,10 @@ func main() {
 			cmdSocks(addr)
 			return
 		case "webui":
+			if !isAndroidRuntime() {
+				fmt.Fprintln(os.Stderr, "webui: WebUI is not available in desktop versions; use the native GUI dashboard or CLI commands")
+				os.Exit(1)
+			}
 			addr := ""
 			if len(os.Args) > 2 {
 				addr = os.Args[2]
@@ -3250,11 +3344,11 @@ func main() {
 		}
 	}
 	if !isAndroidRuntime() {
-		// Desktop double-click: launch the WebUI instead of printing usage.
+		// Desktop double-click: launch the native GUI dashboard on Windows, or print usage.
 		cmdGui("")
 		return
 	}
-	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | webui [addr] | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
+	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
 }
 
 func serve() {
@@ -3301,8 +3395,13 @@ func serve() {
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
-		for range t.C {
-			sweepRouteCaches()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-t.C:
+				sweepRouteCaches()
+			}
 		}
 	}()
 	ln, e := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", defaultPort))
@@ -3340,7 +3439,7 @@ func serve() {
 		}()
 		logf("local proxy listening on [::1]:%d; IPv6 ready", defaultPort)
 	}
-	go selfDialJanitor()
+	go selfDialJanitor(workerCtx)
 	if redirectorSupported() {
 		if err := startRedirector(); err != nil {
 			logf("redirector: failed to start: %v", err)
@@ -3353,18 +3452,28 @@ func serve() {
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			writeStatus()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-t.C:
+				writeStatus()
+			}
 		}
 	}()
 	go func() {
 		t := time.NewTicker(60 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			// When there are no active flows, return unused heap pages to OS.
-			// This prevents RSS from lingering at peak watermarks on legacy Android kernels.
-			if atomic.LoadInt64(&active) == 0 {
-				debug.FreeOSMemory()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-t.C:
+				// When there are no active flows, return unused heap pages to OS.
+				// This prevents RSS from lingering at peak watermarks on legacy Android kernels.
+				if atomic.LoadInt64(&active) == 0 {
+					debug.FreeOSMemory()
+				}
 			}
 		}
 	}()
@@ -4244,6 +4353,13 @@ var (
 // androidDNSServers finds resolver addresses exposed by Android's netd.
 // Caches discovered resolvers for 45 seconds to avoid repeatedly spawning getprop processes.
 func androidDNSServers() []string {
+	if !isAndroidRuntime() {
+		dnsCacheMu.Lock()
+		dnsCacheServers = []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+		dnsCacheAt = time.Now()
+		dnsCacheMu.Unlock()
+		return []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+	}
 	dnsCacheMu.RLock()
 	if time.Since(dnsCacheAt) < 45*time.Second && len(dnsCacheServers) > 0 {
 		cached := append([]string(nil), dnsCacheServers...)
@@ -4268,6 +4384,9 @@ func androidDNSServers() []string {
 // discoverAndroidDNSServers probes Android's netd resolvers and the local
 // resolv.conf, falling back to well-known public resolvers.
 func discoverAndroidDNSServers() []string {
+	if !isAndroidRuntime() {
+		return []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+	}
 	var out []string
 	seen := map[string]bool{}
 	add := func(raw string) {
@@ -4286,7 +4405,9 @@ func discoverAndroidDNSServers() []string {
 		}
 	}
 	// 1. Android property dumps (catches net.wlan0.dns1, net.rmnet_data0.dns1, net.dns1..4, etc.)
-	if b, err := exec.Command("getprop").Output(); err == nil && len(b) > 0 {
+	cmdGetprop := exec.Command("getprop")
+	setCmdNoWindow(cmdGetprop)
+	if b, err := cmdGetprop.Output(); err == nil && len(b) > 0 {
 		for _, line := range strings.Split(string(b), "\n") {
 			if strings.Contains(strings.ToLower(line), "dns") {
 				parts := strings.SplitN(line, "]: [", 2)
@@ -4299,7 +4420,9 @@ func discoverAndroidDNSServers() []string {
 	} else {
 		// 2. Legacy net.dns1..4 fallback if full getprop dump is unavailable
 		for i := 1; i <= 4; i++ {
-			b, err := exec.Command("getprop", fmt.Sprintf("net.dns%d", i)).Output()
+			c := exec.Command("getprop", fmt.Sprintf("net.dns%d", i))
+			setCmdNoWindow(c)
+			b, err := c.Output()
 			if err == nil {
 				add(string(b))
 			}
@@ -4550,16 +4673,22 @@ func (f *mtprotoPacketFramer) shrinkBuffers() {
 	if len(f.raw) == 0 {
 		if cap(f.raw) > 128*1024 {
 			f.raw = nil
-			f.plain = nil
-		} else {
+		} else if f.raw != nil {
 			f.raw = f.raw[:0]
-			f.plain = f.plain[:0]
 		}
 	} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
 		newRaw := make([]byte, len(f.raw))
 		copy(newRaw, f.raw)
 		f.raw = newRaw
+	}
 
+	if len(f.plain) == 0 {
+		if cap(f.plain) > 128*1024 {
+			f.plain = nil
+		} else if f.plain != nil {
+			f.plain = f.plain[:0]
+		}
+	} else if cap(f.plain) > 128*1024 && len(f.plain) < 32*1024 {
 		newPlain := make([]byte, len(f.plain))
 		copy(newPlain, f.plain)
 		f.plain = newPlain

@@ -41,7 +41,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 .\tgws-windows-amd64.exe stop
 ```
 
-**GUI (нативное окно).** Запуск exe без аргументов или `tgws gui` открывает нативное окно (Gio, горизонтальная компоновка: слева метрики, справа DC-матрица и журнал). Кнопка «Запустить/Остановить» управляет транспортом; данные обновляются раз в 1.5 с. Нативный GUI встроен в Windows-бинарники; для headless/браузерного варианта остался `tgws webui [addr]` (на Linux пока он же — нативное окно требует Vulkan/CGO).
+**GUI (нативное окно).** Запуск exe без аргументов или `tgws gui` открывает нативное WinUI 3 Fluent окно. Кнопка «Запустить/Остановить» управляет транспортом; данные обновляются раз в 1.5 с. Нативный GUI встроен в Windows-бинарники; на Linux управление осуществляется через systemd или CLI (`tgws status`, `tgws run`). WebUI в десктоп-версиях не используется (предназначен только для Android-модуля).
 
 **Пул сокетов.** На десктопе по умолчанию выключен (`pool_size` отсутствует = 0): сессии 1:1 с соединениями клиента, никаких предпрогретых десятков сокетов при старте. На Android сохранено прежнее поведение (2 на DC). Включить/настроить — файл `pool_size` (0–4).
 
@@ -71,7 +71,6 @@ tgws.exe socks 127.0.0.1:17845
 ```bash
 sudo ./install.sh            # ставит /usr/local/bin/tgws, systemd-юнит, запускает
 tgws status
-tgws webui 127.0.0.1:17842   # WebUI на loopback
 tgws socks 127.0.0.1:17845   # альтернатива без root для самого перехвата
 ```
 
@@ -118,13 +117,13 @@ docker run --rm --privileged teleweb-e2e
 
 | Команда | Назначение |
 | :--- | :--- |
+| `tgws gui [addr]` | нативное WinUI 3 окно (Windows) |
 | `tgws run` | foreground-супервизор (systemd / ручной запуск) |
 | `tgws boot` / `stop` / `ensure` | как в Android-версии |
 | `tgws status` | JSON-снимок состояния (в т.ч. поле `redirector`) |
 | `tgws socks [addr]` | SOCKS5-листенер без перехвата |
-| `tgws webui [addr]` | WebUI + локальный API-мост |
 | `tgws svc-install` / `svc-uninstall` / `svc-run` | служба Windows |
-| `tgws api <base64-json>` | API для WebUI/скриптов |
+| `tgws api <base64-json>` | CLI API bridge |
 | `tgws check` | самотесты парсеров |
 
 Конфигурационные файлы (`pool_size`, `doh_enabled`, `custom-cf-worker`, `dc-override` и т.д.) — те же, что описаны в основном README, в директории состояния платформы.

@@ -9,15 +9,20 @@ package main
 // the GUI variant so a service build carries none of it.
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+//go:embed app_icon.png
+var appIconPNG []byte
 
 var (
 	user32              = windows.NewLazySystemDLL("user32.dll")
@@ -31,6 +36,8 @@ var (
 	procShowWindow               = user32.NewProc("ShowWindow")
 	procSetFgWindow              = user32.NewProc("SetForegroundWindow")
 	procLoadIcon                 = user32.NewProc("LoadIconW")
+	procCreateIconFromResourceEx = user32.NewProc("CreateIconFromResourceEx")
+	procDestroyIcon              = user32.NewProc("DestroyIcon")
 	procDefWindowProc            = user32.NewProc("DefWindowProcW")
 	procRegisterClassEx          = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx           = user32.NewProc("CreateWindowExW")
@@ -99,10 +106,15 @@ var (
 	trayActive     bool
 	trayTipText    = "TeleWEB: прозрачный WSS транспорт"
 	trayOnToggleFn func()
-	trayOnWebUIFn  func()
 	trayOnQuitFn   func()
 	singleMutexH   uintptr
 )
+
+func setMainHwnd(hwnd uintptr) {
+	mainHwndMu.Lock()
+	mainHwnd = hwnd
+	mainHwndMu.Unlock()
+}
 
 func findMainWindow() uintptr {
 	mainHwndMu.Lock()
@@ -135,26 +147,101 @@ func findMainWindow() uintptr {
 	return mainHwnd
 }
 
+var (
+	iconMu      sync.Mutex
+	iconCache16 uintptr
+	iconCache32 uintptr
+)
+
+func getAppIcon(size int) uintptr {
+	iconMu.Lock()
+	defer iconMu.Unlock()
+	if size == 16 {
+		if iconCache16 == 0 {
+			iconCache16 = loadAppIcon(16)
+		}
+		return iconCache16
+	}
+	if iconCache32 == 0 {
+		iconCache32 = loadAppIcon(32)
+	}
+	return iconCache32
+}
+
+func loadAppIcon(size int) uintptr {
+	if len(appIconPNG) > 0 {
+		hIcon, _, _ := procCreateIconFromResourceEx.Call(
+			uintptr(unsafe.Pointer(&appIconPNG[0])),
+			uintptr(len(appIconPNG)),
+			1,          // fIcon = TRUE
+			0x00030000, // dwVersion
+			uintptr(size),
+			uintptr(size),
+			0, // flags
+		)
+		if hIcon != 0 {
+			return hIcon
+		}
+	}
+	hMod, _, _ := procGetModuleHandle.Call(0)
+	hIcon, _, _ := procLoadIcon.Call(hMod, 1)
+	if hIcon == 0 {
+		hIcon, _, _ = procLoadIcon.Call(0, 32512)
+	}
+	return hIcon
+}
+
+func setMainWindowIcon(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	go func() {
+		hIconBig := getAppIcon(32)
+		hIconSm := getAppIcon(16)
+		const (
+			wmSetIcon = 0x0080
+			iconSmall = 0
+			iconBig   = 1
+		)
+		if hIconBig != 0 {
+			procPostMessage.Call(hwnd, wmSetIcon, iconBig, hIconBig)
+		}
+		if hIconSm != 0 {
+			procPostMessage.Call(hwnd, wmSetIcon, iconSmall, hIconSm)
+		}
+	}()
+}
+
 // applyWindowsDarkTheme sets the DWM non-client attributes for dark mode,
-// custom caption color matching Material 3 Expressive Dark (#101418), and rounded
-// corners on Windows 11.
+// Mica system backdrop, custom caption color matching WinUI 3 Base (#202020),
+// and rounded corners on Windows 11.
 func applyWindowsDarkTheme(title string) {
 	hwnd := findMainWindow()
 	if hwnd == 0 {
 		return
 	}
+	setMainWindowIcon(hwnd)
 	var darkMode uint32 = 1
 	// DWMWA_USE_IMMERSIVE_DARK_MODE (20 on Win10 1903+/Win11, 19 on Win10 1809)
 	r, _, _ := procDwmSetAttr.Call(hwnd, 20, uintptr(unsafe.Pointer(&darkMode)), unsafe.Sizeof(darkMode))
 	if r != 0 {
 		procDwmSetAttr.Call(hwnd, 19, uintptr(unsafe.Pointer(&darkMode)), unsafe.Sizeof(darkMode))
 	}
-	// DWMWA_CAPTION_COLOR (35) = 0x00181410 (#101418 in BGR)
-	var captionColor uint32 = 0x00181410
+
+	// DWMWA_SYSTEMBACKDROP_TYPE (38) = DWMSBT_MAINWINDOW (2, Mica on Win11 22H2+)
+	var backdropType uint32 = 2
+	procDwmSetAttr.Call(hwnd, 38, uintptr(unsafe.Pointer(&backdropType)), unsafe.Sizeof(backdropType))
+
+	// DWMWA_MICA_EFFECT (1029) = 1 (Mica on Win11 21H2 Build 22000)
+	var micaEffect uint32 = 1
+	procDwmSetAttr.Call(hwnd, 1029, uintptr(unsafe.Pointer(&micaEffect)), unsafe.Sizeof(micaEffect))
+
+	// DWMWA_CAPTION_COLOR (35) = 0x00202020 (#202020 in BGR)
+	var captionColor uint32 = 0x00202020
 	procDwmSetAttr.Call(hwnd, 35, uintptr(unsafe.Pointer(&captionColor)), unsafe.Sizeof(captionColor))
 
-	// DWMWA_BORDER_COLOR (34) = 0x002F2A26 (#262A2F in BGR)
-	var borderColor uint32 = 0x002F2A26
+	// DWMWA_BORDER_COLOR (34) = 0x00383838 (#383838 in BGR)
+	var borderColor uint32 = 0x00383838
 	procDwmSetAttr.Call(hwnd, 34, uintptr(unsafe.Pointer(&borderColor)), unsafe.Sizeof(borderColor))
 
 	// DWMWA_WINDOW_CORNER_PREFERENCE (33) = DWMWCP_ROUND (2)
@@ -167,6 +254,7 @@ func showMainWindow(restore bool) {
 	if hwnd == 0 {
 		return
 	}
+	setMainWindowIcon(hwnd)
 	const (
 		SW_NORMAL  = 1
 		SW_RESTORE = 9
@@ -215,6 +303,7 @@ func acquireSingleInstance() (func(), bool) {
 	const ERROR_ALREADY_EXISTS = 183
 	if err == syscall.Errno(ERROR_ALREADY_EXISTS) {
 		showMainWindow(true)
+		time.Sleep(60 * time.Millisecond)
 		procCloseHandle.Call(h)
 		return nil, false
 	}
@@ -245,10 +334,9 @@ const (
 	mfGrayed        = 0x00000001
 )
 
-func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit func()) func() {
+func setupSystemTray(title string, onToggle func(), onQuit func()) func() {
 	trayMu.Lock()
 	trayOnToggleFn = onToggle
-	trayOnWebUIFn = onOpenWebUI
 	trayOnQuitFn = onQuit
 	trayMu.Unlock()
 
@@ -257,10 +345,7 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 		runtime.LockOSThread()
 		className, _ := windows.UTF16PtrFromString("TeleWEB_Tray_Window_Class")
 		hMod, _, _ := procGetModuleHandle.Call(0)
-		hIcon, _, _ := procLoadIcon.Call(hMod, 1)
-		if hIcon == 0 {
-			hIcon, _, _ = procLoadIcon.Call(0, 32512)
-		}
+		hIcon := getAppIcon(16)
 
 		wndProc := syscall.NewCallback(func(hwnd, msg, wParam, lParam uintptr) uintptr {
 			switch msg {
@@ -297,9 +382,6 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 					mToggle, _ := windows.UTF16PtrFromString(toggleLabel)
 					procAppendMenu.Call(hMenu, mfString, 103, uintptr(unsafe.Pointer(mToggle)))
 
-					mWebUI, _ := windows.UTF16PtrFromString("Открыть WebUI в браузере")
-					procAppendMenu.Call(hMenu, mfString, 104, uintptr(unsafe.Pointer(mWebUI)))
-
 					procAppendMenu.Call(hMenu, mfSeparator, 0, 0)
 					mQuit, _ := windows.UTF16PtrFromString("Выход")
 					procAppendMenu.Call(hMenu, mfString, 105, uintptr(unsafe.Pointer(mQuit)))
@@ -313,13 +395,6 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 					case 103:
 						trayMu.Lock()
 						fn := trayOnToggleFn
-						trayMu.Unlock()
-						if fn != nil {
-							go fn()
-						}
-					case 104:
-						trayMu.Lock()
-						fn := trayOnWebUIFn
 						trayMu.Unlock()
 						if fn != nil {
 							go fn()
@@ -349,6 +424,8 @@ func setupSystemTray(title string, onToggle func(), onOpenWebUI func(), onQuit f
 			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
 			lpfnWndProc:   wndProc,
 			hInstance:     hMod,
+			hIcon:         getAppIcon(32),
+			hIconSm:       hIcon,
 			lpszClassName: className,
 		}
 		procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))

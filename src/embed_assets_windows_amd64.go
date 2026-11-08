@@ -7,9 +7,9 @@ import (
 	"io/fs"
 )
 
-//go:embed drivers/amd64/* webui_fallback/*
+//go:embed drivers/amd64/*
 var embeddedFiles embed.FS
 
 func embeddedDriverFS() fs.FS { return subEmbedded(embeddedFiles, "drivers/amd64") }
 
-func embeddedWebrootFS() fs.FS { return subEmbedded(embeddedFiles, "webui_fallback") }
+func embeddedWebrootFS() fs.FS { return nil }

@@ -190,3 +190,5 @@ func setDialSockOpts(c syscall.RawConn) error { return setReuseAddr(c) }
 // startConsole has no work to do outside Windows: the CLI already has a
 // terminal, or the process was started without one on purpose.
 func startConsole() {}
+
+func setCmdNoWindow(cmd *exec.Cmd) {}

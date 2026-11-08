@@ -49,9 +49,6 @@ if ($hasDriver) {
 } else {
     Write-Host "WinDivert driver not bundled (Windows ARM64): only SOCKS mode is available." -ForegroundColor Yellow
 }
-if (Test-Path (Join-Path $Src "webroot")) {
-    Copy-Item (Join-Path $Src "webroot") $Dest -Recurse -Force
-}
 
 # Remove a previously running console instance before service registration.
 & (Join-Path $Dest "tgws.exe") stop 2>$null | Out-Null
@@ -64,7 +61,6 @@ Write-Host ""
 Write-Host "TeleWEB installed."
 Write-Host ("  state/logs: {0}" -f $Dest)
 Write-Host "  status:     $Dest\tgws.exe status"
-Write-Host "  webui:      $Dest\tgws.exe webui 127.0.0.1:17842   (open http://127.0.0.1:17842)"
 Write-Host "  socks:      $Dest\tgws.exe socks 127.0.0.1:17845   (no-driver alternative; set proxy in Telegram)"
 Write-Host ""
 Write-Host "Note: the WinDivert kernel driver is installed on first start (signed by the WinDivert maintainer)."
