@@ -147,6 +147,10 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 		"149.154.163.254": 2,
 		"185.76.151.10":   2,
 		"91.105.192.50":   2,
+		"95.161.64.1":     2,
+		"172.121.110.5":   2,
+		"142.252.58.1":    2,
+		"194.221.250.50":  2,
 	}
 	for raw, want := range cases {
 		if got := dcFor(netip.MustParseAddr(raw)); got != want {
@@ -3248,6 +3252,12 @@ func TestIsTelegramEndpoint(t *testing.T) {
 		"91.108.56.100":         true,
 		"91.105.192.100":        true,
 		"185.76.151.10":         true,
+		"95.161.64.1":           true,
+		"172.121.110.5":         true,
+		"142.252.58.1":          true,
+		"194.221.250.50":        true,
+		"194.221.250.51":        false,
+		"172.121.111.1":         false,
 		"8.8.8.8":               false,
 		"149.154.176.1":         false,
 		"::ffff:149.154.167.51": true,
@@ -3561,6 +3571,69 @@ func TestDCDomainAffinity(t *testing.T) {
 			t.Fatalf("duplicate candidate in list: %s", c)
 		}
 		seen[c] = true
+	}
+}
+
+func TestFrontCandidatesForRace_RussianPoPAvoidance(t *testing.T) {
+	// 1. Validate PoP classification
+	for _, pop := range []string{"DME", "LED", "KJA", "SVX", "OVB", "dme", "led"} {
+		if !isRussianPoP(pop) {
+			t.Errorf("isRussianPoP(%q) = false, want true", pop)
+		}
+	}
+	for _, pop := range []string{"FRA", "HEL", "ARN", "WAW", "AMS", "LHR", "VIE"} {
+		if isRussianPoP(pop) {
+			t.Errorf("isRussianPoP(%q) = true, want false", pop)
+		}
+	}
+
+	// 2. Isolate affinity state
+	dcDomainAffinityMu.Lock()
+	oldAffinity, hadAffinity := dcDomainAffinity[2]
+	delete(dcDomainAffinity, 2)
+	dcDomainAffinityMu.Unlock()
+	defer func() {
+		dcDomainAffinityMu.Lock()
+		if hadAffinity {
+			dcDomainAffinity[2] = oldAffinity
+		} else {
+			delete(dcDomainAffinity, 2)
+		}
+		dcDomainAffinityMu.Unlock()
+	}()
+
+	domains := []string{"ru-edge.example", "eu-edge.example"}
+	domainLastPoP.Store("ru-edge.example", "DME")
+	domainLastPoP.Store("eu-edge.example", "FRA")
+	defer domainLastPoP.Delete("ru-edge.example")
+	defer domainLastPoP.Delete("eu-edge.example")
+
+	// Even if ru-edge.example is the starting index, eu-edge.example must be preferred in first pass
+	candidates := frontCandidatesForRace(2, domains, 0, 1)
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %v", candidates)
+	}
+	if candidates[0] != "kws2.eu-edge.example" {
+		t.Fatalf("expected eu-edge.example to be prioritized over ru-edge (DME), got %s", candidates[0])
+	}
+
+	// Affinity domain with RU PoP must be skipped in favor of non-RU domain
+	setDCDomainAffinity(2, "ru-edge.example")
+	candidates = frontCandidatesForRace(2, domains, 0, 1)
+	if len(candidates) != 1 || candidates[0] != "kws2.eu-edge.example" {
+		t.Fatalf("affinity for RU PoP must be skipped, got %v", candidates)
+	}
+
+	// If all domains have RU PoPs, pool must NOT be starved (rule 3: keep at least 1)
+	allRUDomains := []string{"ru1.example", "ru2.example"}
+	domainLastPoP.Store("ru1.example", "DME")
+	domainLastPoP.Store("ru2.example", "LED")
+	defer domainLastPoP.Delete("ru1.example")
+	defer domainLastPoP.Delete("ru2.example")
+
+	ruCandidates := frontCandidatesForRace(2, allRUDomains, 0, 2)
+	if len(ruCandidates) != 2 {
+		t.Fatalf("all-RU pool must not collapse to empty, got %v", ruCandidates)
 	}
 }
 

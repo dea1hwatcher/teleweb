@@ -76,6 +76,11 @@ case "$CMD" in
     check_latency
     exit 0
     ;;
+  net-renew|renew-ip|rat-renew)
+    echo "=== Перезапрос IP мобильного оператора (RAT Switch) ==="
+    mobile_net_renew
+    exit 0
+    ;;
   logs|log|dump)
     echo "=========================================="
     echo "        TeleWEB - Системные журналы       "
