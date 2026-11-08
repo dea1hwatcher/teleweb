@@ -2211,13 +2211,18 @@ function labToRgb(lab) {
 
 const inGamut = rgb => rgb[0] >= -0.2 && rgb[0] <= 255.2 && rgb[1] >= -0.2 && rgb[1] <= 255.2 && rgb[2] >= -0.2 && rgb[2] <= 255.2;
 
-const CHROMA = { primary: 1, secondary: 0.34, tertiary: 0.55, neutral: 0.05, neutralVariant: 0.12, error: 0.9 };
+const CHROMA = { primary: 1, secondary: 0.45, tertiary: 0.65, neutral: 0.05, neutralVariant: 0.14, error: 0.85 };
 const TERTIARY_HUE = Math.PI / 3;
 
 function tone(lab, t, palette, hueShift) {
   const seedC = Math.hypot(lab[1], lab[2]);
-  const chroma = seedC < 0.4 ? 0 : seedC * CHROMA[palette];
+  let chroma = seedC < 0.4 ? 0 : seedC * CHROMA[palette];
   const hue = Math.atan2(lab[2], lab[1]) + (hueShift || 0);
+  const deg = ((hue * 180 / Math.PI) % 360 + 360) % 360;
+  if (t >= 85 && deg >= 70 && deg <= 130) {
+    const roll = Math.pow(Math.max(0, (100 - t) / 15), 0.85);
+    chroma *= (0.25 + 0.75 * roll);
+  }
   const at = s => labToRgb([t, Math.cos(hue) * chroma * s, Math.sin(hue) * chroma * s]);
   if (inGamut(at(1))) return rgbToHex.apply(null, at(1));
   let lo = 0, hi = 1;
@@ -2295,9 +2300,9 @@ function roles(seedHex, dark, amoled, monochrome) {
       R.surfaceDim = amoled ? '#000000' : '#131313'; R.surfaceBright = '#383838';
       R.surfaceContainerLowest = amoled ? '#000000' : '#0e0e0e';
       R.surfaceContainerLow = amoled ? '#141414' : '#1a1a1a';
-      R.surfaceContainer = amoled ? '#1c1c1c' : '#202020';
-      R.surfaceContainerHigh = amoled ? '#262626' : '#282828';
-      R.surfaceContainerHighest = amoled ? '#303030' : '#333333';
+      R.surfaceContainer = amoled ? '#1c1c1c' : '#222222';
+      R.surfaceContainerHigh = amoled ? '#262626' : '#2a2a2a';
+      R.surfaceContainerHighest = amoled ? '#303030' : '#353535';
       R.outline = '#8e8e8e'; R.outlineVariant = '#444444';
       R.inverseSurface = '#e2e2e2'; R.inverseOnSurface = '#1b1b1b';
       R.inversePrimary = '#000000';
@@ -2316,9 +2321,9 @@ function roles(seedHex, dark, amoled, monochrome) {
       R.surfaceDim = amoled ? '#000000' : p(6, 'neutral'); R.surfaceBright = p(24, 'neutral');
       R.surfaceContainerLowest = amoled ? '#000000' : p(4, 'neutral');
       R.surfaceContainerLow = amoled ? p(11, 'neutralVariant') : p(10, 'neutral');
-      R.surfaceContainer = amoled ? p(14, 'neutralVariant') : p(12, 'neutral');
-      R.surfaceContainerHigh = amoled ? p(18, 'neutralVariant') : p(17, 'neutral');
-      R.surfaceContainerHighest = amoled ? p(23, 'neutralVariant') : p(22, 'neutral');
+      R.surfaceContainer = amoled ? p(15, 'neutralVariant') : p(14, 'neutral');
+      R.surfaceContainerHigh = amoled ? p(20, 'neutralVariant') : p(19, 'neutral');
+      R.surfaceContainerHighest = amoled ? p(26, 'neutralVariant') : p(24, 'neutral');
       R.outline = p(60, 'neutralVariant'); R.outlineVariant = p(30, 'neutralVariant');
       R.inverseSurface = p(90, 'neutral'); R.inverseOnSurface = p(20, 'neutral');
       R.inversePrimary = p(40);
@@ -2381,7 +2386,14 @@ function roles(seedHex, dark, amoled, monochrome) {
     tertiaryFixed: isMono ? '#e8e8e8' : p(90, 'tertiary', TERTIARY_HUE),
     tertiaryFixedDim: isMono ? '#d0d0d0' : p(80, 'tertiary', TERTIARY_HUE),
     onTertiaryFixed: isMono ? '#1b1b1b' : p(10, 'tertiary', TERTIARY_HUE),
-    onTertiaryFixedVariant: isMono ? '#3a3a3a' : p(30, 'tertiary', TERTIARY_HUE)
+    onTertiaryFixedVariant: isMono ? '#3a3a3a' : p(30, 'tertiary', TERTIARY_HUE),
+    errorFixed: isMono ? '#e2e2e2' : e(90),
+    errorFixedDim: isMono ? '#c6c6c6' : e(80),
+    onErrorFixed: isMono ? '#181818' : e(10),
+    onErrorFixedVariant: isMono ? '#444444' : e(30),
+    surfaceTint: isMono ? (dark ? '#ffffff' : '#000000') : (dark ? p(80) : p(40)),
+    shadow: '#000000',
+    scrim: '#000000'
   };
   Object.assign(R, fixed);
   return R;
@@ -2402,6 +2414,9 @@ const ROLE_VAR = {
   onTertiaryFixed: '--md-sys-color-on-tertiary-fixed', onTertiaryFixedVariant: '--md-sys-color-on-tertiary-fixed-variant',
   error: '--md-sys-color-error', onError: '--md-sys-color-on-error',
   errorContainer: '--md-sys-color-error-container', onErrorContainer: '--md-sys-color-on-error-container',
+  errorFixed: '--md-sys-color-error-fixed', errorFixedDim: '--md-sys-color-error-fixed-dim',
+  onErrorFixed: '--md-sys-color-on-error-fixed', onErrorFixedVariant: '--md-sys-color-on-error-fixed-variant',
+  surfaceTint: '--md-sys-color-surface-tint', shadow: '--md-sys-color-shadow', scrim: '--md-sys-color-scrim',
   background: '--md-sys-color-background', onBackground: '--md-sys-color-on-background',
   surface: '--md-sys-color-surface', onSurface: '--md-sys-color-on-surface',
   surfaceVariant: '--md-sys-color-surface-variant', onSurfaceVariant: '--md-sys-color-on-surface-variant',
