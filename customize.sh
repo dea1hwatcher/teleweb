@@ -42,9 +42,17 @@ ui_print "- Архитектура устройства: $ABI"
 
 if [ -f "$MODPATH/bin/$ABI/tgws" ]; then
   mv -f "$MODPATH/bin/$ABI/tgws" "$MODPATH/bin/tgws"
+  chmod 0755 "$MODPATH/bin/tgws"
 else
   abort "! Ошибка: бинарник tgws для архитектуры $ABI не найден в модуле"
 fi
+
+# Smoke-тест бинарника на целевом ядре
+ui_print "- Проверка совместимости бинарника (smoke test)..."
+if ! "$MODPATH/bin/tgws" status >/dev/null 2>&1; then
+  abort "! Ошибка: бинарник tgws не запускается на этом ядре ($ABI)!"
+fi
+ui_print "  [OK] Бинарник успешно проверен"
 
 # Удаляем остальные архитектуры для экономии места на устройстве
 rm -rf "$MODPATH/bin/arm64" "$MODPATH/bin/arm" "$MODPATH/bin/x86" "$MODPATH/bin/x86_64"
@@ -61,6 +69,7 @@ fi
 
 chmod 0755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh" \
   "$MODPATH/action.sh" "$MODPATH/uninstall.sh" "$MODPATH/bin/tgws" 2>/dev/null
+[ -f "$MODPATH/lib.sh" ] && chmod 0644 "$MODPATH/lib.sh" 2>/dev/null
 
 if [ -d /data/adb/teleweb ]; then
   ui_print "- Сохранение существующих настроек: /data/adb/teleweb"
@@ -70,6 +79,10 @@ else
   mkdir -p /data/adb/teleweb
   ui_print "- Создан каталог настроек: /data/adb/teleweb"
 fi
+
+chown -R 0:0 /data/adb/teleweb 2>/dev/null
+chmod 0700 /data/adb/teleweb 2>/dev/null
+[ -f /data/adb/teleweb/config.json ] && chmod 0600 /data/adb/teleweb/config.json 2>/dev/null
 
 # Остановка запущенной службы предыдущей версии модуля перед обновлением
 export TELEWEB_DIR=/data/adb/teleweb

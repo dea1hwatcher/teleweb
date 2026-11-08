@@ -24,6 +24,7 @@ FILES_TO_PACK = [
     "config.json",
     "customize.sh",
     "service.sh",
+    "lib.sh",
     "post-fs-data.sh",
     "action.sh",
     "uninstall.sh",
