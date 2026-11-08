@@ -219,6 +219,7 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 		lastCFRay.Store(&cfRay)
 		if pop := parseCFRayPoP(cfRay); pop != "" {
 			lastCFPoP.Store(&pop)
+			noteDomainPoP(host, pop)
 		}
 	}
 
