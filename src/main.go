@@ -47,6 +47,7 @@ const (
 )
 
 var (
+	baseDirMu        sync.RWMutex
 	baseDir          = envOr("TELEWEB_DIR", defaultBaseDir())
 	startAt          = time.Now()
 	active           int64
@@ -152,7 +153,7 @@ func saveRouteCache(key, host string) {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(baseDir, 0700); err != nil {
+	if err := os.MkdirAll(getBaseDir(), 0700); err != nil {
 		return
 	}
 	tmp := path("route-cache.json.tmp")
@@ -265,8 +266,20 @@ func envOr(k, d string) string {
 	}
 	return d
 }
-func path(name string) string { return filepath.Join(baseDir, name) }
-func ensureDir()              { _ = os.MkdirAll(baseDir, 0700) }
+func getBaseDir() string {
+	baseDirMu.RLock()
+	defer baseDirMu.RUnlock()
+	return baseDir
+}
+
+func setBaseDir(d string) {
+	baseDirMu.Lock()
+	defer baseDirMu.Unlock()
+	baseDir = d
+}
+
+func path(name string) string { return filepath.Join(getBaseDir(), name) }
+func ensureDir()              { _ = os.MkdirAll(getBaseDir(), 0700) }
 
 const defaultDescBase = "Прозрачный WSS-транспорт для Telegram (DC1-DC5)"
 
@@ -1957,8 +1970,18 @@ func loadLearnedDCs() {
 		learnedDCMu.Lock()
 		learnedDCDirty = true
 		learnedDCMu.Unlock()
-		go persistLearnedDCs()
+		queuePersistLearnedDCs()
 	}
+}
+
+var persistLearnedDCWG sync.WaitGroup
+
+func queuePersistLearnedDCs() {
+	persistLearnedDCWG.Add(1)
+	go func() {
+		defer persistLearnedDCWG.Done()
+		persistLearnedDCs()
+	}()
 }
 
 func persistLearnedDCs() {
@@ -2046,7 +2069,7 @@ func learnDC(ip string, dc int, isMedia bool) {
 	learnedDCMu.Lock()
 	learnedDCDirty = true
 	learnedDCMu.Unlock()
-	go persistLearnedDCs()
+	queuePersistLearnedDCs()
 	logf("dc-learn: learned endpoint %s -> DC%d media=%t", ip, dc, isMedia)
 }
 
@@ -2079,9 +2102,16 @@ func setupRules() error {
 			// IPv6 family so the watchdog does not flap on such devices,
 			// so surface the failure here and flag it for the rate-limited
 			// retry instead of leaving it broken for the daemon's lifetime.
+			ip6RulesInstalled.Store(false)
 			ip6RulesFailed.Store(true)
 			logf("redirect: IPv6 rules failed: %v — Telegram IPv6 will bypass WSS until a retry succeeds", err)
+		} else {
+			ip6RulesInstalled.Store(true)
+			ip6RulesFailed.Store(false)
 		}
+	} else {
+		ip6RulesInstalled.Store(false)
+		ip6RulesFailed.Store(false)
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
@@ -2103,6 +2133,8 @@ func cleanupRules() {
 	if redirectorSupported() {
 		return
 	}
+	ip6RulesInstalled.Store(false)
+	ip6RulesFailed.Store(false)
 	_, uids := installedApps()
 	iptCleanup(findBin("iptables"), uids, "TELEWEB")
 	// Remove the previous release's IPv6 chain as well: setupRules installs
@@ -2546,13 +2578,42 @@ func rulesHealthy() bool {
 	return false
 }
 
+func ip6RulesHealthy() bool {
+	bin := findBin("ip6tables")
+	if bin == "" {
+		return false
+	}
+	for _, cidr := range telegramV6 {
+		if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
+			return false
+		}
+	}
+	// Universal jump check (with root exclusion or global jump)
+	if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
+		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil {
+		return true
+	}
+	// UID-scoped fallback check
+	_, uids := installedApps()
+	if len(uids) > 0 {
+		for _, uid := range uids {
+			if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // ip6RulesFailed remembers that the ip6tables setup failed at least once, so
 // the watchdog can retry it: a boot-time xtables.lock contention or a
 // not-yet-ready netd used to leave Telegram IPv6 bypassing the WSS transport
 // for the daemon's entire lifetime.
 var (
-	ip6RulesFailed atomic.Bool
-	ip6LastRetry   atomic.Int64
+	ip6RulesInstalled atomic.Bool
+	ip6RulesFailed    atomic.Bool
+	ip6LastRetry      atomic.Int64
 )
 
 const ip6RetryInterval = 5 * time.Minute
@@ -2578,10 +2639,12 @@ func retryFailedIPv6Rules() {
 	}
 	_, uids := installedApps()
 	if err := iptSetup(bin, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
+		ip6RulesInstalled.Store(false)
 		logf("redirect: IPv6 rules retry failed: %v", err)
 		return
 	}
 	setupCallsBypass(bin)
+	ip6RulesInstalled.Store(true)
 	ip6RulesFailed.Store(false)
 	logf("redirect: IPv6 rules restored on retry; Telegram IPv6 is back on the WSS transport")
 }
@@ -2628,6 +2691,11 @@ func watchdog() {
 			}
 		}
 		protectProcess(readPIDFile("tgws.pid"))
+		if ip6RulesInstalled.Load() && !ip6RulesFailed.Load() && !ip6RulesHealthy() {
+			logf("watchdog: ip6tables rules reset or corrupted, scheduling restore")
+			ip6RulesFailed.Store(true)
+			ip6LastRetry.Store(0)
+		}
 		retryFailedIPv6Rules()
 		if !rulesHealthy() {
 			logf("watchdog: iptables rules reset or corrupted, restoring; iptables=%q", findBin("iptables"))

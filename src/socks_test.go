@@ -81,3 +81,38 @@ func TestSOCKS5RejectionOnStandardPort(t *testing.T) {
 		t.Fatalf("expected REP=2 (Connection not allowed) for non-Telegram IP:443, got %d", resp[1])
 	}
 }
+
+func TestSOCKS5NonTelegramDomainRejection(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	logger := log.New(io.Discard, "", 0)
+	go socksHandle(c2, logger)
+
+	if _, err := c1.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatalf("write greeting: %v", err)
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(c1, reply); err != nil {
+		t.Fatalf("read greeting reply: %v", err)
+	}
+	if !bytes.Equal(reply, []byte{5, 0}) {
+		t.Fatalf("unexpected greeting reply: %v", reply)
+	}
+
+	// ATYP=3 (domain), domain="example.com", port=443
+	domain := "example.com"
+	req := append([]byte{5, 1, 0, 3, byte(len(domain))}, []byte(domain)...)
+	req = append(req, 0x01, 0xBB)
+	if _, err := c1.Write(req); err != nil {
+		t.Fatalf("write connect req: %v", err)
+	}
+	resp := make([]byte, 10)
+	if _, err := io.ReadFull(c1, resp); err != nil {
+		t.Fatalf("read connect resp: %v", err)
+	}
+	if resp[1] != 2 {
+		t.Fatalf("expected REP=2 (Connection not allowed) for non-Telegram domain %q, got %d", domain, resp[1])
+	}
+}

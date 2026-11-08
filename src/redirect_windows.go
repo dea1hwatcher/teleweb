@@ -77,7 +77,7 @@ func resolveDriverDir() (string, error) {
 	if fsys == nil {
 		return "", fmt.Errorf("WinDivert.dll not found next to tgws.exe and no embedded driver for windows/%s", runtime.GOARCH)
 	}
-	dir := filepath.Join(baseDir, "driver")
+	dir := filepath.Join(getBaseDir(), "driver")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}

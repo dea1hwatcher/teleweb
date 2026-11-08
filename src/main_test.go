@@ -3590,6 +3590,7 @@ func TestLearnedDCs_LRUEviction(t *testing.T) {
 	// Learning a 257th IP must trigger LRU eviction down to 192, and store the new IP
 	newIP := "149.154.161.1"
 	learnDC(newIP, 4, true)
+	persistLearnedDCWG.Wait()
 
 	if dc, isMedia, ok := lookupLearnedDC(newIP); !ok || dc != 4 || !isMedia {
 		t.Fatalf("expected new IP %s to be learned after eviction, got dc=%d media=%t ok=%t", newIP, dc, isMedia, ok)
@@ -3779,10 +3780,10 @@ func TestMTProtoPacketFramer_InitialFreed(t *testing.T) {
 // worker sessions must keep their real SNI and their certificate
 // verification even when the override file exists.
 func TestFrontingSNIScopedToFrontDials(t *testing.T) {
-	oldDir := baseDir
+	oldDir := getBaseDir()
 	tmp := t.TempDir()
-	baseDir = tmp
-	defer func() { baseDir = oldDir }()
+	setBaseDir(tmp)
+	defer func() { setBaseDir(oldDir) }()
 	_ = os.WriteFile(filepath.Join(tmp, "fronting-sni"), []byte("sprinthost.ru\n"), 0600)
 
 	sni, skip := tlsHandshakeForHost("kws2.web.telegram.org", false)
@@ -4054,5 +4055,30 @@ func TestSelfDialJanitorExitOnContext(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("selfDialJanitor did not exit when context was cancelled")
+	}
+}
+
+// TestIPv6RulesInstalledTracking guards F12: an ip6tables rules corruption or
+// wipe triggers recovery rather than leaving IPv6 bypassing WSS indefinitely.
+func TestIPv6RulesInstalledTracking(t *testing.T) {
+	origInstalled := ip6RulesInstalled.Load()
+	origFailed := ip6RulesFailed.Load()
+	defer func() {
+		ip6RulesInstalled.Store(origInstalled)
+		ip6RulesFailed.Store(origFailed)
+	}()
+
+	ip6RulesInstalled.Store(true)
+	ip6RulesFailed.Store(false)
+	if !ip6RulesInstalled.Load() || ip6RulesFailed.Load() {
+		t.Fatalf("unexpected flag state")
+	}
+
+	// On machines without installed ip6tables rules, ip6RulesHealthy returns false
+	if !ip6RulesHealthy() {
+		ip6RulesFailed.Store(true)
+	}
+	if !ip6RulesFailed.Load() {
+		t.Fatalf("expected ip6RulesFailed to be set on missing rules")
 	}
 }

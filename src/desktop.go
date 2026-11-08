@@ -177,7 +177,7 @@ func runDesktop() error {
 	if err := ensureWatchdog(); err != nil {
 		logf("watchdog: failed to start: %v", err)
 	}
-	logf("desktop runtime active (platform=%s, dir=%s)", runtime.GOOS, baseDir)
+	logf("desktop runtime active (platform=%s, dir=%s)", runtime.GOOS, getBaseDir())
 	updateModuleDescription(currentStatusDesc())
 	return nil
 }
