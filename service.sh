@@ -50,6 +50,9 @@ if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
 fi
 
 # 4. Boot TeleWEB service (iptables redirection + daemon + watchdog)
+apply_network_tweaks
+bpf_tether_offload_detach
+targeted_conntrack_flush
 log_msg "INFO" "Первичный запуск службы TeleWEB (boot)..."
 if "$MODDIR/bin/tgws" boot >>"$SUPERVISOR_LOG" 2>&1; then
   update_description running
@@ -67,6 +70,8 @@ while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do
   [ -f "$MODDIR/remove" ] && break
 
   if "$MODDIR/bin/tgws" ensure >>"$SUPERVISOR_LOG" 2>&1; then
+    bpf_tether_offload_detach
+    rotate_all_logs
     if [ "$FAILS" -gt 0 ]; then
       log_msg "INFO" "Служба TeleWEB восстановилась после сбоев. Возврат к стандартному интервалу проверок (60c)."
     fi

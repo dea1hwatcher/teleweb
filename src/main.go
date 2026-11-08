@@ -1638,8 +1638,12 @@ var telegramSubnets = []struct {
 	{"91.108.16.0/22", 4},
 	{"91.108.20.0/22", 5},
 	{"91.108.56.0/22", 5},
+	{"95.161.64.0/20", 2},
 	{"185.76.151.0/24", 2},
 	{"91.105.192.0/23", 2},
+	{"172.121.110.0/24", 2},
+	{"142.252.58.0/24", 2},
+	{"194.221.250.50/32", 2},
 }
 
 var telegramV4 = func() []string {
@@ -1724,6 +1728,16 @@ func deleteChainJumps(bin string, uids []int, chain string) {
 			}
 		}
 	}
+	for i := 0; i < 16; i++ {
+		if runCmd(bin, "-t", "nat", "-D", "PREROUTING", "-p", "tcp", "-j", chain) != nil {
+			break
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if runCmd(bin, "-t", "nat", "-D", "PREROUTING", "-j", chain) != nil {
+			break
+		}
+	}
 }
 
 func iptSetup(bin string, uids []int, cidrs []string, chain string, family string) error {
@@ -1752,10 +1766,16 @@ func iptSetup(bin string, uids []int, cidrs []string, chain string, family strin
 	// 3. Universal non-root redirection: every local TCP flow to a Telegram DC
 	// aggregate is redirected. This ensures 100% compatibility with all Telegram
 	// clients, mods, and clones regardless of package name.
-	if err := runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "!", "--uid-owner", "0", "-j", chain); err == nil {
-		return nil
+	var outputErr error
+	if err := runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-m", "owner", "!", "--uid-owner", "0", "-j", chain); err != nil {
+		outputErr = runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-j", chain)
 	}
-	return runCmd(bin, "-t", "nat", "-I", "OUTPUT", "1", "-j", chain)
+
+	// 4. Hotspot / Tethering redirection: forwarded inbound TCP flows from
+	// Wi-Fi hotspot / USB tethering traverse PREROUTING (not OUTPUT).
+	_ = runCmd(bin, "-t", "nat", "-I", "PREROUTING", "1", "-p", "tcp", "-j", chain)
+
+	return outputErr
 }
 func iptCleanup(bin string, uids []int, chain string) {
 	if bin == "" {
@@ -2561,8 +2581,15 @@ func rulesHealthy() bool {
 		}
 	}
 	// Universal jump check (with root exclusion or global jump)
-	if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
-		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil {
+	outputOK := runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
+		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil
+
+	// Ensure PREROUTING jump is maintained for hotspot/tethering
+	if runCmd(bin, "-t", "nat", "-C", "PREROUTING", "-p", "tcp", "-j", "TELEWEB") != nil {
+		_ = runCmd(bin, "-t", "nat", "-I", "PREROUTING", "1", "-p", "tcp", "-j", "TELEWEB")
+	}
+
+	if outputOK {
 		return true
 	}
 	// UID-scoped fallback check
@@ -2589,8 +2616,15 @@ func ip6RulesHealthy() bool {
 		}
 	}
 	// Universal jump check (with root exclusion or global jump)
-	if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
-		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil {
+	outputOK := runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
+		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil
+
+	// Ensure PREROUTING jump is maintained for hotspot/tethering
+	if runCmd(bin, "-t", "nat", "-C", "PREROUTING", "-p", "tcp", "-j", "TELEWEB") != nil {
+		_ = runCmd(bin, "-t", "nat", "-I", "PREROUTING", "1", "-p", "tcp", "-j", "TELEWEB")
+	}
+
+	if outputOK {
 		return true
 	}
 	// UID-scoped fallback check
@@ -3105,6 +3139,21 @@ func executeAPICommand(q apiRequest) (any, error) {
 			_ = os.Truncate(path(name), 0)
 		}
 		return map[string]any{"cleared": true}, nil
+	case "netRenew", "net_renew":
+		modDir := os.Getenv("TELEWEB_MOD")
+		if modDir == "" {
+			modDir = "/data/adb/modules/teleweb"
+		}
+		actionPath := filepath.Join(modDir, "action.sh")
+		if _, err := os.Stat(actionPath); err == nil {
+			cmd := exec.Command("/system/bin/sh", actionPath, "net-renew")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return map[string]any{"ok": false, "output": string(out), "error": err.Error()}, nil
+			}
+			return map[string]any{"ok": true, "output": string(out)}, nil
+		}
+		return map[string]any{"ok": false, "error": "net-renew is supported on Android with action.sh only"}, nil
 	default:
 		return nil, fmt.Errorf("unknown command: %s", q.Cmd)
 	}
@@ -4948,6 +4997,31 @@ func setDCDomainAffinity(dc int, domain string) {
 	dcDomainAffinity[dc] = domain
 }
 
+// isRussianPoP reports whether the given Cloudflare Point of Presence (PoP)
+// code is located in Russia (e.g. DME = Moscow Domodedovo, LED = St. Petersburg
+// Pulkovo, KJA = Krasnoyarsk). Russian edges frequently face DPI/TSPU throttling
+// or domestic MTProto blocking on Telegram destinations.
+func isRussianPoP(pop string) bool {
+	switch strings.ToUpper(strings.TrimSpace(pop)) {
+	case "DME", "LED", "KJA", "SVX", "OVB":
+		return true
+	default:
+		return false
+	}
+}
+
+var domainLastPoP sync.Map // map[string]string: domain -> CF PoP code
+
+func noteDomainPoP(host, pop string) {
+	if pop == "" || host == "" {
+		return
+	}
+	parts := strings.SplitN(host, ".", 2)
+	if len(parts) == 2 && parts[1] != "" {
+		domainLastPoP.Store(parts[1], pop)
+	}
+}
+
 // clampFrontRetryWait bounds a parked-front pause by both the retry ceiling and
 // the caller's remaining dial budget, always leaving room for the actual dial.
 func clampFrontRetryWait(ctx context.Context, wait time.Duration) time.Duration {
@@ -4979,14 +5053,40 @@ func frontCandidatesForRace(dc int, domains []string, start, max int) []string {
 	seen := map[string]bool{}
 
 	// If a preferred affinity domain exists for this DC and is healthy, try it first
+	// (only if it didn't resolve to a Russian PoP).
 	if pref := getDCDomainAffinity(dc); pref != "" {
-		host := frontHost(dc, pref)
-		if !routeCoolingDown(host) {
-			hosts = append(hosts, host)
-			seen[pref] = true
+		pop, _ := domainLastPoP.Load(pref)
+		popStr, _ := pop.(string)
+		if !isRussianPoP(popStr) {
+			host := frontHost(dc, pref)
+			if !routeCoolingDown(host) {
+				hosts = append(hosts, host)
+				seen[pref] = true
+			}
 		}
 	}
 
+	// First pass: collect healthy fronts that do NOT resolve to a Russian PoP
+	for i := 0; i < len(domains) && len(hosts) < max; i++ {
+		domain := domains[(start+i)%len(domains)]
+		if seen[domain] {
+			continue
+		}
+		if pop, ok := domainLastPoP.Load(domain); ok {
+			if popStr, ok := pop.(string); ok && isRussianPoP(popStr) {
+				continue
+			}
+		}
+		host := frontHost(dc, domain)
+		if routeCoolingDown(host) {
+			continue
+		}
+		seen[domain] = true
+		hosts = append(hosts, host)
+	}
+
+	// Second pass: if non-RU fronts were insufficient to fill the quota, fill from
+	// the remaining fronts (including Russian PoP ones) rather than starving the pool.
 	for i := 0; i < len(domains) && len(hosts) < max; i++ {
 		domain := domains[(start+i)%len(domains)]
 		if seen[domain] {
@@ -5478,11 +5578,15 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 			if end := strings.IndexByte(winningRoute[start:], ')'); end != -1 {
 				h := winningRoute[start+1 : start+end]
 				if !cfBalance && h != "" && !strings.HasPrefix(winningRoute, "cf-worker") {
-					cfHostCache.Store(key, h)
-					saveRouteCache(key, h)
-					parts := strings.SplitN(h, ".", 2)
-					if len(parts) == 2 && parts[1] != "" {
-						setDCDomainAffinity(dc, parts[1])
+					if !isRussianPoP(ws.cfPoP) {
+						cfHostCache.Store(key, h)
+						saveRouteCache(key, h)
+						parts := strings.SplitN(h, ".", 2)
+						if len(parts) == 2 && parts[1] != "" {
+							setDCDomainAffinity(dc, parts[1])
+						}
+					} else {
+						logf("DC%d: front %s connected via RU PoP %s; avoiding affinity cache to prefer non-RU edges", dc, h, ws.cfPoP)
 					}
 				}
 			}
@@ -5662,6 +5766,9 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 			if e == nil {
 				cancel()
 				clearRouteHealth(host)
+				if ws.cfPoP != "" {
+					noteDomainPoP(host, ws.cfPoP)
+				}
 				return ws, nil
 			}
 			if shouldPenalizeRoute(ctx) {

@@ -207,3 +207,169 @@ check_latency() {
     esac
   done
 }
+
+# Android 13+ BPF tether offload detachment
+# Strips schedcls_tether_* from ingress queues so forwarded hotspot traffic
+# is evaluated by iptables PREROUTING/FORWARD rather than bypassed by BPF.
+bpf_tether_offload_detach() {
+  local tc_bin=""
+  for b in /system/bin/tc /system/xbin/tc /data/adb/ap/bin/tc /data/adb/ksu/bin/tc /data/adb/magisk/busybox; do
+    if [ -x "$b" ]; then
+      tc_bin="$b"
+      break
+    fi
+  done
+  [ -z "$tc_bin" ] && command -v tc >/dev/null 2>&1 && tc_bin="tc"
+
+  settings put global tether_offload_disabled 1 2>/dev/null
+  device_config put tethering override_bpf_offload false 2>/dev/null
+
+  [ -n "$tc_bin" ] || return 0
+
+  local ifaces
+  ifaces="$(ls /sys/class/net 2>/dev/null)"
+  for d in $ifaces; do
+    local out
+    out="$("$tc_bin" filter show dev "$d" ingress 2>/dev/null)"
+    case "$out" in
+      *schedcls_tether_*)
+        for spec in $(printf '%s\n' "$out" | awk '/schedcls_tether_/ {
+            p = ""; r = ""
+            for (i = 1; i < NF; i++) { if ($i == "protocol") p = $(i+1); if ($i == "pref") r = $(i+1) }
+            if (p != "" && r != "") print p ":" r }' 2>/dev/null | sort -u); do
+          "$tc_bin" filter del dev "$d" ingress protocol "${spec%%:*}" pref "${spec#*:}" 2>/dev/null
+        done
+        ;;
+    esac
+  done
+}
+
+# System network tweaks for low-latency Telegram MTProto and hotspot routing
+apply_network_tweaks() {
+  # Allow REDIRECT to localhost from incoming tether interfaces
+  sysctl -w net.ipv4.conf.all.route_localnet=1 2>/dev/null || true
+  sysctl -w net.ipv4.conf.default.route_localnet=1 2>/dev/null || true
+  # Disable TCP autocorking to prevent 20-40ms latency spikes for MTProto message packets
+  sysctl -w net.ipv4.tcp_autocorking=0 2>/dev/null || true
+}
+
+# Targeted conntrack flush: flush flows only for Telegram destination CIDRs
+targeted_conntrack_flush() {
+  local ct=""
+  for b in /system/bin/conntrack /data/adb/ap/bin/conntrack /data/adb/ksu/bin/conntrack /data/adb/magisk/conntrack; do
+    if [ -x "$b" ]; then
+      ct="$b"
+      break
+    fi
+  done
+  [ -z "$ct" ] && command -v conntrack >/dev/null 2>&1 && ct="conntrack"
+  [ -n "$ct" ] || return 0
+
+  for cidr in 149.154.160.0/20 91.108.4.0/22 91.108.8.0/22 91.108.12.0/22 91.108.16.0/22 \
+              91.108.20.0/22 91.108.56.0/22 95.161.64.0/20 185.76.151.0/24 91.105.192.0/23 \
+              172.121.110.0/24 142.252.58.0/24 194.221.250.50/32; do
+    "$ct" -D -p tcp --orig-dst "$cidr" >/dev/null 2>&1 || true
+  done
+}
+
+# Log size limiter to protect device flash storage from excessive wear
+rotate_log_file() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  local sz
+  sz="$(wc -c < "$f" 2>/dev/null || echo 0)"
+  # 512 KB = 524288 bytes
+  if [ "$sz" -gt 524288 ]; then
+    local tmp="$f.tmp.$$"
+    tail -n 1000 "$f" > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null
+    rm -f "$tmp" 2>/dev/null
+  fi
+}
+
+rotate_all_logs() {
+  rotate_log_file "$SUPERVISOR_LOG"
+  rotate_log_file "$DAEMON_LOG"
+  rotate_log_file "$WATCHDOG_LOG"
+  rotate_log_file "$TGWS_LOG"
+}
+
+# Cellular external IP renewal via transient RAT toggle (LTE/5G -> GSM/2G -> LTE/5G).
+# Drops PDP context at the cell tower and acquires a new carrier IP without disabling Wi-Fi hotspot.
+mobile_net_renew() {
+  if [ ! -f "/system/bin/cmd" ] && ! command -v cmd >/dev/null 2>&1; then
+    echo "[!] Ошибка: утилита 'cmd' не найдена (поддерживается только на Android)"
+    return 1
+  fi
+
+  local rb="$TELEWEB_DIR/rat_back"
+  local lock="$TELEWEB_DIR/rat.lock"
+  mkdir -p "$TELEWEB_DIR" 2>/dev/null
+
+  if ! mkdir "$lock" 2>/dev/null; then
+    echo "[!] Операция обновления IP уже выполняется другим процессом."
+    return 1
+  fi
+  unlock() { rmdir "$lock" 2>/dev/null; }
+  trap unlock EXIT INT TERM
+
+  # Determine active data sub-id / slot
+  local sub=""
+  sub="$(dumpsys connectivity 2>/dev/null | grep -E "SubscriptionIds: " | head -n 1 | sed -n 's/.*SubscriptionIds: {\([0-9][0-9]*\)}.*/\1/p')"
+  [ -z "$sub" ] && sub="$(settings get global multi_sim_data_call 2>/dev/null)"
+  local sims
+  sims="$(content query --uri content://telephony/siminfo --projection _id:sim_id 2>/dev/null)"
+  local slot=""
+  if [ -n "$sub" ]; then
+    slot="$(echo "$sims" | sed -n "s/.*[ ]_id=$sub, sim_id=\([0-9][0-9]*\).*/\1/p" | head -n 1)"
+  fi
+  if [ -z "$slot" ]; then
+    slot="0"
+  fi
+
+  echo "Определение параметров мобильной сети (SIM slot $slot)..."
+  local orig_types
+  orig_types="$(cmd phone get-allowed-network-types-for-users -s "$slot" 2>/dev/null)"
+  if [ -z "$orig_types" ]; then
+    echo "[!] Не удалось получить текущий профиль сети для SIM $slot."
+    unlock
+    return 1
+  fi
+
+  echo "Текущий профиль сети: $orig_types"
+  echo "$slot" > "$rb"
+  echo "$orig_types" >> "$rb"
+
+  rat_restore() {
+    local count=0
+    while [ "$count" -lt 6 ]; do
+      cmd phone set-allowed-network-types-for-users -s "$slot" "$orig_types" >/dev/null 2>&1
+      local cur
+      cur="$(cmd phone get-allowed-network-types-for-users -s "$slot" 2>/dev/null)"
+      if [ "$cur" = "$orig_types" ]; then
+        rm -f "$rb"
+        return 0
+      fi
+      count=$((count + 1))
+      sleep 2
+    done
+    return 1
+  }
+
+  echo "Временное переключение на 2G/GSM для сброса сотовой сессии..."
+  cmd phone set-allowed-network-types-for-users -s "$slot" 32768 >/dev/null 2>&1 || \
+    cmd phone set-allowed-network-types-for-users -s "$slot" "GSM|GPRS|EDGE" >/dev/null 2>&1
+
+  sleep 3
+
+  echo "Восстановление исходного скоростного профиля сети (LTE/5G)..."
+  if rat_restore; then
+    echo "Профиль сети успешно восстановлен! Новый IP получен от базовой станции."
+    targeted_conntrack_flush
+    unlock
+    return 0
+  else
+    echo "[!] Внимание: не удалось автоматически подтвердить возврат профиля сети."
+    unlock
+    return 1
+  fi
+}
