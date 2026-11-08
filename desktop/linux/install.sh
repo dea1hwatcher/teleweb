@@ -26,6 +26,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=TELEWEB_DIR=/var/lib/teleweb
+Environment=GOGC=50
 ExecStart=/usr/local/bin/tgws run
 ExecStopPost=/usr/local/bin/tgws stop
 Restart=on-failure
@@ -34,6 +35,8 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+
+sysctl -w net.ipv4.tcp_autocorking=0 >/dev/null 2>&1 || true
 
 systemctl daemon-reload
 systemctl enable teleweb.service
