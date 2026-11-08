@@ -106,7 +106,11 @@ func (p *WsPool) Get(dc int, isMedia bool, isTest bool) *wsConn {
 			if entry == nil || entry.ws == nil {
 				continue
 			}
-			if now.Sub(entry.createdAt) > wsPoolMaxAge {
+			maxAge := wsPoolMaxAge
+			if entry.ws.isWorker {
+				maxAge = 45 * time.Second
+			}
+			if now.Sub(entry.createdAt) > maxAge {
 				_ = entry.ws.Close()
 				continue
 			}

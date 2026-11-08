@@ -1914,10 +1914,70 @@ func clearWorkerCooldown(host string, optDC ...int) {
 	if len(optDC) > 0 {
 		dc = optDC[0]
 	}
+	key := host
 	if dc > 0 {
-		workerCooldowns.Delete(workerCooldownKey(host, dc))
+		key = workerCooldownKey(host, dc)
+		workerCooldowns.Delete(key)
 	}
 	workerCooldowns.Delete(host)
+	workerStrikesMu.Lock()
+	delete(workerStrikes, key)
+	delete(workerStrikes, host)
+	workerStrikesMu.Unlock()
+}
+
+const (
+	workerStallStrikes  = 2
+	workerStallWindow   = 5 * time.Minute
+	workerStallCooldown = 10 * time.Minute
+)
+
+type workerStrikeState struct {
+	first time.Time
+	count int
+}
+
+var (
+	workerStrikesMu sync.Mutex
+	workerStrikes   = map[string]workerStrikeState{}
+)
+
+func recordWorkerStall(host string, dc int) {
+	if host == "" {
+		return
+	}
+	key := workerCooldownKey(host, dc)
+	now := time.Now()
+	workerStrikesMu.Lock()
+	st := workerStrikes[key]
+	if st.count == 0 || now.Sub(st.first) > workerStallWindow {
+		st = workerStrikeState{first: now}
+	}
+	st.count++
+	cool := st.count >= workerStallStrikes
+	if cool {
+		delete(workerStrikes, key)
+	} else {
+		workerStrikes[key] = st
+	}
+	workerStrikesMu.Unlock()
+
+	if cool {
+		markWorkerCooldownDC(host, dc, workerStallCooldown)
+		if dc > 0 {
+			logf("worker %s (DC%d): repeated silent stalls (%d strikes); quarantined for %v", host, dc, workerStallStrikes, workerStallCooldown)
+		} else {
+			logf("worker %s: repeated silent stalls (%d strikes); quarantined for %v", host, workerStallStrikes, workerStallCooldown)
+		}
+	} else {
+		if dc > 0 {
+			logf("worker %s (DC%d): silent stall mid-session (strike %d/%d within %v before quarantine)",
+				host, dc, st.count, workerStallStrikes, workerStallWindow)
+		} else {
+			logf("worker %s: silent stall mid-session (strike %d/%d within %v before quarantine)",
+				host, st.count, workerStallStrikes, workerStallWindow)
+		}
+	}
 }
 
 type learnedDCEntry struct {
@@ -3576,9 +3636,9 @@ var (
 	knownDCMap = map[string]int{
 		"149.154.175.50": 1, "149.154.175.51": 1, "149.154.175.53": 1, "149.154.175.54": 1, "149.154.175.55": 1,
 		"149.154.175.100": 3, "149.154.175.101": 3, "149.154.175.211": 1,
-		"149.154.167.41": 2, "149.154.167.50": 2, "149.154.167.51": 2, "149.154.167.52": 2, "149.154.167.91": 4, "149.154.167.92": 4,
+		"149.154.167.41": 2, "149.154.167.43": 4, "149.154.167.50": 2, "149.154.167.51": 2, "149.154.167.52": 2, "149.154.167.91": 4, "149.154.167.92": 4,
 		"149.154.167.99": 2, "149.154.167.118": 4, "149.154.167.151": 2, "149.154.167.220": 2, "149.154.167.222": 2,
-		"149.154.167.223": 2, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4,
+		"149.154.167.223": 2, "149.154.167.255": 4, "149.154.162.123": 2, "149.154.164.250": 4, "149.154.165.111": 4, "149.154.166.120": 4,
 		"149.154.166.121": 4, "149.154.175.52": 1, "149.154.175.102": 3, "149.154.174.100": 1, "149.154.170.100": 5,
 		"149.154.171.5": 5, "91.108.56.100": 5, "91.108.56.102": 5, "91.108.56.118": 5, "91.108.56.128": 5, "91.108.56.151": 5,
 		cdn203IP: 203,
@@ -3640,6 +3700,23 @@ var (
 type telegramSubnet struct {
 	prefix netip.Prefix
 	dc     int
+}
+
+// siblingDC returns the paired datacenter for sites sharing physical hosting:
+// Miami pair DC 1 <-> DC 3, Amsterdam pair DC 2 <-> DC 4. When a guessed IP
+// yields -444 (Invalid DC), the traffic is retried on its sibling DC.
+func siblingDC(dc int) int {
+	switch dc {
+	case 1:
+		return 3
+	case 3:
+		return 1
+	case 2:
+		return 4
+	case 4:
+		return 2
+	}
+	return 0
 }
 
 // dcInitContradictsKnownIP reports whether a DC tag parsed from the MTProto
@@ -3916,7 +3993,7 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		testTag = " (test)"
 	}
 	logf("conn #%d %s -> DC%d%s media=%t via WSS (%s)%s", id, orig, dc, testTag, isMedia, ws.host, rayInfo)
-	pipeWSTunnel(c, ws, init, id, dc, isMedia)
+	pipeWSTunnel(c, ws, init, id, dc, isMedia, orig.Addr().String(), !parsed)
 }
 
 func readDC203DirectTCP() bool         { return readFlag("dc203_direct_tcp", true) }
@@ -4054,7 +4131,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 			defer atomic.AddInt64(&wsCount, -1)
 			logf("conn #%d %s -> CDN203 via Cloudflare Worker %s", id, orig, worker)
 			defer ws.Close()
-			pipeWSTunnel(c, ws, init, id, 203, false)
+			pipeWSTunnel(c, ws, init, id, 203, false, orig.Addr().String(), false)
 			return
 		}
 		logf("conn #%d CDN203: Cloudflare Worker %s did not respond: %v; falling back to direct TCP", id, worker, err)
@@ -4210,7 +4287,37 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 	wg.Wait()
 }
 
-func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia bool) {
+var (
+	relayStallCloseNs   atomic.Int64
+	relayAnswerDueNs    atomic.Int64
+	relayGaveUpWithinNs atomic.Int64
+)
+
+func init() {
+	relayStallCloseNs.Store(int64(8 * time.Second))
+	relayAnswerDueNs.Store(int64(150 * time.Millisecond))
+	relayGaveUpWithinNs.Store(int64(300 * time.Millisecond))
+}
+
+func getRelayStallClose() time.Duration {
+	return time.Duration(relayStallCloseNs.Load())
+}
+
+func getRelayAnswerDue() time.Duration {
+	return time.Duration(relayAnswerDueNs.Load())
+}
+
+func getRelayGaveUpWithin() time.Duration {
+	return time.Duration(relayGaveUpWithinNs.Load())
+}
+
+func setRelayStallTimeouts(close, due, gaveUp time.Duration) {
+	relayStallCloseNs.Store(int64(close))
+	relayAnswerDueNs.Store(int64(due))
+	relayGaveUpWithinNs.Store(int64(gaveUp))
+}
+
+func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia bool, targetIP string, guessedDC bool) {
 	startedAt := time.Now()
 	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
 	var upBytes int64   // client -> WSS payload bytes observed after the init header
@@ -4234,12 +4341,100 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 		closeBoth()
 	})
 
+	var lastUp atomic.Int64
+	var secondUp atomic.Int64
+	var upWrites atomic.Int64
+	var upSinceDown atomic.Int64
+	var lastDown atomic.Int64
+	var stallReported atomic.Bool
+
+	startNano := time.Now().UnixNano()
+	lastDown.Store(startNano)
+
+	noteUp := func(n int) {
+		now := time.Now().UnixNano()
+		lastUp.Store(now)
+		if upSinceDown.Add(int64(n)) == int64(n) {
+			upWrites.Store(0)
+		}
+		if upWrites.Load() == 1 {
+			secondUp.Store(now)
+		}
+		upWrites.Add(1)
+	}
+
+	noteDown := func() {
+		lastDown.Store(time.Now().UnixNano())
+		upSinceDown.Store(0)
+		upWrites.Store(0)
+	}
+
+	stallClose := getRelayStallClose()
+	answerDue := getRelayAnswerDue()
+	gaveUpWithin := getRelayGaveUpWithin()
+
+	stalled := func() bool {
+		if upSinceDown.Load() == 0 || upWrites.Load() < 2 {
+			return false
+		}
+		now := time.Now()
+		return now.Sub(time.Unix(0, secondUp.Load())) >= stallClose &&
+			now.Sub(time.Unix(0, lastUp.Load())) >= answerDue
+	}
+
+	gaveUp := func() bool {
+		if upSinceDown.Load() == 0 {
+			return false
+		}
+		now := time.Now()
+		return now.Sub(time.Unix(0, lastDown.Load())) >= stallClose &&
+			now.Sub(time.Unix(0, lastUp.Load())) <= gaveUpWithin
+	}
+
+	reportStall := func() {
+		if !stallReported.Swap(true) {
+			if ws != nil && ws.isWorker {
+				recordWorkerStall(ws.host, dc)
+			}
+		}
+	}
+
+	go func() {
+		tick := stallClose / 8
+		if tick > time.Second {
+			tick = time.Second
+		}
+		if tick < 10*time.Millisecond {
+			tick = 10 * time.Millisecond
+		}
+		ticker := time.NewTicker(tick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopIdle:
+				return
+			case <-ticker.C:
+				if stalled() {
+					logf("conn #%d DC%d: %s silent for >%v with %d B awaiting answer; cutting stalled relay",
+						id, dc, ws.host, stallClose, upSinceDown.Load())
+					reportStall()
+					closeBoth()
+					return
+				}
+			}
+		}
+	}()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := pipeTCPToWSCount(c, ws, init, &upBytes, &lastActivity); err != nil && !isNeutralError(err) {
+		if err := pipeTCPToWSCount(c, ws, init, &upBytes, &lastActivity, noteUp); err != nil && !isNeutralError(err) {
 			logf("conn #%d DC%d client->WSS error: %T: %v (up=%d down=%d)", id, dc, err, err, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
+		}
+		if gaveUp() {
+			logf("conn #%d DC%d: client gave up waiting for %s after >8s; recording stall", id, dc, ws.host)
+			reportStall()
 		}
 		closeBoth()
 	}()
@@ -4259,6 +4454,22 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 			switch op {
 			case 2:
 				if len(payload) > 0 {
+					// Intercept 4-byte MTProto transport error from DC (e.g. -444 Invalid DC)
+					if atomic.LoadInt64(&downBytes) == 0 && len(payload) >= 4 && len(payload) <= 7 {
+						code := int32(binary.LittleEndian.Uint32(payload[:4]))
+						if code == -444 {
+							logf("conn #%d DC%d: upstream returned -444 (Invalid DC); suppressing from client", id, dc)
+							if guessedDC && targetIP != "" {
+								if alt := siblingDC(dc); alt != 0 {
+									learnDC(targetIP, alt, isMedia)
+									logf("conn #%d %s: remapped to sibling DC%d (was DC%d) after -444", id, targetIP, alt, dc)
+								}
+							}
+							closeBoth()
+							return
+						}
+					}
+					noteDown()
 					_ = c.SetWriteDeadline(time.Now().Add(15 * time.Second))
 					if readErr = writeFull(c, payload); readErr != nil {
 						logf("conn #%d DC%d write WSS->client finished: %v (up=%d down=%d)", id, dc, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
@@ -4363,6 +4574,7 @@ type wsConn struct {
 	mu         sync.Mutex
 	fragOpcode byte
 	fragData   []byte
+	isWorker   bool
 }
 
 var (
@@ -4821,7 +5033,7 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 	return nil
 }
 
-func pipeTCPToWSCount(src net.Conn, ws *wsConn, initial []byte, counter *int64, activity *atomic.Int64) error {
+func pipeTCPToWSCount(src net.Conn, ws *wsConn, initial []byte, counter *int64, activity *atomic.Int64, onWrite ...func(n int)) error {
 	framer, err := newMTProtoPacketFramer(initial)
 	if err != nil {
 		return err
@@ -4839,6 +5051,9 @@ func pipeTCPToWSCount(src net.Conn, ws *wsConn, initial []byte, counter *int64, 
 				atomic.AddInt64(counter, int64(n))
 			}
 			atomic.AddInt64(&trafficUpBytes, int64(n))
+			if len(onWrite) > 0 && onWrite[0] != nil {
+				onWrite[0](n)
+			}
 			if err := framer.feed(buf[:n], ws); err != nil {
 				return err
 			}
@@ -5430,7 +5645,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 	var candidates []dialCandidate
 	var deferCandidates []dialCandidate
 
-	// 1. Cloudflare Worker candidate (high priority if cfPriority, else deferred)
+	// 1. Cloudflare Worker candidate
 	if worker != "" {
 		workerHost := worker
 		dst := workerDstForDC(dc)
@@ -5445,8 +5660,19 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 				return dialCFWorker(c, dc, dst, workerHost, isTest)
 			},
 		}
-		if cfPriority {
-			candidates = append(candidates, candWorker)
+		if isWorkerInCooldown(workerHost, dc) {
+			deferCandidates = append(deferCandidates, candWorker)
+		} else if cfPriority {
+			// When CF front domains are available, do not start Worker ahead of
+			// them at 0ms. Putting Worker ahead causes it to always win at ~190ms
+			// and cancel stable fronts, risking mid-session stalls. Place Worker
+			// in deferCandidates so fronts are raced first, with Worker dialed
+			// seamlessly if fronts are slow or fail.
+			if len(cfDomainsCached()) > 0 {
+				deferCandidates = append(deferCandidates, candWorker)
+			} else {
+				candidates = append(candidates, candWorker)
+			}
 		} else {
 			deferCandidates = append(deferCandidates, candWorker)
 		}
@@ -6063,7 +6289,12 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 }
 
 func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
-	return finishTLSAndUpgrade(ctx, raw, host, path, false, helloIDs...)
+	ws, err := finishTLSAndUpgrade(ctx, raw, host, path, false, helloIDs...)
+	if err != nil {
+		return nil, err
+	}
+	ws.isWorker = true
+	return ws, nil
 }
 
 func workerDstForDC(dc int) string {
