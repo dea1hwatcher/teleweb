@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,11 +42,30 @@ func TestAPIRequestAllowed(t *testing.T) {
 	}
 }
 
-func TestWebUIHandlerRejectsCrossSite(t *testing.T) {
+func TestAPIPayloadFormats(t *testing.T) {
+	if got, err := apiPayload([]byte(` {"cmd":"status"} `)); err != nil || string(got) != `{"cmd":"status"}` {
+		t.Fatalf("raw JSON: got %q, err %v", got, err)
+	}
+	b64 := base64.StdEncoding.EncodeToString([]byte(`{"cmd":"status"}`))
+	if got, err := apiPayload([]byte(b64)); err != nil || string(got) != `{"cmd":"status"}` {
+		t.Fatalf("base64 payload: got %q, err %v", got, err)
+	}
+	if _, err := apiPayload(nil); err == nil {
+		t.Fatal("empty payload must be rejected")
+	}
+	if _, err := apiPayload([]byte("not-base64!!")); err == nil {
+		t.Fatal("garbage payload must be rejected")
+	}
+}
+
+func TestWebUIHandlerRejectsAndServes(t *testing.T) {
+	oldDir := baseDir
+	baseDir = t.TempDir()
+	t.Cleanup(func() { baseDir = oldDir })
 	handler := newWebUIHandler(http.NotFoundHandler())
 
-	post := func(host, origin string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "http://"+host+"/api", strings.NewReader("eyJjbWQiOiJzdGF0dXMifQ=="))
+	post := func(host, origin, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "http://"+host+"/api", strings.NewReader(body))
 		req.Host = host
 		if origin != "" {
 			req.Header.Set("Origin", origin)
@@ -55,10 +75,20 @@ func TestWebUIHandlerRejectsCrossSite(t *testing.T) {
 		return rec
 	}
 
-	if rec := post("127.0.0.1:17842", "https://attacker.example"); rec.Code != http.StatusForbidden {
+	// The bundled WebUI forwards the CLI bridge payload as base64.
+	b64 := base64.StdEncoding.EncodeToString([]byte(`{"cmd":"status"}`))
+	if rec := post("127.0.0.1:17842", "", b64); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("base64 status: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := post("127.0.0.1:17842", "", `{"cmd":"status"}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("raw JSON status: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Cross-site pages and DNS-rebinding hosts must not reach the API.
+	if rec := post("127.0.0.1:17842", "https://attacker.example", b64); rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin request: code=%d, want 403", rec.Code)
 	}
-	if rec := post("attacker.example:17842", ""); rec.Code != http.StatusForbidden {
+	if rec := post("attacker.example:17842", "", b64); rec.Code != http.StatusForbidden {
 		t.Fatalf("rebound host: code=%d, want 403", rec.Code)
 	}
 
