@@ -1783,6 +1783,43 @@ body.swiping .state::after {
        ======================================================================== -->
   <section class="page" id="page-routing" data-page="routing">
     <div class="stack">
+      <!-- Quick Presets -->
+      <div class="card" style="padding:14px 16px;margin-bottom:8px;">
+        <h2 class="subhead" style="margin-bottom:8px;">Быстрые профили в 1 клик</h2>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+          <button type="button" class="btn text" id="btnPresetEco" style="font-size:12px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+            <span>🔋 Эко</span>
+            <span style="font-size:10px;color:var(--outline);">Батарея</span>
+          </button>
+          <button type="button" class="btn text" id="btnPresetTurbo" style="font-size:12px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+            <span>🚀 Турбо</span>
+            <span style="font-size:10px;color:var(--outline);">H2 Медиа</span>
+          </button>
+          <button type="button" class="btn text" id="btnPresetBypass" style="font-size:12px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+            <span>🛡️ Обход</span>
+            <span style="font-size:10px;color:var(--outline);">Анти-блок</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Network Latency Diagnostic -->
+      <div class="card" style="padding:14px 16px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <h2 class="subhead" style="margin:0;">Сеть и задержка (RTT)</h2>
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="btn text" id="btnNetRenew" style="font-size:12px;padding:4px 8px;height:30px;min-height:30px;" title="Сменить IP сотовой вышки">
+              Сменить IP
+            </button>
+            <button type="button" class="btn text" id="btnTestLatency" style="font-size:12px;padding:4px 8px;height:30px;min-height:30px;">
+              Замер RTT
+            </button>
+          </div>
+        </div>
+        <div id="latencyResults" style="font-size:12px;color:var(--outline);display:flex;flex-direction:column;gap:6px;">
+          <div style="text-align:center;padding:6px 0;">Нажмите «Замер RTT» для проверки пинга или «Сменить IP» для ротации сотового адреса</div>
+        </div>
+      </div>
+
       <h2 class="subhead">Режим WebSocket & Cloudflare</h2>
       <div class="list">
         <!-- CF Priority -->
@@ -2179,13 +2216,18 @@ function labToRgb(lab) {
 
 const inGamut = rgb => rgb[0] >= -0.2 && rgb[0] <= 255.2 && rgb[1] >= -0.2 && rgb[1] <= 255.2 && rgb[2] >= -0.2 && rgb[2] <= 255.2;
 
-const CHROMA = { primary: 1, secondary: 0.34, tertiary: 0.55, neutral: 0.05, neutralVariant: 0.12, error: 0.9 };
+const CHROMA = { primary: 1, secondary: 0.45, tertiary: 0.65, neutral: 0.05, neutralVariant: 0.14, error: 0.85 };
 const TERTIARY_HUE = Math.PI / 3;
 
 function tone(lab, t, palette, hueShift) {
   const seedC = Math.hypot(lab[1], lab[2]);
-  const chroma = seedC < 0.4 ? 0 : seedC * CHROMA[palette];
+  let chroma = seedC < 0.4 ? 0 : seedC * CHROMA[palette];
   const hue = Math.atan2(lab[2], lab[1]) + (hueShift || 0);
+  const deg = ((hue * 180 / Math.PI) % 360 + 360) % 360;
+  if (t >= 85 && deg >= 70 && deg <= 130) {
+    const roll = Math.pow(Math.max(0, (100 - t) / 15), 0.85);
+    chroma *= (0.25 + 0.75 * roll);
+  }
   const at = s => labToRgb([t, Math.cos(hue) * chroma * s, Math.sin(hue) * chroma * s]);
   if (inGamut(at(1))) return rgbToHex.apply(null, at(1));
   let lo = 0, hi = 1;
@@ -2263,9 +2305,9 @@ function roles(seedHex, dark, amoled, monochrome) {
       R.surfaceDim = amoled ? '#000000' : '#131313'; R.surfaceBright = '#383838';
       R.surfaceContainerLowest = amoled ? '#000000' : '#0e0e0e';
       R.surfaceContainerLow = amoled ? '#141414' : '#1a1a1a';
-      R.surfaceContainer = amoled ? '#1c1c1c' : '#202020';
-      R.surfaceContainerHigh = amoled ? '#262626' : '#282828';
-      R.surfaceContainerHighest = amoled ? '#303030' : '#333333';
+      R.surfaceContainer = amoled ? '#1c1c1c' : '#222222';
+      R.surfaceContainerHigh = amoled ? '#262626' : '#2a2a2a';
+      R.surfaceContainerHighest = amoled ? '#303030' : '#353535';
       R.outline = '#8e8e8e'; R.outlineVariant = '#444444';
       R.inverseSurface = '#e2e2e2'; R.inverseOnSurface = '#1b1b1b';
       R.inversePrimary = '#000000';
@@ -2284,9 +2326,9 @@ function roles(seedHex, dark, amoled, monochrome) {
       R.surfaceDim = amoled ? '#000000' : p(6, 'neutral'); R.surfaceBright = p(24, 'neutral');
       R.surfaceContainerLowest = amoled ? '#000000' : p(4, 'neutral');
       R.surfaceContainerLow = amoled ? p(11, 'neutralVariant') : p(10, 'neutral');
-      R.surfaceContainer = amoled ? p(14, 'neutralVariant') : p(12, 'neutral');
-      R.surfaceContainerHigh = amoled ? p(18, 'neutralVariant') : p(17, 'neutral');
-      R.surfaceContainerHighest = amoled ? p(23, 'neutralVariant') : p(22, 'neutral');
+      R.surfaceContainer = amoled ? p(15, 'neutralVariant') : p(14, 'neutral');
+      R.surfaceContainerHigh = amoled ? p(20, 'neutralVariant') : p(19, 'neutral');
+      R.surfaceContainerHighest = amoled ? p(26, 'neutralVariant') : p(24, 'neutral');
       R.outline = p(60, 'neutralVariant'); R.outlineVariant = p(30, 'neutralVariant');
       R.inverseSurface = p(90, 'neutral'); R.inverseOnSurface = p(20, 'neutral');
       R.inversePrimary = p(40);
@@ -2349,7 +2391,14 @@ function roles(seedHex, dark, amoled, monochrome) {
     tertiaryFixed: isMono ? '#e8e8e8' : p(90, 'tertiary', TERTIARY_HUE),
     tertiaryFixedDim: isMono ? '#d0d0d0' : p(80, 'tertiary', TERTIARY_HUE),
     onTertiaryFixed: isMono ? '#1b1b1b' : p(10, 'tertiary', TERTIARY_HUE),
-    onTertiaryFixedVariant: isMono ? '#3a3a3a' : p(30, 'tertiary', TERTIARY_HUE)
+    onTertiaryFixedVariant: isMono ? '#3a3a3a' : p(30, 'tertiary', TERTIARY_HUE),
+    errorFixed: isMono ? '#e2e2e2' : e(90),
+    errorFixedDim: isMono ? '#c6c6c6' : e(80),
+    onErrorFixed: isMono ? '#181818' : e(10),
+    onErrorFixedVariant: isMono ? '#444444' : e(30),
+    surfaceTint: isMono ? (dark ? '#ffffff' : '#000000') : (dark ? p(80) : p(40)),
+    shadow: '#000000',
+    scrim: '#000000'
   };
   Object.assign(R, fixed);
   return R;
@@ -2370,6 +2419,9 @@ const ROLE_VAR = {
   onTertiaryFixed: '--md-sys-color-on-tertiary-fixed', onTertiaryFixedVariant: '--md-sys-color-on-tertiary-fixed-variant',
   error: '--md-sys-color-error', onError: '--md-sys-color-on-error',
   errorContainer: '--md-sys-color-error-container', onErrorContainer: '--md-sys-color-on-error-container',
+  errorFixed: '--md-sys-color-error-fixed', errorFixedDim: '--md-sys-color-error-fixed-dim',
+  onErrorFixed: '--md-sys-color-on-error-fixed', onErrorFixedVariant: '--md-sys-color-on-error-fixed-variant',
+  surfaceTint: '--md-sys-color-surface-tint', shadow: '--md-sys-color-shadow', scrim: '--md-sys-color-scrim',
   background: '--md-sys-color-background', onBackground: '--md-sys-color-on-background',
   surface: '--md-sys-color-surface', onSurface: '--md-sys-color-on-surface',
   surfaceVariant: '--md-sys-color-surface-variant', onSurfaceVariant: '--md-sys-color-on-surface-variant',
@@ -2915,8 +2967,17 @@ function b64(s) {
   return btoa(bin);
 }
 
+function getRootBridge() {
+  if (typeof window.ksu !== "undefined" && typeof window.ksu.exec === "function") return window.ksu;
+  if (typeof window.KernelSU !== "undefined" && typeof window.KernelSU.exec === "function") return window.KernelSU;
+  if (typeof window.apatch !== "undefined" && typeof window.apatch.exec === "function") return window.apatch;
+  if (typeof window.mmrl !== "undefined" && typeof window.mmrl.exec === "function") return window.mmrl;
+  if (typeof window.magisk !== "undefined" && typeof window.magisk.exec === "function") return window.magisk;
+  return null;
+}
+
 function hasBridge() {
-  return typeof window.ksu !== "undefined" && typeof ksu.exec === "function";
+  return !!getRootBridge();
 }
 
 // Desktop (Windows/Linux) serves this UI over loopback and bridges commands to
@@ -2941,10 +3002,11 @@ async function desktopExec(cmd) {
   return { errno: 0, stdout: "", stderr: "" };
 }
 
-// Native Bridge Command Executor
+// Native Bridge Command Executor (compatible with KernelSU, APatch, MMRL, Magisk)
 function kexec(cmd) {
   return new Promise((resolve, reject) => {
-    if (!hasBridge()) {
+    const bridge = getRootBridge();
+    if (!bridge) {
       if (hasDesktopBridge()) {
         desktopExec(cmd).then(resolve).catch(reject);
         return;
@@ -2955,15 +3017,34 @@ function kexec(cmd) {
     const cb = "tw_" + Math.random().toString(36).slice(2);
     let done = false;
     window[cb] = (errno, stdout, stderr) => {
+      if (done) return;
       done = true;
       delete window[cb];
-      resolve({ errno, stdout: stdout || "", stderr: stderr || "" });
+      resolve({ errno: typeof errno === "number" ? errno : 0, stdout: stdout || "", stderr: stderr || "" });
     };
     try {
-      ksu.exec(cmd, "{}", cb);
+      // 1. Primary: KernelSU / APatch signature exec(cmd, cbName)
+      const res = bridge.exec(cmd, cb);
+      // Handle Promise-based bridges (MMRL or modern wrappers)
+      if (res && typeof res.then === "function") {
+        res.then(out => {
+          if (!done) {
+            done = true;
+            delete window[cb];
+            resolve(typeof out === "object" ? out : { errno: 0, stdout: String(out || ""), stderr: "" });
+          }
+        }).catch(err => {
+          if (!done) {
+            done = true;
+            delete window[cb];
+            reject(err);
+          }
+        });
+      }
     } catch (e) {
       try {
-        ksu.exec(cmd, cb);
+        // 2. Legacy fallback: exec(cmd, "{}", cbName)
+        bridge.exec(cmd, "{}", cb);
       } catch (e2) {
         delete window[cb];
         reject(e2);
@@ -3667,6 +3748,163 @@ $("saveConfigBtn").addEventListener("click", async () => {
   }
   render();
 });
+
+// Quick Presets Handlers
+async function applyRoutingPreset(name, cfg) {
+  if (busy) return;
+  haptic(16);
+  busy = true;
+  try {
+    state = await api("setConfig", cfg);
+    toast("Профиль «" + name + "» применён!");
+    if ($("swCFPriority")) $("swCFPriority").checked = !!cfg.cfPriority;
+    if ($("swCFBalance")) $("swCFBalance").checked = !!cfg.cfBalance;
+    if ($("swDoH")) $("swDoH").checked = !!cfg.dohEnabled;
+    if ($("swH2Media")) $("swH2Media").checked = !!cfg.h2MediaEnabled;
+    if ($("swDC203") && cfg.dc203DirectTcp !== undefined) $("swDC203").checked = !!cfg.dc203DirectTcp;
+    if ($("selectPoolSize") && cfg.poolSize) $("selectPoolSize").value = String(cfg.poolSize);
+  } catch (err) {
+    toast("Ошибка: " + err.message);
+  } finally {
+    busy = false;
+    render();
+  }
+}
+
+if ($("btnPresetEco")) {
+  $("btnPresetEco").addEventListener("click", () => {
+    applyRoutingPreset("Энергосбережение", {
+      cfPriority: false,
+      cfBalance: false,
+      dohEnabled: true,
+      h2MediaEnabled: false,
+      dc203DirectTcp: true,
+      poolSize: 1
+    });
+  });
+}
+
+if ($("btnPresetTurbo")) {
+  $("btnPresetTurbo").addEventListener("click", () => {
+    applyRoutingPreset("Турбо / Медиа", {
+      cfPriority: true,
+      cfBalance: true,
+      dohEnabled: true,
+      h2MediaEnabled: true,
+      dc203DirectTcp: true,
+      poolSize: 4
+    });
+  });
+}
+
+if ($("btnPresetBypass")) {
+  $("btnPresetBypass").addEventListener("click", () => {
+    applyRoutingPreset("Анти-блокировка", {
+      cfPriority: true,
+      cfBalance: true,
+      dohEnabled: true,
+      h2MediaEnabled: true,
+      dc203DirectTcp: true,
+      poolSize: 2
+    });
+  });
+}
+
+// Network Latency Measurement Handler
+if ($("btnTestLatency")) {
+  $("btnTestLatency").addEventListener("click", async () => {
+    const btn = $("btnTestLatency");
+    const container = $("latencyResults");
+    if (!container) return;
+    haptic(12);
+    btn.disabled = true;
+    btn.textContent = "Замер…";
+    container.innerHTML = '<div style="text-align:center;padding:8px 0;color:var(--primary);">Выполняется замер RTT до узлов…</div>';
+
+    try {
+      const res = await kexec("sh /data/adb/modules/teleweb/action.sh ping 2>/dev/null || sh /data/adb/modules_update/teleweb/action.sh ping 2>/dev/null");
+      const raw = (res.stdout || "").trim();
+      const lines = raw.split("\n").filter(l => l.indexOf("===") < 0 && l.trim().length > 0);
+
+      if (lines.length === 0) {
+        container.innerHTML = '<div style="text-align:center;padding:6px 0;color:var(--error);">Нет данных пинга</div>';
+        return;
+      }
+
+      let html = "";
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          const host = parts[0];
+          const val = parts.slice(1).join(" ");
+          const msMatch = /(\d+)\s*ms/.exec(val);
+          let badgeColor = "var(--outline)";
+          let badgeBg = "rgba(128,128,128,0.15)";
+
+          if (msMatch) {
+            const ms = parseInt(msMatch[1], 10);
+            if (ms < 70) {
+              badgeColor = "#4caf50";
+              badgeBg = "rgba(76,175,80,0.15)";
+            } else if (ms < 160) {
+              badgeColor = "#ff9800";
+              badgeBg = "rgba(255,152,0,0.15)";
+            } else {
+              badgeColor = "#f44336";
+              badgeBg = "rgba(244,67,54,0.15)";
+            }
+          } else if (val.indexOf("timeout") >= 0 || val.indexOf("❌") >= 0) {
+            badgeColor = "#f44336";
+            badgeBg = "rgba(244,67,54,0.15)";
+          }
+
+          html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;">' +
+                  '<span>' + esc(host) + '</span>' +
+                  '<span style="padding:2px 8px;border-radius:8px;font-weight:600;font-size:11px;background:' + badgeBg + ';color:' + badgeColor + ';">' + esc(val) + '</span>' +
+                  '</div>';
+        }
+      }
+      container.innerHTML = html;
+    } catch (err) {
+      container.innerHTML = '<div style="text-align:center;padding:6px 0;color:var(--error);">' + esc(err.message || "Ошибка замера") + '</div>';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Замер RTT";
+    }
+  });
+}
+
+if ($("btnNetRenew")) {
+  $("btnNetRenew").addEventListener("click", async () => {
+    const btn = $("btnNetRenew");
+    haptic(15);
+    btn.disabled = true;
+    btn.textContent = "Смена IP…";
+    toast("Запрос смены IP от вышки сотовой связи…");
+    try {
+      let res;
+      if (hasBridge()) {
+        res = await kexec("sh /data/adb/modules/teleweb/action.sh net-renew 2>/dev/null || sh /data/adb/modules_update/teleweb/action.sh net-renew 2>/dev/null");
+      } else {
+        const r = await fetch("/api", { method: "POST", body: b64(JSON.stringify({ cmd: "netRenew" })) });
+        res = await r.json();
+      }
+      const out = (res.stdout || res.output || (res.data && res.data.output) || "").trim();
+      if (out.indexOf("успешно") >= 0 || out.indexOf("Новый IP") >= 0 || (res.ok && !res.error)) {
+        toast("Внешний IP мобильной сети обновлён! ✅");
+      } else if (res.error) {
+        toast("Ошибка: " + res.error);
+      } else {
+        toast("Запрос обновления IP отправлен");
+      }
+    } catch (e) {
+      toast("Ошибка: " + (e.message || "сбой"));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Сменить IP";
+    }
+  });
+}
 
 // Log Action: Copy
 $("btn-copy-logs").addEventListener("click", async () => {
