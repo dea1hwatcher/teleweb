@@ -4155,3 +4155,109 @@ func TestIPv6RulesInstalledTracking(t *testing.T) {
 		t.Fatalf("expected ip6RulesFailed to be set on missing rules")
 	}
 }
+
+func TestSweepRouteCaches_DomainLastPoPEviction(t *testing.T) {
+	activeDomains := cfDomainsCached()
+	if len(activeDomains) == 0 {
+		t.Skip("no active cf domains cached to test eviction against")
+	}
+	validDomain := activeDomains[0]
+	staleDomain := "obsolete-stale-domain-12345.example"
+
+	domainLastPoP.Store(validDomain, "FRA")
+	domainLastPoP.Store(staleDomain, "DME")
+	defer domainLastPoP.Delete(validDomain)
+	defer domainLastPoP.Delete(staleDomain)
+
+	sweepRouteCaches()
+
+	if _, ok := domainLastPoP.Load(staleDomain); ok {
+		t.Errorf("expected stale domain %s to be evicted by sweepRouteCaches", staleDomain)
+	}
+	if pop, ok := domainLastPoP.Load(validDomain); !ok || pop != "FRA" {
+		t.Errorf("expected active domain %s with PoP FRA to remain, got %v", validDomain, pop)
+	}
+}
+
+func TestDispatchH2Post_BufferIsolation(t *testing.T) {
+	oldPost := h2PostFn
+	defer func() { h2PostFn = oldPost }()
+
+	received := make(chan []byte, 1)
+	h2PostFn = func(ctx context.Context, client *http.Client, apiURL, host string, body []byte) []byte {
+		received <- body
+		return []byte("ok")
+	}
+
+	h2InFlight := make(chan struct{}, 4)
+	replyCh := make(chan h2Reply, 4)
+	buf := []byte{0xAA, 0xBB, 0xCC, 0xDD}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if !dispatchH2Post(h2InFlight, ctx, nil, "https://kws.example/api", "kws.example", replyCh, 1, buf) {
+		t.Fatal("dispatchH2Post failed")
+	}
+
+	// Mutate caller's buffer immediately after dispatch
+	buf[0] = 0x00
+	buf[1] = 0x00
+
+	select {
+	case got := <-received:
+		if got[0] != 0xAA || got[1] != 0xBB {
+			t.Fatalf("buffer was not isolated, got mutated bytes: %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for h2PostFn execution")
+	}
+}
+
+type mockConnWithKeepAlive struct {
+	net.Conn
+	noDelay         bool
+	readBuf         int
+	writeBuf        int
+	keepAlive       bool
+	keepAlivePeriod time.Duration
+}
+
+func (m *mockConnWithKeepAlive) SetNoDelay(b bool) error {
+	m.noDelay = b
+	return nil
+}
+func (m *mockConnWithKeepAlive) SetReadBuffer(sz int) error {
+	m.readBuf = sz
+	return nil
+}
+func (m *mockConnWithKeepAlive) SetWriteBuffer(sz int) error {
+	m.writeBuf = sz
+	return nil
+}
+func (m *mockConnWithKeepAlive) SetKeepAlive(b bool) error {
+	m.keepAlive = b
+	return nil
+}
+func (m *mockConnWithKeepAlive) SetKeepAlivePeriod(d time.Duration) error {
+	m.keepAlivePeriod = d
+	return nil
+}
+
+func TestSetConnSockOpts_KeepAlive(t *testing.T) {
+	mock := &mockConnWithKeepAlive{}
+	setConnSockOpts(mock)
+
+	if !mock.noDelay {
+		t.Error("expected SetNoDelay(true)")
+	}
+	if mock.readBuf != 256*1024 || mock.writeBuf != 256*1024 {
+		t.Errorf("expected 256KB read/write buffers, got read=%d write=%d", mock.readBuf, mock.writeBuf)
+	}
+	if !mock.keepAlive {
+		t.Error("expected SetKeepAlive(true)")
+	}
+	if mock.keepAlivePeriod != 30*time.Second {
+		t.Errorf("expected 30s KeepAlivePeriod, got %v", mock.keepAlivePeriod)
+	}
+}

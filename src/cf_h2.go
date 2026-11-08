@@ -260,11 +260,12 @@ func dispatchH2Post(h2InFlight chan struct{}, bridgeCtx context.Context, client 
 	case <-bridgeCtx.Done():
 		return false
 	}
+	bodyCopy := append([]byte(nil), body...)
 	go func() {
 		defer func() { <-h2InFlight }()
 		postCtx, postCancel := context.WithTimeout(bridgeCtx, 15*time.Second)
 		defer postCancel()
-		data := h2PostFn(postCtx, client, apiURL, host, body)
+		data := h2PostFn(postCtx, client, apiURL, host, bodyCopy)
 		select {
 		case replyCh <- h2Reply{seq: seq, data: data}:
 		case <-bridgeCtx.Done():
