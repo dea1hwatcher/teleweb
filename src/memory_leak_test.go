@@ -555,7 +555,7 @@ func TestPipeWSTunnelRoundTrip(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pipeWSTunnel(clientConn, ws, init, 1, 1, false)
+		pipeWSTunnel(clientConn, ws, init, 1, 1, false, "", false)
 	}()
 
 	// Emulate the Telegram client: two abridged packets back to back. The

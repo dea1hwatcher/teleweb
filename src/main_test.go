@@ -4261,3 +4261,260 @@ func TestSetConnSockOpts_KeepAlive(t *testing.T) {
 		t.Errorf("expected 30s KeepAlivePeriod, got %v", mock.keepAlivePeriod)
 	}
 }
+
+func TestDCFor_DC4CollisionsInDC2Block(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want int
+	}{
+		{"149.154.167.43", 4},
+		{"149.154.167.91", 4},
+		{"149.154.167.92", 4},
+		{"149.154.167.255", 4},
+		{"149.154.167.50", 2},
+		{"149.154.167.51", 2},
+	}
+	for _, tc := range cases {
+		addr := netip.MustParseAddr(tc.ip)
+		got := dcFor(addr)
+		if got != tc.want {
+			t.Errorf("dcFor(%s) = %d, want %d", tc.ip, got, tc.want)
+		}
+	}
+}
+
+func TestSiblingDC(t *testing.T) {
+	tests := []struct {
+		dc   int
+		want int
+	}{
+		{1, 3},
+		{3, 1},
+		{2, 4},
+		{4, 2},
+		{5, 0},
+		{203, 0},
+	}
+	for _, tt := range tests {
+		if got := siblingDC(tt.dc); got != tt.want {
+			t.Errorf("siblingDC(%d) = %d, want %d", tt.dc, got, tt.want)
+		}
+	}
+}
+
+func TestWorkerSilentStall_StrikeAndCooldown(t *testing.T) {
+	host := "stall-test-worker.example.workers.dev"
+	dc := 2
+	clearWorkerCooldown(host, dc)
+	defer clearWorkerCooldown(host, dc)
+
+	if isWorkerInCooldown(host, dc) {
+		t.Fatal("expected worker not in cooldown initially")
+	}
+
+	// Strike 1
+	recordWorkerStall(host, dc)
+	if isWorkerInCooldown(host, dc) {
+		t.Fatal("worker should not be in cooldown after only 1 strike")
+	}
+
+	// Strike 2 within 5 minutes -> triggers cooldown
+	recordWorkerStall(host, dc)
+	if !isWorkerInCooldown(host, dc) {
+		t.Fatal("worker must be in cooldown after 2 strikes")
+	}
+}
+
+func TestPipeWSTunnel_InterceptMinus444_SiblingRemap(t *testing.T) {
+	targetIP := "149.154.167.43"
+	learnedDCs.Delete(targetIP)
+	defer learnedDCs.Delete(targetIP)
+
+	clientConn, proxyClient := net.Pipe()
+	defer clientConn.Close()
+	defer proxyClient.Close()
+
+	serverConn, proxyServer := net.Pipe()
+	defer serverConn.Close()
+	defer proxyServer.Close()
+
+	// Drain frames written by proxyServer so writes never block in net.Pipe
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	ws := &wsConn{
+		conn: proxyServer,
+		r:    bufio.NewReader(proxyServer),
+		host: "test-cf-domain.invalid",
+	}
+
+	guessedDC := 2 // Guessed DC2 for DC4 IP
+	init := make([]byte, 64)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeWSTunnel(proxyClient, ws, init, 999, guessedDC, false, targetIP, true)
+	}()
+
+	// Upstream sends 4-byte -444 error frame (0xfffffe44)
+	minus444Payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(minus444Payload, 0xfffffe44)
+	wsServer := &wsConn{conn: serverConn, r: bufio.NewReader(serverConn), host: "srv"}
+	if err := wsServer.writeFrame(2, minus444Payload); err != nil {
+		t.Fatalf("writeFrame error: %v", err)
+	}
+
+	// The frame must NOT be forwarded to clientConn; clientConn should see EOF on close
+	clientBuf := make([]byte, 16)
+	_ = clientConn.SetReadDeadline(time.Now().Add(1000 * time.Millisecond))
+	n, readErr := clientConn.Read(clientBuf)
+	if n != 0 {
+		t.Fatalf("expected 0 bytes to client, got %d bytes: %v", n, clientBuf[:n])
+	}
+	if readErr == nil {
+		t.Fatal("expected EOF on client after suppression of -444, got nil error")
+	}
+
+	<-done
+
+	// Verify targetIP was remapped to sibling DC4
+	gotDC, _, ok := lookupLearnedDC(targetIP)
+	if !ok || gotDC != 4 {
+		t.Errorf("expected targetIP %s remapped to DC4, got dc=%d ok=%t", targetIP, gotDC, ok)
+	}
+}
+
+func TestWsPool_WorkerMaxAge45s(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	p := newWsPool(ctx, 1)
+	slot := poolSlot{dc: 2, isMedia: false, isTest: false}
+	q, _ := p.getQueue(slot)
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	workerWS := &wsConn{
+		conn:     c1,
+		r:        bufio.NewReader(c1),
+		host:     "worker.invalid",
+		isWorker: true,
+	}
+
+	// Insert entry created 50 seconds ago (> 45s, but < 90s)
+	q <- &poolEntry{
+		ws:        workerWS,
+		createdAt: time.Now().Add(-50 * time.Second),
+	}
+
+	// Worker entry should be expired and discarded
+	got := p.Get(2, false, false)
+	if got != nil {
+		t.Fatalf("expected expired worker entry to be discarded, got %v", got)
+	}
+}
+
+func TestPipeWSTunnel_WorkerSilentStall_ClosesAndStrikes(t *testing.T) {
+	prevClose, prevDue, prevGaveUp := getRelayStallClose(), getRelayAnswerDue(), getRelayGaveUpWithin()
+	setRelayStallTimeouts(50*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond)
+	t.Cleanup(func() {
+		setRelayStallTimeouts(prevClose, prevDue, prevGaveUp)
+	})
+
+	workerHost := "stall-active-worker.workers.dev"
+	dc := 2
+	clearWorkerCooldown(workerHost, dc)
+	defer clearWorkerCooldown(workerHost, dc)
+
+	clientConn, proxyClient := net.Pipe()
+	defer clientConn.Close()
+	defer proxyClient.Close()
+
+	serverConn, proxyServer := net.Pipe()
+	defer serverConn.Close()
+	defer proxyServer.Close()
+
+	// Drain frames written by proxyServer so writes never block in net.Pipe
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	ws := &wsConn{
+		conn:     proxyServer,
+		r:        bufio.NewReader(proxyServer),
+		host:     workerHost,
+		isWorker: true,
+	}
+
+	// Prepare valid abridged MTProto init
+	init := make([]byte, 64)
+	for i := 0; i < 56; i++ {
+		init[i] = byte(i + 1)
+	}
+	block, err := aes.NewCipher(init[8:40])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctr := cipher.NewCTR(block, init[40:56])
+	ctr.XORKeyStream(make([]byte, 56), make([]byte, 56))
+	plainTail := make([]byte, 8)
+	binary.LittleEndian.PutUint32(plainTail[:4], 0xEFEFEFEF)
+	plainTail[4], plainTail[5] = 0x02, 0x00
+	ctr.XORKeyStream(init[56:], plainTail)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeWSTunnel(proxyClient, ws, init, 1001, dc, false, "149.154.167.50", false)
+	}()
+
+	// Telegram client encrypts data with stream matching init
+	clientCTR := cipher.NewCTR(block, init[40:56])
+	clientCTR.XORKeyStream(make([]byte, 64), make([]byte, 64))
+
+	// Send 2 abridged packets (each 1 length byte + 4*4 = 16 bytes = 17 bytes total)
+	pkt1 := make([]byte, 17)
+	pkt1[0] = 4
+	encPkt1 := make([]byte, 17)
+	clientCTR.XORKeyStream(encPkt1, pkt1)
+	_, _ = clientConn.Write(encPkt1)
+
+	time.Sleep(15 * time.Millisecond)
+
+	pkt2 := make([]byte, 17)
+	pkt2[0] = 4
+	encPkt2 := make([]byte, 17)
+	clientCTR.XORKeyStream(encPkt2, pkt2)
+	_, _ = clientConn.Write(encPkt2)
+
+	// Server sends NOTHING (silent stall).
+	// Relay must detect stall after ~50ms and close both ends.
+	select {
+	case <-done:
+		// Succeeded: relay terminated automatically due to stall
+	case <-time.After(1 * time.Second):
+		t.Fatal("pipeWSTunnel failed to detect worker silent stall within deadline")
+	}
+
+	// Verify worker strike was recorded
+	workerStrikesMu.Lock()
+	st, had := workerStrikes[workerCooldownKey(workerHost, dc)]
+	workerStrikesMu.Unlock()
+	if !had || st.count != 1 {
+		t.Fatalf("expected 1 strike recorded for worker %s, got had=%t count=%d", workerHost, had, st.count)
+	}
+}
