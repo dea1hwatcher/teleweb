@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -56,12 +59,12 @@ func newWebUIHandler(static http.Handler) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		payload := strings.TrimSpace(string(body))
-		if payload == "" {
-			http.Error(w, "empty payload", http.StatusBadRequest)
+		payload, err := apiPayload(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		out, err := executeAPIPayload(payload)
+		out, err := executeAPIPayload(string(payload))
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil && len(out) == 0 {
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error())))
@@ -102,6 +105,23 @@ func loopbackName(hostport string) bool {
 	}
 	host = strings.Trim(host, "[]")
 	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+// apiPayload accepts both a raw JSON body (curl, scripts) and the base64 form
+// the bundled WebUI forwards from its CLI bridge command.
+func apiPayload(body []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, errors.New("empty payload")
+	}
+	if trimmed[0] == '{' {
+		return trimmed, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(string(trimmed))
+	if err != nil {
+		return nil, fmt.Errorf("payload must be JSON or base64-encoded JSON: %w", err)
+	}
+	return decoded, nil
 }
 
 func findWebroot() string {
