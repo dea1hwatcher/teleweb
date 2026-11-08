@@ -103,17 +103,21 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 			return
 		}
 		domainStr := string(name)
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		ips, err := systemDNSResolver().LookupNetIP(ctx, "ip", domainStr)
-		cancel()
-		if err != nil || len(ips) == 0 {
-			_, _ = c.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0}) // host unreachable
-			return
-		}
-		ip = ips[0].Unmap()
 		if isTelegramDomain(domainStr) {
 			isDomainAllowed = true
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			ips, err := systemDNSResolver().LookupNetIP(ctx, "ip", domainStr)
+			cancel()
+			if err != nil || len(ips) == 0 {
+				_, _ = c.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0}) // host unreachable
+				return
+			}
+			ip = ips[0].Unmap()
+		} else if parsedIP, err := netip.ParseAddr(domainStr); err == nil {
+			ip = parsedIP.Unmap()
 		}
+		// When domainStr is not a Telegram domain and not a literal IP, ip remains
+		// the zero value and DNS is NOT queried. The check below reads port and rejects it.
 	case 4:
 		var b [16]byte
 		if _, err := io.ReadFull(c, b[:]); err != nil {

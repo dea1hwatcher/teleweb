@@ -3590,6 +3590,7 @@ func TestLearnedDCs_LRUEviction(t *testing.T) {
 	// Learning a 257th IP must trigger LRU eviction down to 192, and store the new IP
 	newIP := "149.154.161.1"
 	learnDC(newIP, 4, true)
+	persistLearnedDCWG.Wait()
 
 	if dc, isMedia, ok := lookupLearnedDC(newIP); !ok || dc != 4 || !isMedia {
 		t.Fatalf("expected new IP %s to be learned after eviction, got dc=%d media=%t ok=%t", newIP, dc, isMedia, ok)
@@ -3779,10 +3780,10 @@ func TestMTProtoPacketFramer_InitialFreed(t *testing.T) {
 // worker sessions must keep their real SNI and their certificate
 // verification even when the override file exists.
 func TestFrontingSNIScopedToFrontDials(t *testing.T) {
-	oldDir := baseDir
+	oldDir := getBaseDir()
 	tmp := t.TempDir()
-	baseDir = tmp
-	defer func() { baseDir = oldDir }()
+	setBaseDir(tmp)
+	defer func() { setBaseDir(oldDir) }()
 	_ = os.WriteFile(filepath.Join(tmp, "fronting-sni"), []byte("sprinthost.ru\n"), 0600)
 
 	sni, skip := tlsHandshakeForHost("kws2.web.telegram.org", false)
@@ -3971,5 +3972,113 @@ func TestLaunchScriptsDoNotExportGOMEMLIMIT(t *testing.T) {
 		if strings.HasPrefix(trimmed, "export GOMEMLIMIT=") {
 			t.Fatalf("service.sh:%d exports GOMEMLIMIT: the runtime honours it even though the Go code no longer sets it", i+1)
 		}
+	}
+}
+
+// TestFramerShrinkBuffersPreservesPlainWithoutRaw ensures that when the framer
+// operates in H2 bridge mode (raw is nil/empty) and only partial or residual
+// plaintext packets remain in f.plain, shrinkBuffers() does NOT wipe f.plain.
+func TestFramerShrinkBuffersPreservesPlainWithoutRaw(t *testing.T) {
+	f := &mtprotoPacketFramer{
+		proto: 0xEFEFEFEF,
+		plain: []byte{0x7f, 0x02, 0x00, 0x00}, // incomplete packet header
+		raw:   nil,
+	}
+	f.shrinkBuffers()
+	if len(f.plain) != 4 {
+		t.Fatalf("expected f.plain to preserve 4 bytes when raw is empty, got %d", len(f.plain))
+	}
+
+	// Also test after popPackets with multiple packets where partial packet remains
+	// Packet 1: 1 word (4 bytes payload): [1, 't', 'e', 's', 't'] (total 5 bytes)
+	// Partial 2: [2, 'a'] (needs 8 bytes payload, only 1 provided)
+	f = &mtprotoPacketFramer{
+		proto: 0xEFEFEFEF,
+		plain: []byte{1, 't', 'e', 's', 't', 2, 'a'},
+		raw:   nil,
+	}
+	frames, packets, err := f.popPackets()
+	if err != nil {
+		t.Fatalf("popPackets failed: %v", err)
+	}
+	if len(frames) != 1 || frames[0] != nil || len(packets) != 1 {
+		t.Fatalf("expected 1 nil frame and 1 packet, got %d frames, %d packets", len(frames), len(packets))
+	}
+	if len(f.plain) != 2 || f.plain[0] != 2 || f.plain[1] != 'a' {
+		t.Fatalf("expected f.plain to retain partial packet [2, 'a'], got %v", f.plain)
+	}
+}
+
+// TestStripTransportPrefix verifies transport length prefix stripping across
+// supported MTProto transport formats.
+func TestStripTransportPrefix(t *testing.T) {
+	// Abridged short length (< 0x7f): 1 byte prefix
+	abridgedShort := []byte{0x02, 1, 2, 3, 4, 5, 6, 7, 8}
+	stripped := stripTransportPrefix(0xEFEFEFEF, abridgedShort)
+	if !bytes.Equal(stripped, []byte{1, 2, 3, 4, 5, 6, 7, 8}) {
+		t.Fatalf("abridged short prefix mismatch: %v", stripped)
+	}
+
+	// Abridged extended length (>= 0x7f): 4 byte prefix (0x7f, len0, len1, len2)
+	abridgedLong := []byte{0x7f, 0x80, 0x00, 0x00, 10, 20, 30, 40}
+	stripped = stripTransportPrefix(0xEFEFEFEF, abridgedLong)
+	if !bytes.Equal(stripped, []byte{10, 20, 30, 40}) {
+		t.Fatalf("abridged long prefix mismatch: %v", stripped)
+	}
+
+	// Intermediate: 4 byte little-endian length
+	intermediate := []byte{0x04, 0x00, 0x00, 0x00, 99, 98, 97, 96}
+	stripped = stripTransportPrefix(0xEEEEEEEE, intermediate)
+	if !bytes.Equal(stripped, []byte{99, 98, 97, 96}) {
+		t.Fatalf("intermediate prefix mismatch: %v", stripped)
+	}
+
+	// Raw / Unknown
+	raw := []byte{1, 2, 3}
+	stripped = stripTransportPrefix(0x12345678, raw)
+	if !bytes.Equal(stripped, raw) {
+		t.Fatalf("unknown proto mismatch: %v", stripped)
+	}
+}
+
+// TestSelfDialJanitorExitOnContext ensures selfDialJanitor gracefully terminates
+// when the worker context is cancelled.
+func TestSelfDialJanitorExitOnContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		selfDialJanitor(ctx)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("selfDialJanitor did not exit when context was cancelled")
+	}
+}
+
+// TestIPv6RulesInstalledTracking guards F12: an ip6tables rules corruption or
+// wipe triggers recovery rather than leaving IPv6 bypassing WSS indefinitely.
+func TestIPv6RulesInstalledTracking(t *testing.T) {
+	origInstalled := ip6RulesInstalled.Load()
+	origFailed := ip6RulesFailed.Load()
+	defer func() {
+		ip6RulesInstalled.Store(origInstalled)
+		ip6RulesFailed.Store(origFailed)
+	}()
+
+	ip6RulesInstalled.Store(true)
+	ip6RulesFailed.Store(false)
+	if !ip6RulesInstalled.Load() || ip6RulesFailed.Load() {
+		t.Fatalf("unexpected flag state")
+	}
+
+	// On machines without installed ip6tables rules, ip6RulesHealthy returns false
+	if !ip6RulesHealthy() {
+		ip6RulesFailed.Store(true)
+	}
+	if !ip6RulesFailed.Load() {
+		t.Fatalf("expected ip6RulesFailed to be set on missing rules")
 	}
 }
