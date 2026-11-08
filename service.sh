@@ -15,40 +15,7 @@ case "$MODDIR" in
     ;;
 esac
 
-update_description() { # running | stopped | error
-  local prop=""
-  if [ -d "/data/adb/modules/teleweb" ]; then
-    prop="/data/adb/modules/teleweb/module.prop"
-  elif [ -d "$MODDIR" ]; then
-    prop="$MODDIR/module.prop"
-  fi
-  [ -f "$prop" ] && [ -w "$prop" ] || return 0
-
-  local d=""
-  case "$1" in
-    running|active)
-      d="status: active ✅ | WSS · DC1-DC5" ;;
-    error|failed)
-      d="status: failed ⚠️" ;;
-    *)
-      d="status: disabled ❌" ;;
-  esac
-
-  local desc_current
-  desc_current=$(grep "^description=" "$prop" 2>/dev/null)
-  if [ "$desc_current" = "description=$d" ]; then
-    return 0
-  fi
-
-  local tmp="/data/adb/teleweb/module.prop.$$"
-  if awk -v d="$d" 'BEGIN { done = 0 } /^description=/ { print "description=" d; done = 1; next } { print }
-    END { if (!done) print "description=" d }' "$prop" > "$tmp" 2>/dev/null; then
-    chmod 0644 "$tmp" 2>/dev/null
-    mv -f "$tmp" "$prop" 2>/dev/null
-  fi
-  rm -f "$tmp" 2>/dev/null
-  return 0
-}
+. "$MODDIR/lib.sh"
 
 if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
   update_description stopped
@@ -56,41 +23,71 @@ if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
 fi
 
 umask 077
-mkdir -p /data/adb/teleweb
-chmod 700 /data/adb/teleweb 2>/dev/null
-export TELEWEB_DIR=/data/adb/teleweb
+mkdir -p "$TELEWEB_DIR" 2>/dev/null
+chmod 700 "$TELEWEB_DIR" 2>/dev/null
 export TELEWEB_MOD="$MODDIR"
 
 chmod 0755 "$MODDIR/bin/tgws" 2>/dev/null
 
-# 1. Wait for Android boot completion before setting up redirection rules.
-# This prevents race conditions with Package Manager Service (PMS) and netd/iptables.
-count=0
-while [ "$(getprop sys.boot_completed 2>/dev/null)" != "1" ] && [ $count -lt 45 ]; do
-  sleep 2
-  count=$((count + 1))
-done
+# 1. Reset stale boot state if kernel rebooted
+reset_stale_boot_state
 
-# 2. Wait until Package Manager is responsive (up to 30s)
-count=0
-while ! pm path android >/dev/null 2>&1 && [ $count -lt 15 ]; do
-  sleep 2
-  count=$((count + 1))
-done
+# 2. Acquire atomic supervisor lock
+if ! acquire_supervisor_lock; then
+  log_msg "INFO" "Супервизор уже запущен или заблокирован другим процессом. Выход."
+  exit 0
+fi
+trap 'release_supervisor_lock' EXIT INT TERM
 
-# 3. Boot TeleWEB service (iptables redirection + daemon + watchdog)
-if "$MODDIR/bin/tgws" boot >>/data/adb/teleweb/supervisor.log 2>&1; then
+# 3. Wait for Android boot completion and Package Manager availability
+wait_for_boot
+
+# Check again for disable/remove after boot wait
+if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
+  update_description stopped
+  release_supervisor_lock
+  exit 0
+fi
+
+# 4. Boot TeleWEB service (iptables redirection + daemon + watchdog)
+log_msg "INFO" "Первичный запуск службы TeleWEB (boot)..."
+if "$MODDIR/bin/tgws" boot >>"$SUPERVISOR_LOG" 2>&1; then
   update_description running
 else
   update_description error
 fi
 
-# 4. Supervisor loop to ensure daemon and rules stay active across network changes
+# 5. Supervisor loop with battery-saving backoff upon recurring failures
+FAILS=0
+INTERVAL=60
+
 while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do
-  sleep 60
+  sleep "$INTERVAL"
   [ -f "$MODDIR/disable" ] && break
   [ -f "$MODDIR/remove" ] && break
-  "$MODDIR/bin/tgws" ensure >>/data/adb/teleweb/supervisor.log 2>&1
+
+  if "$MODDIR/bin/tgws" ensure >>"$SUPERVISOR_LOG" 2>&1; then
+    if [ "$FAILS" -gt 0 ]; then
+      log_msg "INFO" "Служба TeleWEB восстановилась после сбоев. Возврат к стандартному интервалу проверок (60c)."
+    fi
+    FAILS=0
+    INTERVAL=60
+    update_description running
+  else
+    FAILS=$((FAILS + 1))
+    log_msg "WARN" "Ошибка runtime ensure (сбой #$FAILS)"
+    update_description error
+
+    if [ "$FAILS" -ge 5 ]; then
+      if [ "$INTERVAL" -ne 300 ]; then
+        log_msg "ERROR" "Превышен лимит сбоев ($FAILS попыток подряд). Переход в замедленный режим (раз в 5 минут для экономии батареи)..."
+        INTERVAL=300
+      fi
+    else
+      INTERVAL=60
+    fi
+  fi
 done
 
 update_description stopped
+release_supervisor_lock
