@@ -1141,6 +1141,91 @@ body.swiping .state::after {
 }
 
 /* ==========================================================================
+   M3 Component: Search Bar / Capsule Pill Field (nfqws2-android signature)
+   ========================================================================== */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 4px 0 16px;
+  border-radius: var(--shape-full);
+  overflow: hidden;
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant);
+  transition: background-color var(--dur-short) var(--standard),
+              box-shadow var(--dur-short) var(--standard);
+}
+.search-bar > svg,
+.search-bar > .icon {
+  flex: none;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.search-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+  color: var(--md-sys-color-on-surface);
+  caret-color: var(--md-sys-color-primary);
+  font-family: inherit;
+  font-size: var(--ts-body-large);
+  line-height: var(--lh-body-large);
+  text-overflow: ellipsis;
+}
+.search-bar input::placeholder {
+  color: var(--md-sys-color-on-surface-variant);
+  opacity: .8;
+}
+.search-bar input:focus-visible {
+  outline: none;
+}
+.search-bar select {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  color: var(--md-sys-color-on-surface);
+  caret-color: var(--md-sys-color-primary);
+  font-family: inherit;
+  font-size: var(--ts-body-large);
+  line-height: var(--lh-body-large);
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.search-bar select option {
+  background: var(--md-sys-color-surface-container, #1e1e24);
+  color: var(--md-sys-color-on-surface, #e6e1e5);
+}
+.search-bar select:focus-visible {
+  outline: none;
+}
+.search-bar:has(input:focus-visible),
+.search-bar:has(select:focus-visible),
+.search-bar:focus-within {
+  background: var(--md-sys-color-surface-container-highest);
+  box-shadow: 0 0 0 2px var(--md-sys-color-primary);
+}
+.search-bar > .icon-btn {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ==========================================================================
    M3 Component: Buttons
    ========================================================================== */
 .btn {
@@ -1694,6 +1779,10 @@ body.swiping .state::after {
 <symbol id="i-chevron-right" viewBox="0 -960 960 960"><path d="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z"/></symbol>
 <symbol id="i-chevron-down" viewBox="0 -960 960 960"><path d="M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z"/></symbol>
 <symbol id="i-motion" viewBox="0 -960 960 960"><path d="M160-160v-480h480v480H160Zm80-80h320v-320H240v320Zm160-240v-80h320v320h-80v-240H400Zm160-160v-80h320v320h-80v-240H560Z"/></symbol>
+<symbol id="i-add" viewBox="0 -960 960 960"><path d="M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z"/></symbol>
+<symbol id="i-bolt" viewBox="0 -960 960 960"><path d="m393-165 277-345H466l64-285H323l-72 370h179l-37 260Z"/></symbol>
+<symbol id="i-dns" viewBox="0 -960 960 960"><path d="M200-120q-33 0-56.5-23.5T120-200v-160q0-33 23.5-56.5T200-440h560q33 0 56.5 23.5T840-360v160q0 33-23.5 56.5T760-120H200Zm0-400q-33 0-56.5-23.5T120-600v-160q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v160q0 33-23.5 56.5T760-520H200Zm0-80h560v-160H200v160Zm0 400h560v-160H200v160Zm80-440q17 0 28.5-11.5T320-680q0-17-11.5-28.5T280-720q-17 0-28.5 11.5T240-680q0 17 11.5 28.5T280-640Zm0 400q17 0 28.5-11.5T320-280q0-17-11.5-28.5T280-320q-17 0-28.5 11.5T240-280q0 17 11.5 28.5T280-240Z"/></symbol>
+<symbol id="i-hub" viewBox="0 -960 960 960"><path d="M440-280v-160H280v160h160Zm240 0v-160H520v160h160ZM440-520v-160H280v160h160Zm240 0v-160H520v160h160ZM200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Z"/></symbol>
 </defs></svg>
 
 <!-- Top App Bar -->
@@ -1894,41 +1983,44 @@ body.swiping .state::after {
       <h2 class="subhead">Тонкая настройка адресов</h2>
       <div class="group">
         <!-- Custom CF Domain -->
-        <div class="field">
-          <div class="tf">
-            <input type="text" id="inputCustomDomain" placeholder="например, my-worker.example.com" autocomplete="off" autocapitalize="off" spellcheck="false">
-            <label for="inputCustomDomain">Свой Cloudflare-домен (Фронтинг)</label>
-          </div>
+        <div class="search-bar">
+          <svg aria-hidden="true" class="icon s24"><use href="#i-globe"/></svg>
+          <input type="text" id="inputCustomDomain" placeholder="Свой Cloudflare-домен (Фронтинг)" aria-label="Свой Cloudflare-домен (Фронтинг)" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter')$('saveConfigBtn').click()">
+          <button class="icon-btn state tone-primary" type="button" aria-label="Сохранить настройки" title="Сохранить" onclick="$('saveConfigBtn').click()">
+            <svg aria-hidden="true" class="icon s24"><use href="#i-add"/></svg>
+          </button>
         </div>
 
         <!-- Custom CF Worker -->
-        <div class="field">
-          <div class="tf">
-            <input type="text" id="inputCustomWorker" placeholder="например, my-worker.username.workers.dev" autocomplete="off" autocapitalize="off" spellcheck="false">
-            <label for="inputCustomWorker">Шлюз Cloudflare Worker (cloudflare:sockets)</label>
-          </div>
+        <div class="search-bar">
+          <svg aria-hidden="true" class="icon s24"><use href="#i-bolt"/></svg>
+          <input type="text" id="inputCustomWorker" placeholder="Шлюз Cloudflare Worker (cloudflare:sockets)" aria-label="Шлюз Cloudflare Worker (cloudflare:sockets)" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter')$('saveConfigBtn').click()">
+          <button class="icon-btn state tone-primary" type="button" aria-label="Сохранить настройки" title="Сохранить" onclick="$('saveConfigBtn').click()">
+            <svg aria-hidden="true" class="icon s24"><use href="#i-add"/></svg>
+          </button>
         </div>
 
         <!-- DC IP Overrides -->
-        <div class="field">
-          <div class="tf">
-            <input type="text" id="inputDCOverrides" placeholder="1:149.154.175.50, 2:149.154.167.220" autocomplete="off" autocapitalize="off" spellcheck="false">
-            <label for="inputDCOverrides">Ручные IP для DC (опционально)</label>
-          </div>
+        <div class="search-bar">
+          <svg aria-hidden="true" class="icon s24"><use href="#i-dns"/></svg>
+          <input type="text" id="inputDCOverrides" placeholder="Ручные IP для DC (опционально)" aria-label="Ручные IP для DC (опционально)" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter')$('saveConfigBtn').click()">
+          <button class="icon-btn state tone-primary" type="button" aria-label="Сохранить настройки" title="Сохранить" onclick="$('saveConfigBtn').click()">
+            <svg aria-hidden="true" class="icon s24"><use href="#i-add"/></svg>
+          </button>
         </div>
 
         <!-- Pre-warmed WSS Pool Size -->
-        <div class="field">
-          <div class="tf">
-            <select id="selectPoolSize">
-              <option value="0">Отключен (0)</option>
-              <option value="1">Эконом (1 сокет на DC)</option>
-              <option value="2">Стандарт (2 сокета на DC, реком.)</option>
-              <option value="4">Максимум (4 сокета на DC)</option>
-            </select>
-            <label for="selectPoolSize">Пул предпрогретых WSS-сокетов</label>
-            <span class="tf-arrow"><svg class="icon s20"><use href="#i-chevron-down"/></svg></span>
-          </div>
+        <div class="search-bar">
+          <svg aria-hidden="true" class="icon s24"><use href="#i-tune"/></svg>
+          <select id="selectPoolSize" aria-label="Пул предпрогретых WSS-сокетов" onchange="$('saveConfigBtn').click()">
+            <option value="0">Пул WSS-сокетов: Отключен (0)</option>
+            <option value="1">Пул WSS-сокетов: Эконом (1 на DC)</option>
+            <option value="2">Пул WSS-сокетов: Стандарт (2 на DC, реком.)</option>
+            <option value="4">Пул WSS-сокетов: Максимум (4 на DC)</option>
+          </select>
+          <span class="icon-btn state tone-primary" style="pointer-events: none;">
+            <svg aria-hidden="true" class="icon s24"><use href="#i-chevron-down"/></svg>
+          </span>
         </div>
 
         <div style="margin-top: 4px;">
