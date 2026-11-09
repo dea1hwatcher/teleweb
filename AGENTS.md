@@ -87,12 +87,11 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /dev/null .   # тип-че�
 1. В `android`: поднять `module.prop` (`version`, `versionCode`), `update.json`,
    добавить раздел `### Изменения в vX.Y.Z:` первым в `changelog.md`.
 2. Тот же раздел добавить в `changelog.md` веток `win`, `linux`, `master` —
-   notes релиза собираются из changelog **своей** ветки и перезаписываются.
-3. Коммит `chore: release vX.Y.Z` + тег `vX.Y.Z` в `android` → CI создаёт релиз
-   и обновляет `update.json` на `master`.
-4. `workflow_dispatch` workflow `release` в `win`, затем в `linux` с input `tag` —
-   они прикрепляют desktop-ассеты.
-5. Проверить, что в релизе **14 ассетов** (1 модуль + 9 Windows + 4 Linux).
+   notes релиза собираются из changelog ветки релиза.
+3. Коммит `chore: release vX.Y.Z` + тег `vX.Y.Z` в `android` → единый CI
+   собирает все платформы (Android, Windows, Linux), прикрепляет все 14 ассетов
+   и обновляет `update.json` на `master` за один прогон.
+4. Проверить, что в релизе **14 ассетов** (1 модуль + 9 Windows + 4 Linux).
 
 **Пуш** (глобальный credential helper в неинтерактивной оболочке виснет):
 
