@@ -373,3 +373,41 @@ mobile_net_renew() {
     return 1
   fi
 }
+
+# Android Private DNS (DoT) configuration management
+get_private_dns_mode() {
+  settings get global private_dns_mode 2>/dev/null || echo "off"
+}
+
+get_private_dns_specifier() {
+  settings get global private_dns_specifier 2>/dev/null || echo ""
+}
+
+apply_private_dns() {
+  local mode="$1"
+  local specifier="$2"
+  case "$mode" in
+    off|opportunistic)
+      settings put global private_dns_mode "$mode" 2>/dev/null
+      ;;
+    hostname)
+      if [ -n "$specifier" ]; then
+        settings put global private_dns_specifier "$specifier" 2>/dev/null
+        settings put global private_dns_mode "hostname" 2>/dev/null
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Idempotently drain duplicate iptables rules until none remain (up to 16 iterations)
+drain_iptables_rule() {
+  local count=0
+  while [ "$count" -lt 16 ]; do
+    "$@" >/dev/null 2>&1 || break
+    count=$((count + 1))
+  done
+}
+

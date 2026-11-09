@@ -1865,6 +1865,40 @@ body.swiping .state::after {
         </div>
       </div>
     </div>
+
+    <!-- Local SOCKS5 Proxy Card -->
+    <div class="card">
+      <h2 class="subhead">Интерфейсы и Службы</h2>
+      <div style="font-size:13px; color:var(--on-surface-variant); margin-bottom:12px; line-height:1.4;">
+        Локальный SOCKS5-прокси: <strong>127.0.0.1:17841</strong> (для приложений без сетевого перехвата)
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <a href="tg://socks?server=127.0.0.1&port=17841" class="btn tonal with-icon state" style="text-decoration:none; display:inline-flex; align-items:center;">
+          <svg class="icon s18"><use href="#i-tg"/></svg>
+          <span>Подключить в Telegram</span>
+        </a>
+        <button class="btn text with-icon state" type="button" onclick="copySocksLink()">
+          <svg class="icon s18"><use href="#i-copy"/></svg>
+          <span id="socksCopyLabel">Копировать ссылку</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Express Diagnostics Card -->
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <h2 class="subhead" style="margin:0;">Диагностика системы</h2>
+        <button class="btn tonal with-icon state" type="button" id="btnRunDiagnostics" onclick="runDiagnostics()" style="padding:6px 12px; font-size:12px;">
+          <svg class="icon s16"><use href="#i-play"/></svg>
+          <span>Запустить</span>
+        </button>
+      </div>
+      <div id="diagnosticsList" class="list" style="margin-top:8px;">
+        <div class="list-item" style="padding:8px 0; font-size:13px;">
+          <span class="li-text">Нажмите «Запустить» для экспресс-проверки сервиса и сети</span>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- ========================================================================
@@ -1986,19 +2020,27 @@ body.swiping .state::after {
         <div class="search-bar">
           <svg aria-hidden="true" class="icon s24"><use href="#i-globe"/></svg>
           <input type="text" id="inputCustomDomain" placeholder="Свой Cloudflare-домен (Фронтинг)" aria-label="Свой Cloudflare-домен (Фронтинг)" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter')$('saveConfigBtn').click()">
+          <button class="icon-btn state" id="btnTestDomain" type="button" aria-label="Проверить доступность" title="Проверить доступность" onclick="testCFEndpoint('domain')">
+            <svg aria-hidden="true" class="icon s20"><use href="#i-bolt"/></svg>
+          </button>
           <button class="icon-btn state tone-primary" type="button" aria-label="Сохранить настройки" title="Сохранить" onclick="$('saveConfigBtn').click()">
             <svg aria-hidden="true" class="icon s24"><use href="#i-add"/></svg>
           </button>
         </div>
+        <div class="probe-result" id="probeResultDomain" style="display:none; font-size:12px; margin:-4px 0 8px 12px;"></div>
 
         <!-- Custom CF Worker -->
         <div class="search-bar">
           <svg aria-hidden="true" class="icon s24"><use href="#i-bolt"/></svg>
           <input type="text" id="inputCustomWorker" placeholder="Шлюз Cloudflare Worker (cloudflare:sockets)" aria-label="Шлюз Cloudflare Worker (cloudflare:sockets)" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter')$('saveConfigBtn').click()">
+          <button class="icon-btn state" id="btnTestWorker" type="button" aria-label="Проверить доступность" title="Проверить доступность" onclick="testCFEndpoint('worker')">
+            <svg aria-hidden="true" class="icon s20"><use href="#i-bolt"/></svg>
+          </button>
           <button class="icon-btn state tone-primary" type="button" aria-label="Сохранить настройки" title="Сохранить" onclick="$('saveConfigBtn').click()">
             <svg aria-hidden="true" class="icon s24"><use href="#i-add"/></svg>
           </button>
         </div>
+        <div class="probe-result" id="probeResultWorker" style="display:none; font-size:12px; margin:-4px 0 8px 12px;"></div>
 
         <!-- DC IP Overrides -->
         <div class="search-bar">
@@ -3165,6 +3207,152 @@ async function api(cmd, extra) {
   }
   if (!j.ok) throw new Error(j.error || "ошибка");
   return j.data;
+}
+
+function escapeHTML(s) {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+async function testCFEndpoint(type) {
+  const input = type === 'worker' ? $('inputCustomWorker') : $('inputCustomDomain');
+  const resEl = type === 'worker' ? $('probeResultWorker') : $('probeResultDomain');
+  const btn = type === 'worker' ? $('btnTestWorker') : $('btnTestDomain');
+  if (!input || !resEl) return;
+  const target = input.value.trim();
+  resEl.style.display = 'block';
+  resEl.innerHTML = '<span style="color:var(--outline);">Проверка соединения…</span>';
+  if (btn) btn.disabled = true;
+  try {
+    const d = await api('cftest', { target: target });
+    if (d && (d.reachable || d.ok)) {
+      const popInfo = d.pop ? ` · PoP: ${escapeHTML(d.pop)}` : '';
+      resEl.innerHTML = `<span style="color:#4caf50;font-weight:500;">✓ Доступен (${d.latency_ms} мс${popInfo})</span>`;
+    } else {
+      const err = (d && d.error) ? d.error : 'соединение не удалось';
+      resEl.innerHTML = `<span style="color:#f44336;font-weight:500;">✗ Недоступен (${escapeHTML(err)})</span>`;
+    }
+  } catch (e) {
+    resEl.innerHTML = `<span style="color:#f44336;font-weight:500;">✗ Ошибка: ${escapeHTML(e.message || String(e))}</span>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function copySocksLink() {
+  const link = 'tg://socks?server=127.0.0.1&port=17841';
+  const lbl = $('socksCopyLabel');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(() => {
+      if (lbl) {
+        const orig = lbl.textContent;
+        lbl.textContent = 'Скопировано! ✓';
+        setTimeout(() => { lbl.textContent = orig; }, 2000);
+      }
+    }).catch(() => {
+      prompt('Скопируйте ссылку на SOCKS5:', link);
+    });
+  } else {
+    prompt('Скопируйте ссылку на SOCKS5:', link);
+  }
+}
+
+async function runDiagnostics() {
+  const list = $('diagnosticsList');
+  const btn = $('btnRunDiagnostics');
+  if (!list) return;
+  if (btn) btn.disabled = true;
+  list.innerHTML = `
+    <div class="list-item" style="padding:6px 0; font-size:13px;">
+      <span class="li-text">Выполняется комплексная диагностика…</span>
+    </div>
+  `;
+  try {
+    const s = await api('status');
+    state = s;
+    render();
+
+    const items = [];
+
+    // 1. Service process status
+    if (s.running) {
+      items.push({ ok: true, text: `Служба активна (порт ${s.port || 17841}, память ${formatBytes(s.memNowBytes || 0)})` });
+    } else if (s.enabled) {
+      items.push({ ok: false, text: 'Служба включена в конфигурации, но процесс не запущен' });
+    } else {
+      items.push({ warn: true, text: 'Служба отключена пользователем' });
+    }
+
+    // 2. Interception / Redirector status
+    if (s.redirector) {
+      items.push({ ok: true, text: 'Сетевой перехват: драйвер/правила активны' });
+    } else if (s.running) {
+      items.push({ ok: true, text: 'Сетевой перехват: правила iptables/WinDivert настроены' });
+    } else {
+      items.push({ warn: true, text: 'Сетевой перехват: остановлен' });
+    }
+
+    // 3. DNS / DoH
+    if (s.dohEnabled) {
+      items.push({ ok: true, text: 'DNS: Безопасный DoH (DNS over HTTPS) включен' });
+    } else {
+      items.push({ warn: true, text: 'DNS: DoH отключен (используется системный DNS)' });
+    }
+
+    // 4. Cloudflare Edge probe
+    try {
+      const cfRes = await api('cftest', {});
+      if (cfRes && (cfRes.reachable || cfRes.ok)) {
+        const pop = cfRes.pop ? ` · PoP: ${cfRes.pop}` : '';
+        items.push({ ok: true, text: `Cloudflare Edge: доступен (${cfRes.latency_ms} мс${pop})` });
+      } else {
+        items.push({ ok: false, text: `Cloudflare Edge: сбой проверки (${cfRes.error || 'таймаут'})` });
+      }
+    } catch (cfErr) {
+      items.push({ ok: false, text: `Cloudflare Edge: ошибка запроса (${cfErr.message})` });
+    }
+
+    // 5. WSS Pool
+    if (s.poolSize > 0) {
+      items.push({ ok: true, text: `Пул сокетов WSS: размер ${s.poolSize} на DC (готово ${s.poolIdle || 0}, попаданий ${s.poolHits || 0})` });
+    } else {
+      items.push({ warn: true, text: 'Пул сокетов WSS: отключен (прямые подключения)' });
+    }
+
+    // Render diagnostic items
+    list.innerHTML = items.map(item => {
+      let icon = '<span style="color:#4caf50;font-weight:bold;margin-right:8px;">✓</span>';
+      let col = 'var(--on-surface)';
+      if (item.ok === false) {
+        icon = '<span style="color:#f44336;font-weight:bold;margin-right:8px;">✗</span>';
+        col = '#f44336';
+      } else if (item.warn) {
+        icon = '<span style="color:#ff9800;font-weight:bold;margin-right:8px;">!</span>';
+        col = 'var(--outline)';
+      }
+      return `
+        <div class="list-item" style="padding:6px 0; font-size:13px; color:${col};">
+          ${icon}
+          <span class="li-text">${escapeHTML(item.text)}</span>
+        </div>
+      `;
+    }).join('');
+
+  } catch (err) {
+    list.innerHTML = `
+      <div class="list-item" style="padding:6px 0; font-size:13px; color:#f44336;">
+        <span style="font-weight:bold;margin-right:8px;">✗</span>
+        <span class="li-text">Ошибка опроса API: ${escapeHTML(err.message || String(err))}</span>
+      </div>
+    `;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // App State
