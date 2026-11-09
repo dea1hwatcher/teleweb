@@ -119,6 +119,7 @@ type guiState struct {
 	poolSize int
 
 	saveConfigBtn widget.Clickable
+	netResetBtn   widget.Clickable
 	saveMsg       string
 	saveMsgTime   time.Time
 
@@ -405,6 +406,26 @@ func handleGuiEvents(w *app.Window, st *guiState, gtx layout.Context) {
 				st.saveMsg = "Ошибка: " + err.Error()
 			} else {
 				st.saveMsg = "Настройки успешно сохранены!"
+			}
+			st.saveMsgTime = time.Now()
+			st.mu.Unlock()
+			st.refresh()
+			w.Invalidate()
+		}()
+	}
+
+	// Network Reset
+	if st.netResetBtn.Clicked(gtx) && !st.busy {
+		st.busy = true
+		w.Invalidate()
+		go func() {
+			err := resetNetworkStack()
+			st.mu.Lock()
+			st.busy = false
+			if err != nil {
+				st.saveMsg = "Ошибка сброса: " + err.Error()
+			} else {
+				st.saveMsg = "Сетевой стек и DNS успешно сброшены!"
 			}
 			st.saveMsgTime = time.Now()
 			st.mu.Unlock()
@@ -1286,6 +1307,10 @@ func renderRoutingPage(st *guiState, gtx layout.Context, th *material.Theme) lay
 								btnText = "Сохранение…"
 							}
 							return renderAccentButton(gtx, th, &st.saveConfigBtn, btnText)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return renderStandardButton(gtx, th, &st.netResetBtn, "Сброс сети")
 						}),
 						layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
