@@ -1680,7 +1680,7 @@ var telegramV4 = func() []string {
 }()
 
 // telegramV6 lists the broad IPv6 aggregates handed to ip6tables. It is the
-// single source for telegramV6Prefixes (the SOCKS/transparency checks); the
+// single source for telegramV6Prefixes (the transparency checks); the
 // finer telegramV6Subnets table refines some of these aggregates into per-DC
 // /48-/64 mappings for dcFor and is deliberately kept separate.
 var telegramV6 = []string{
@@ -1699,10 +1699,28 @@ var telegramV6Prefixes = func() []netip.Prefix {
 }()
 
 func runCmd(name string, args ...string) error {
+	base := strings.ToLower(filepath.Base(name))
+	base = strings.TrimSuffix(base, ".exe")
+	isIptables := base == "iptables" || base == "ip6tables" || strings.HasPrefix(base, "iptables-") || strings.HasPrefix(base, "ip6tables-")
+
+	cmdArgs := args
+	hasW := false
+	if isIptables {
+		for _, a := range args {
+			if a == "-w" || strings.HasPrefix(a, "-w") {
+				hasW = true
+				break
+			}
+		}
+		if !hasW {
+			cmdArgs = append([]string{"-w", "5"}, args...)
+		}
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		c := exec.CommandContext(ctx, name, args...)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		c := exec.CommandContext(ctx, name, cmdArgs...)
 		setCmdNoWindow(c)
 		b, e := c.CombinedOutput()
 		cancel()
@@ -1710,8 +1728,21 @@ func runCmd(name string, args ...string) error {
 			return nil
 		}
 		outStr := strings.TrimSpace(string(b))
-		lastErr = fmt.Errorf("%s %s: %v (%s)", name, strings.Join(args, " "), e, outStr)
-		if strings.Contains(outStr, "xtables.lock") || strings.Contains(outStr, "Can't lock") {
+		outLower := strings.ToLower(outStr)
+
+		// Fallback if iptables implementation does not support -w
+		if isIptables && !hasW && (strings.Contains(outLower, "unrecognized option") || strings.Contains(outLower, "unknown option") || strings.Contains(outLower, "bad option")) {
+			cmdArgs = args
+			hasW = true
+			attempt--
+			continue
+		}
+
+		lastErr = fmt.Errorf("%s %s: %v (%s)", name, strings.Join(cmdArgs, " "), e, outStr)
+		if strings.Contains(outLower, "xtables") ||
+			strings.Contains(outLower, "lock") ||
+			strings.Contains(outLower, "temporarily unavailable") ||
+			strings.Contains(outLower, "holding") {
 			time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
 			continue
 		}
@@ -1842,6 +1873,34 @@ func cleanupCallsBypass(bin string) {
 			if runCmd(bin, del...) != nil {
 				break
 			}
+		}
+	}
+}
+
+// tetherMSSBody clamps TCP MSS to PMTU for forwarded hotspot/tethering traffic,
+// preventing silent packet drops on mobile carrier interfaces with MTU < 1500.
+var tetherMSSBody = []string{"-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-m", "comment", "--comment", "teleweb-mss", "-j", "TCPMSS", "--clamp-mss-to-pmtu"}
+
+func setupTetherMSS(bin string) {
+	if bin == "" {
+		return
+	}
+	check := append([]string{"-t", "mangle", "-C", "FORWARD"}, tetherMSSBody...)
+	if runCmd(bin, check...) == nil {
+		return
+	}
+	insert := append([]string{"-t", "mangle", "-I", "FORWARD", "1"}, tetherMSSBody...)
+	_ = runCmd(bin, insert...)
+}
+
+func cleanupTetherMSS(bin string) {
+	if bin == "" {
+		return
+	}
+	del := append([]string{"-t", "mangle", "-D", "FORWARD"}, tetherMSSBody...)
+	for i := 0; i < 4; i++ {
+		if runCmd(bin, del...) != nil {
+			break
 		}
 	}
 }
@@ -2220,6 +2279,8 @@ func setupRules() error {
 	}
 	setupCallsBypass(findBin("iptables"))
 	setupCallsBypass(findBin("ip6tables"))
+	setupTetherMSS(findBin("iptables"))
+	setupTetherMSS(findBin("ip6tables"))
 	if len(apps) > 0 {
 		logf("redirection enabled; apps: %s (+ universal package-agnostic scope)", appNames(apps))
 	} else {
@@ -2248,6 +2309,8 @@ func cleanupRules() {
 	iptCleanup(findBin("ip6tables"), uids, "TELEWEB")
 	cleanupCallsBypass(findBin("iptables"))
 	cleanupCallsBypass(findBin("ip6tables"))
+	cleanupTetherMSS(findBin("iptables"))
+	cleanupTetherMSS(findBin("ip6tables"))
 }
 func ensureServer() error {
 	if pidAlive() {
@@ -2673,6 +2736,7 @@ func rulesHealthy() bool {
 	if runCmd(bin, "-t", "nat", "-C", "PREROUTING", "-p", "tcp", "-j", "TELEWEB") != nil {
 		_ = runCmd(bin, "-t", "nat", "-I", "PREROUTING", "1", "-p", "tcp", "-j", "TELEWEB")
 	}
+	setupTetherMSS(bin)
 
 	if outputOK {
 		return true
@@ -2708,6 +2772,7 @@ func ip6RulesHealthy() bool {
 	if runCmd(bin, "-t", "nat", "-C", "PREROUTING", "-p", "tcp", "-j", "TELEWEB") != nil {
 		_ = runCmd(bin, "-t", "nat", "-I", "PREROUTING", "1", "-p", "tcp", "-j", "TELEWEB")
 	}
+	setupTetherMSS(bin)
 
 	if outputOK {
 		return true
@@ -2763,6 +2828,7 @@ func retryFailedIPv6Rules() {
 		return
 	}
 	setupCallsBypass(bin)
+	setupTetherMSS(bin)
 	ip6RulesInstalled.Store(true)
 	ip6RulesFailed.Store(false)
 	logf("redirect: IPv6 rules restored on retry; Telegram IPv6 is back on the WSS transport")
@@ -3462,13 +3528,6 @@ func main() {
 		case "run":
 			cmdRun()
 			return
-		case "socks":
-			addr := ""
-			if len(os.Args) > 2 {
-				addr = os.Args[2]
-			}
-			cmdSocks(addr)
-			return
 		case "webui":
 			if !isAndroidRuntime() {
 				fmt.Fprintln(os.Stderr, "webui: WebUI is not available in desktop versions; use the native GUI dashboard or CLI commands")
@@ -3512,7 +3571,7 @@ func main() {
 		cmdGui("")
 		return
 	}
-	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | socks [addr] | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
+	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
 }
 
 func serve() {
@@ -3855,6 +3914,61 @@ func dcFor(ip netip.Addr) int {
 	return 0
 }
 
+func isTelegramDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	d = strings.TrimSuffix(d, ".")
+	return strings.HasSuffix(d, ".telegram.org") ||
+		d == "telegram.org" ||
+		strings.HasSuffix(d, ".t.me") ||
+		d == "t.me" ||
+		strings.HasSuffix(d, ".telegra.ph") ||
+		d == "telegra.ph" ||
+		strings.HasSuffix(d, ".telesco.pe") ||
+		d == "telesco.pe" ||
+		strings.HasSuffix(d, ".telegram-cdn.org") ||
+		d == "telegram-cdn.org"
+}
+
+// isTelegramEndpoint reports whether ip falls into a Telegram DC aggregate
+// that the transparent mode intercepts as well. Every aggregate, including the
+// CDN203 /23, comes from telegramSubnets, so this stays in sync with both the
+// iptables REDIRECT list and the WinDivert filter by construction.
+func isTelegramEndpoint(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.Is4() {
+		return false
+	}
+	if isCDN203IP(ip) {
+		return true
+	}
+	for _, sub := range telegramParsedSubnets {
+		if sub.prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTelegramAggregate reports whether ip (either address family) belongs to a
+// Telegram network aggregate. It guards learned-DC bookkeeping against
+// pollution from forged init packets.
+func isTelegramAggregate(ip netip.Addr) bool {
+	return isTelegramEndpoint(ip) || isTelegramEndpointV6(ip)
+}
+
+func isTelegramEndpointV6(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.Is6() {
+		return false
+	}
+	for _, prefix := range telegramV6Prefixes {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func setConnSockOpts(conn net.Conn) {
 	if conn == nil {
 		return
@@ -3911,7 +4025,7 @@ func handleClient(c net.Conn) {
 }
 
 // serveConn runs the MTProto-over-WSS pipeline for an established client
-// socket with a known original destination (transparent redirect or SOCKS5).
+// socket with a known original destination (transparent redirect).
 // acceptPause decides how an accept loop reacts to Accept() returning an
 // error. A closed listener (-1) means the loop must stop; a transient failure
 // such as EMFILE/ENFILE returns immediately and would otherwise busy-spin the

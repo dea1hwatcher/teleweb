@@ -3144,6 +3144,16 @@ func TestIsTelegramEndpoint_IPv6(t *testing.T) {
 	}
 }
 
+func TestTetherMSSRules(t *testing.T) {
+	if len(tetherMSSBody) == 0 {
+		t.Fatal("expected tetherMSSBody to be non-empty")
+	}
+	expected := []string{"-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-m", "comment", "--comment", "teleweb-mss", "-j", "TCPMSS", "--clamp-mss-to-pmtu"}
+	if strings.Join(tetherMSSBody, " ") != strings.Join(expected, " ") {
+		t.Errorf("tetherMSSBody mismatch: got %v, want %v", tetherMSSBody, expected)
+	}
+}
+
 func TestTailLog_BoundedTail(t *testing.T) {
 	origBase := getBaseDir()
 	tmpDir := t.TempDir()

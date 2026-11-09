@@ -609,7 +609,7 @@ func isFatalWinDivertError(err error) bool {
 // this architecture (ARM64 has no WinDivert driver build).
 func redirectorUnsupportedReason() error {
 	if runtime.GOARCH == "arm64" {
-		return errors.New("WinDivert ships no ARM64 driver: transparent mode is unavailable on Windows ARM64; use `tgws socks <addr>` instead")
+		return errors.New("WinDivert ships no ARM64 driver: transparent mode is unavailable on Windows ARM64")
 	}
 	return nil
 }
