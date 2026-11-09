@@ -3921,21 +3921,6 @@ func dcFor(ip netip.Addr) int {
 	return 0
 }
 
-func isTelegramDomain(domain string) bool {
-	d := strings.ToLower(strings.TrimSpace(domain))
-	d = strings.TrimSuffix(d, ".")
-	return strings.HasSuffix(d, ".telegram.org") ||
-		d == "telegram.org" ||
-		strings.HasSuffix(d, ".t.me") ||
-		d == "t.me" ||
-		strings.HasSuffix(d, ".telegra.ph") ||
-		d == "telegra.ph" ||
-		strings.HasSuffix(d, ".telesco.pe") ||
-		d == "telesco.pe" ||
-		strings.HasSuffix(d, ".telegram-cdn.org") ||
-		d == "telegram-cdn.org"
-}
-
 // isTelegramEndpoint reports whether ip falls into a Telegram DC aggregate
 // that the transparent mode intercepts as well. Every aggregate, including the
 // CDN203 /23, comes from telegramSubnets, so this stays in sync with both the
@@ -4709,6 +4694,7 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 	}()
 	go func() {
 		defer wg.Done()
+		var lastWriteDeadline time.Time
 		for {
 			_ = ws.conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 			op, payload, readErr := ws.readFrame()
@@ -4734,33 +4720,44 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 									logf("conn #%d %s: remapped to sibling DC%d (was DC%d) after -444", id, targetIP, alt, dc)
 								}
 							}
+							releaseFrame(payload)
 							closeBoth()
 							return
 						}
 						if code == -404 {
 							logf("conn #%d DC%d: upstream returned -404 (KEY_NOT_FOUND); suppressing from client to preserve session key", id, dc)
+							releaseFrame(payload)
 							closeBoth()
 							return
 						}
 					}
 					noteDown()
-					_ = c.SetWriteDeadline(time.Now().Add(15 * time.Second))
+					now := time.Now()
+					if now.Sub(lastWriteDeadline) > 5*time.Second {
+						_ = c.SetWriteDeadline(now.Add(30 * time.Second))
+						lastWriteDeadline = now
+					}
 					if readErr = writeFull(c, payload); readErr != nil {
+						releaseFrame(payload)
 						logf("conn #%d DC%d write WSS->client finished: %v (up=%d down=%d)", id, dc, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 						closeBoth()
 						return
 					}
-					_ = c.SetWriteDeadline(time.Time{})
 					atomic.AddInt64(&downBytes, int64(len(payload)))
 					atomic.AddInt64(&trafficDownBytes, int64(len(payload)))
+					releaseFrame(payload)
 				}
 			case 9:
 				_ = ws.writeFrame(10, payload)
+				releaseFrame(payload)
 			case 8:
+				releaseFrame(payload)
 				closeBoth()
 				return
 			case 10:
+				releaseFrame(payload)
 			default:
+				releaseFrame(payload)
 				logf("DC%d unknown WebSocket opcode: %d", dc, op)
 			}
 		}
@@ -5181,12 +5178,14 @@ func routeKey(dc int, isMedia bool) string {
 // relay silently discards bytes after the first packet in a frame, so forwarding
 // arbitrary TCP Read() chunks as frames is not safe.
 type mtprotoPacketFramer struct {
-	proto      uint32
-	stream     cipher.Stream
-	raw        []byte
-	plain      []byte
-	initial    []byte
-	headerSent bool
+	proto        uint32
+	stream       cipher.Stream
+	raw          []byte
+	plain        []byte
+	rawStorage   []byte
+	plainStorage []byte
+	initial      []byte
+	headerSent   bool
 }
 
 func newMTProtoPacketFramer(initial []byte) (*mtprotoPacketFramer, error) {
@@ -5194,7 +5193,17 @@ func newMTProtoPacketFramer(initial []byte) (*mtprotoPacketFramer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &mtprotoPacketFramer{proto: proto, stream: stream, initial: append([]byte(nil), initial...)}, nil
+	rawBuf := make([]byte, 0, 64*1024)
+	plainBuf := make([]byte, 0, 64*1024)
+	return &mtprotoPacketFramer{
+		proto:        proto,
+		stream:       stream,
+		raw:          rawBuf,
+		plain:        plainBuf,
+		rawStorage:   rawBuf,
+		plainStorage: plainBuf,
+		initial:      append([]byte(nil), initial...),
+	}, nil
 }
 
 // nextPacketSize returns total encrypted packet length (including transport
@@ -5250,11 +5259,13 @@ func (f *mtprotoPacketFramer) shrinkBuffers() {
 	if len(f.raw) == 0 {
 		if cap(f.raw) > 128*1024 {
 			f.raw = nil
+		} else if f.rawStorage != nil && cap(f.raw) < 32*1024 {
+			f.raw = f.rawStorage[:0]
 		} else if f.raw != nil {
 			f.raw = f.raw[:0]
 		}
 	} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
-		newRaw := make([]byte, len(f.raw))
+		newRaw := make([]byte, len(f.raw), 64*1024)
 		copy(newRaw, f.raw)
 		f.raw = newRaw
 	}
@@ -5262,11 +5273,13 @@ func (f *mtprotoPacketFramer) shrinkBuffers() {
 	if len(f.plain) == 0 {
 		if cap(f.plain) > 128*1024 {
 			f.plain = nil
+		} else if f.plainStorage != nil && cap(f.plain) < 32*1024 {
+			f.plain = f.plainStorage[:0]
 		} else if f.plain != nil {
 			f.plain = f.plain[:0]
 		}
 	} else if cap(f.plain) > 128*1024 && len(f.plain) < 32*1024 {
-		newPlain := make([]byte, len(f.plain))
+		newPlain := make([]byte, len(f.plain), 64*1024)
 		copy(newPlain, f.plain)
 		f.plain = newPlain
 	}
@@ -5325,6 +5338,18 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 		} else if err := ws.writeFrame(2, frame); err != nil {
 			return err
 		}
+	}
+	if len(f.raw) == 0 && f.rawStorage != nil {
+		f.raw = f.rawStorage[:0]
+	} else if len(f.raw) > 0 && f.rawStorage != nil && cap(f.raw) < 32*1024 {
+		copy(f.rawStorage, f.raw)
+		f.raw = f.rawStorage[:len(f.raw)]
+	}
+	if len(f.plain) == 0 && f.plainStorage != nil {
+		f.plain = f.plainStorage[:0]
+	} else if len(f.plain) > 0 && f.plainStorage != nil && cap(f.plain) < 32*1024 {
+		copy(f.plainStorage, f.plain)
+		f.plain = f.plainStorage[:len(f.plain)]
 	}
 	return nil
 }
@@ -6042,7 +6067,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 		dnsCtx := ctx
 		if len(directIPs) > 0 {
 			var dnsCancel context.CancelFunc
-			dnsCtx, dnsCancel = context.WithTimeout(ctx, 350*time.Millisecond)
+			dnsCtx, dnsCancel = context.WithTimeout(ctx, 50*time.Millisecond)
 			defer dnsCancel()
 		}
 		for i, h := range hosts {
@@ -6967,6 +6992,13 @@ func writeFull(w io.Writer, p []byte) error {
 	}
 	return nil
 }
+func releaseFrame(p []byte) {
+	if cap(p) == 64*1024 {
+		p = p[:64*1024]
+		frameBufPool.Put(&p)
+	}
+}
+
 func (w *wsConn) readFrame() (byte, []byte, error) {
 	for {
 		var h [2]byte
@@ -7000,8 +7032,18 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 				return 0, nil, err
 			}
 		}
-		p := make([]byte, int(n))
+		var p []byte
+		var bufPtr *[]byte
+		if n <= 64*1024 {
+			bufPtr = frameBufPool.Get().(*[]byte)
+			p = (*bufPtr)[:int(n)]
+		} else {
+			p = make([]byte, int(n))
+		}
 		if _, err := io.ReadFull(w.r, p); err != nil {
+			if bufPtr != nil {
+				frameBufPool.Put(bufPtr)
+			}
 			return 0, nil, err
 		}
 		if masked {
@@ -7016,26 +7058,44 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 		switch op {
 		case 1, 2:
 			if w.fragOpcode != 0 {
+				if bufPtr != nil {
+					frameBufPool.Put(bufPtr)
+				}
 				return 0, nil, errors.New("new data frame before fragmented message completed")
 			}
 			if fin {
 				return op, p, nil
 			}
 			w.fragOpcode, w.fragData = op, append([]byte(nil), p...)
+			if bufPtr != nil {
+				frameBufPool.Put(bufPtr)
+			}
 		case 0:
 			if w.fragOpcode == 0 {
+				if bufPtr != nil {
+					frameBufPool.Put(bufPtr)
+				}
 				return 0, nil, errors.New("unexpected continuation frame")
 			}
 			if len(w.fragData)+len(p) > maxWSFrame {
+				if bufPtr != nil {
+					frameBufPool.Put(bufPtr)
+				}
 				return 0, nil, errors.New("fragmented WebSocket message too large")
 			}
 			w.fragData = append(w.fragData, p...)
+			if bufPtr != nil {
+				frameBufPool.Put(bufPtr)
+			}
 			if fin {
 				outOp, out := w.fragOpcode, w.fragData
 				w.fragOpcode, w.fragData = 0, nil
 				return outOp, out, nil
 			}
 		default:
+			if bufPtr != nil {
+				frameBufPool.Put(bufPtr)
+			}
 			return 0, nil, fmt.Errorf("unsupported WebSocket opcode %d", op)
 		}
 	}

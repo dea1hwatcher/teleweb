@@ -3097,6 +3097,21 @@ func TestWorkerCooldown_DCScoped(t *testing.T) {
 	}
 }
 
+func isTelegramDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	d = strings.TrimSuffix(d, ".")
+	return strings.HasSuffix(d, ".telegram.org") ||
+		d == "telegram.org" ||
+		strings.HasSuffix(d, ".t.me") ||
+		d == "t.me" ||
+		strings.HasSuffix(d, ".telegra.ph") ||
+		d == "telegra.ph" ||
+		strings.HasSuffix(d, ".telesco.pe") ||
+		d == "telesco.pe" ||
+		strings.HasSuffix(d, ".telegram-cdn.org") ||
+		d == "telegram-cdn.org"
+}
+
 func TestIsTelegramDomain(t *testing.T) {
 	for _, domain := range []string{
 		"api.telegram.org",

@@ -102,6 +102,7 @@ func getDoHClient() *http.Client {
 				// Certificate verification stays ON: DoH exists precisely to
 				// defeat spoofing, and these endpoints involve no SNI games.
 			},
+			ForceAttemptHTTP2: true,
 			DisableKeepAlives: false,
 			MaxIdleConns:      16,
 			IdleConnTimeout:   90 * time.Second,
@@ -118,23 +119,20 @@ func readDoHEnabled() bool         { return readFlag("doh_enabled", true) }
 func writeDoHEnabled(v bool) error { return writeFlag("doh_enabled", v) }
 
 func storeDoHCache(host string, entry dohCacheEntry) {
+	dohCache.Store(host, entry)
 	var count int
+	now := time.Now()
 	dohCache.Range(func(key, val any) bool {
 		count++
-		if e, ok := val.(dohCacheEntry); ok && time.Now().After(e.expires) {
+		if e, ok := val.(dohCacheEntry); ok && now.After(e.expires) {
+			dohCache.Delete(key)
+			count--
+		} else if count > 256 {
 			dohCache.Delete(key)
 			count--
 		}
 		return true
 	})
-	if count > 256 {
-		dohCache.Range(func(key, _ any) bool {
-			dohCache.Delete(key)
-			count--
-			return count > 128
-		})
-	}
-	dohCache.Store(host, entry)
 }
 
 func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
