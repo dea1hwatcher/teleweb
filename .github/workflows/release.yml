@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Desktop release tag, as used in changelog.md (for example v0.1.5)
+        description: Release version, as in module.prop (for example v0.1.14)
         required: true
 
 env:
@@ -19,9 +19,23 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Android module (current tag or android branch)
+        uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref_type == 'tag' && github.ref || 'android' }}
           fetch-depth: 0
+
+      - name: Switch to tag if dispatching for an existing tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ] && git rev-parse -q --verify "refs/tags/${{ github.event.inputs.tag }}" >/dev/null; then
+            echo "Checking out tag ${{ github.event.inputs.tag }}"
+            git checkout "refs/tags/${{ github.event.inputs.tag }}"
+          fi
+
+      - name: Validate module.prop version matches tag
+        run: |
+          ver=$(sed -n 's/^version=//p' module.prop | tr -d '\r')
+          [ "$ver" = "$TAG" ] || { echo "::error::module.prop: version=$ver, tag is $TAG"; exit 1; }
 
       - name: Reject a forced GOMEMLIMIT in daemon launch scripts
         run: |
@@ -34,15 +48,64 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout Windows branch
+        uses: actions/checkout@v4
+        with:
+          ref: win
+          path: build-win
+          fetch-depth: 0
+
+      - name: Checkout Linux branch
+        uses: actions/checkout@v4
+        with:
+          ref: linux
+          path: build-linux
+          fetch-depth: 0
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: false
 
-      - name: Build desktop packages (Linux)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Build Android multi-arch module
+        run: |
+          python3 package_zip.py
+          ls -lh teleweb-*.zip
+
+      - name: Build Windows desktop packages
         shell: pwsh
-        run: ./build_desktop.ps1
+        run: |
+          cd build-win
+          ./build_desktop.ps1
+
+      - name: Build Linux desktop packages
+        shell: pwsh
+        run: |
+          cd build-linux
+          ./build_desktop.ps1
+
+      - name: Collect and verify all release assets
+        run: |
+          mkdir -p dist-release
+          cp teleweb-*.zip dist-release/
+          find build-win/dist -maxdepth 1 -type f \( -name "*.zip" -o -name "*.tar.gz" -o -name "*.exe" \) -exec cp {} dist-release/ \;
+          find build-linux/dist -maxdepth 1 -type f \( -name "*.zip" -o -name "*.tar.gz" -o -name "*.exe" \) -exec cp {} dist-release/ \;
+
+          echo "=== Collected 14 Release Assets ==="
+          ls -lh dist-release/
+
+          count=$(ls -1 dist-release/ | wc -l)
+          echo "Total assets count: $count"
+          if [ "$count" -ne 14 ]; then
+            echo "::error::Expected 14 assets, found $count"
+            exit 1
+          fi
 
       - name: Prepare release notes from changelog
         env:
@@ -57,17 +120,32 @@ jobs:
           open('release-notes.md', 'w', encoding='utf-8').write(notes + '\n')
           " "$TAG"
 
-      - name: Publish release
+      - name: Publish GitHub Release with all 14 assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist-release/* --clobber
             gh release edit "$TAG" --notes-file release-notes.md
           else
-            gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --target "$GITHUB_SHA"
+            gh release create "$TAG" dist-release/* --title "$TAG" --notes-file release-notes.md
           fi
 
-      - name: Attach desktop packages to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" dist/*.zip dist/*.tar.gz --clobber
+      - name: Update update.json on master
+        run: |
+          set -eu
+          code=$(sed -n 's/^versionCode=//p' module.prop | tr -d '\r')
+          zip_file=$(ls dist-release/teleweb-*.zip | head -n 1 | xargs -n 1 basename)
+          rm -rf build-win build-linux dist-release release-notes.md teleweb-*.zip
+          git fetch origin master
+          git checkout -B master origin/master
+          jq -n --arg v "$TAG" --argjson c "$code" \
+                --arg z "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/$zip_file" \
+                --arg l "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/master/changelog.md" \
+                '{version: $v, versionCode: $c, zipUrl: $z, changelog: $l}' > update.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git add update.json
+          git diff --cached --quiet && exit 0
+          git commit -m "update.json: $TAG"
+          git push origin HEAD:master

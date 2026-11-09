@@ -10,8 +10,10 @@
 | `win` | `tgws-windows-{amd64,386,arm64}.exe`, `teleweb-windows-{amd64,386,arm64}.zip/.tar.gz` |
 | `linux` | `teleweb-linux-{amd64,arm64}.zip/.tar.gz` |
 
-Тег может указывать только на один коммит, поэтому роли разделены:
-Android-прогон создаёт релиз, desktop-прогоны прикрепляют к нему свои ассеты.
+Тег указывает на коммит в ветке `android`. Единый workflow `release`
+собирает модуль Android, подтягивает ветки `win` и `linux`, собирает все
+десктопные пакеты, верифицирует комплект из 14 ассетов и публикует их
+в GitHub Release за один прогон, после чего обновляет `update.json` на `master`.
 
 ## 1. Подготовка
 
@@ -44,7 +46,7 @@ Android-прогон создаёт релиз, desktop-прогоны прик�
    зашит в workflow `release` (шаг `Reject a forced GOMEMLIMIT`), поэтому релиз
    без проверки собрать нельзя.
 
-## 2. Android-модуль (создаёт релиз)
+## 2. Публикация релиза
 
 ```bash
 git checkout android
@@ -55,30 +57,22 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-Workflow `release` в ветке `android`: проверяет `module.prop == тег`,
-собирает zip через `package_zip.py`, публикует GitHub Release и обновляет
-`update.json` на `master`.
+Workflow `release`:
+1. Проверяет `module.prop == тег` и отсутствие форсированного `GOMEMLIMIT`.
+2. Собирает Android multiarch модуль через `package_zip.py`.
+3. Подтягивает ветки `win` и `linux` и собирает все desktop-пакеты через `build_desktop.ps1`.
+4. Проверяет, что собрано ровно **14 ассетов**.
+5. Создаёт/обновляет GitHub Release со всеми 14 ассетами и заметками из `changelog.md`.
+6. Обновляет `update.json` на `master` и пушит коммит.
 
-## 3. Desktop-пакеты (дополняют релиз)
+### Ручной запуск (workflow_dispatch)
 
-После успешного Android-прогона запустить workflow `release` в ветках
-`win` и `linux` с input `tag: vX.Y.Z`:
+При необходимости пересобрать или дособрать релиз для существующего тега можно
+запустить workflow `release` вручную через GitHub Actions (`workflow_dispatch`),
+передав параметр `tag: vX.Y.Z`. CI выкачает соответствующий тег, соберёт все
+14 ассетов и обновит релиз (`gh release upload --clobber`).
 
-- GitHub → Actions → `release` → **Run workflow** → ветка `win` (затем `linux`),
-  поле `tag` = `vX.Y.Z`;
-- или через API (нужен токен с правом Actions):
-
-```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  https://api.github.com/repos/dea1hwatcher/teleweb/actions/workflows/release.yml/dispatches \
-  -d '{"ref":"win","inputs":{"tag":"vX.Y.Z"}}'
-```
-
-Повторить с `"ref":"linux"`. Каждый прогон собирает `build_desktop.ps1`
-и прикрепляет `dist/*` к существующему релизу (`gh release upload --clobber`).
-
-## 4. Проверка релиза
+## 3. Проверка релиза
 
 - В релизе **14 ассетов**: 1 модуль + 9 Windows (3 exe, 6 архивов) + 4 Linux
   (2 zip, 2 tar.gz).
