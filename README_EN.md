@@ -44,7 +44,7 @@ TeleWEB transparently intercepts and routes Telegram data center traffic (DC1–
 
 ## Windows and Linux Desktop Ports
 
-Desktop versions provide transparent redirection via WinDivert (Windows) and iptables (Linux), driverless SOCKS5 mode, Windows Service / systemd units, and a native Windows 11 Fluent Design GUI. For details and caveats, see [`docs/DESKTOP.md`](docs/DESKTOP.md). Desktop packages are built with `build_desktop.ps1`.
+Desktop versions provide transparent redirection via WinDivert (Windows) and iptables (Linux), Windows Service / systemd units, and a native Windows 11 Fluent Design GUI. For details and caveats, see [`docs/DESKTOP.md`](docs/DESKTOP.md). Desktop packages are built with `build_desktop.ps1`.
 
 ## Installation
 
