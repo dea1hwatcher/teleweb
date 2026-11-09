@@ -61,8 +61,10 @@ targeted_conntrack_flush
 log_msg "INFO" "Первичный запуск службы TeleWEB (boot)..."
 if "$MODDIR/bin/tgws" boot >>"$SUPERVISOR_LOG" 2>&1; then
   update_description running
+  notify_user "TeleWEB" "Служба активна: WSS · DC1-DC5"
 else
   update_description error
+  notify_user "TeleWEB" "Ошибка запуска службы! Проверьте логи."
 fi
 
 # 5. Supervisor loop with battery-saving backoff upon recurring failures
@@ -79,6 +81,7 @@ while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do
     rotate_all_logs
     if [ "$FAILS" -gt 0 ]; then
       log_msg "INFO" "Служба TeleWEB восстановилась после сбоев. Возврат к стандартному интервалу проверок (60c)."
+      notify_user "TeleWEB" "Служба успешно восстановилась после сбоев"
     fi
     FAILS=0
     INTERVAL=60
@@ -92,6 +95,7 @@ while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do
       if [ "$INTERVAL" -ne 300 ]; then
         log_msg "ERROR" "Превышен лимит сбоев ($FAILS попыток подряд). Переход в замедленный режим (раз в 5 минут для экономии батареи)..."
         INTERVAL=300
+        notify_user "TeleWEB" "Внимание: повторяющиеся сбои ($FAILS подряд)"
       fi
     else
       INTERVAL=60

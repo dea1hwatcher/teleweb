@@ -149,6 +149,18 @@ update_description() { # running | active | error | failed | stopped | disabled
   return 0
 }
 
+# Post native Android status notification via cmd notification
+notify_user() {
+  local title="$1"
+  local text="$2"
+  local tag="${3:-teleweb_status}"
+  if [ -x "/system/bin/cmd" ] || command -v cmd >/dev/null 2>&1; then
+    # UID 2000 (shell) has permission to post system notifications without an APK
+    su -lp 2000 -c "cmd notification post -S bigtext -t '$title' '$tag' '$text'" >/dev/null 2>&1 || \
+      cmd notification post -S bigtext -t "$title" "$tag" "$text" >/dev/null 2>&1 || true
+  fi
+}
+
 # Wait for system boot completion and Package Manager availability
 wait_for_boot() {
   local count=0
@@ -249,8 +261,41 @@ apply_network_tweaks() {
   # Allow REDIRECT to localhost from incoming tether interfaces
   sysctl -w net.ipv4.conf.all.route_localnet=1 2>/dev/null || true
   sysctl -w net.ipv4.conf.default.route_localnet=1 2>/dev/null || true
+
+  # Loopback routing & local delivery: accept local packets and loose rp_filter
+  sysctl -w net.ipv4.conf.lo.rp_filter=2 2>/dev/null || true
+  sysctl -w net.ipv4.conf.lo.accept_local=1 2>/dev/null || true
+
   # Disable TCP autocorking to prevent 20-40ms latency spikes for MTProto message packets
   sysctl -w net.ipv4.tcp_autocorking=0 2>/dev/null || true
+
+  # Enable PLPMTUD (RFC 4821) to prevent PMTU blackholes on cellular networks and hotspots
+  sysctl -w net.ipv4.tcp_mtu_probing=1 2>/dev/null || true
+
+  # Prevent cwnd collapse to 1 MSS during chat idle periods (eliminates 50-200ms latency spike)
+  sysctl -w net.ipv4.tcp_slow_start_after_idle=0 2>/dev/null || true
+
+  # Socket queue & buffer scaling for media bursts
+  sysctl -w net.core.somaxconn=4096 2>/dev/null || true
+  sysctl -w net.ipv4.tcp_max_syn_backlog=4096 2>/dev/null || true
+  sysctl -w net.core.netdev_max_backlog=4096 2>/dev/null || true
+  sysctl -w net.core.rmem_max=4194304 2>/dev/null || true
+  sysctl -w net.core.wmem_max=4194304 2>/dev/null || true
+
+  # Smart queue discipline selection: prefer fq_codel, fallback to fq or codel
+  for q in fq_codel fq codel; do
+    if sysctl -w net.core.default_qdisc="$q" >/dev/null 2>&1; then
+      break
+    fi
+  done
+
+  # Congestion control selection: prefer bbr if available in kernel
+  if grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+    sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || true
+  fi
+
+  # Disable Android private DNS to prevent carrier DoT hijacking DoH lookups
+  settings put global private_dns_mode off 2>/dev/null || true
 }
 
 # Targeted conntrack flush: flush flows only for Telegram destination CIDRs
