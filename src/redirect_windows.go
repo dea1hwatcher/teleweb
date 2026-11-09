@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -590,6 +591,20 @@ var (
 
 func redirectorSupported() bool { return runtime.GOARCH == "amd64" || runtime.GOARCH == "386" }
 
+const winDivertBufferSize = 67584 // 64*1024 + 2048, comfortably exceeds WINDIVERT_MTU_MAX (65575)
+
+func isFatalWinDivertError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		// 6 = ERROR_INVALID_HANDLE, 995 = ERROR_OPERATION_ABORTED
+		return errno == 6 || errno == 995
+	}
+	return false
+}
+
 // redirectorUnsupportedReason explains why transparent mode is unavailable on
 // this architecture (ARM64 has no WinDivert driver build).
 func redirectorUnsupportedReason() error {
@@ -659,8 +674,29 @@ func v6CoverageNotice(hasIPv6 bool) string {
 func startRedirector() error {
 	redirectorMu.Lock()
 	defer redirectorMu.Unlock()
-	if activeRedirector != nil && activeRedirector.running.Load() {
-		return nil
+	if activeRedirector != nil {
+		if activeRedirector.running.Load() {
+			return nil
+		}
+		// Clean up previous inactive redirector handles before opening new ones
+		activeRedirector.running.Store(false)
+		if activeRedirector.stopJanitor != nil {
+			close(activeRedirector.stopJanitor)
+			activeRedirector.stopJanitor = nil
+		}
+		if activeRedirector.hOut != 0 {
+			_, _, _ = wdClose.Call(activeRedirector.hOut)
+		}
+		if activeRedirector.hRet != 0 {
+			_, _, _ = wdClose.Call(activeRedirector.hRet)
+		}
+		if activeRedirector.hOut6 != 0 {
+			_, _, _ = wdClose.Call(activeRedirector.hOut6)
+		}
+		if activeRedirector.hRet6 != 0 {
+			_, _, _ = wdClose.Call(activeRedirector.hRet6)
+		}
+		activeRedirector = nil
 	}
 	if !isElevated() {
 		return errAdminRequired
@@ -745,9 +781,14 @@ func stopRedirector() {
 		activeRedirector.running.Store(false)
 		if activeRedirector.stopJanitor != nil {
 			close(activeRedirector.stopJanitor)
+			activeRedirector.stopJanitor = nil
 		}
-		_, _, _ = wdClose.Call(activeRedirector.hOut)
-		_, _, _ = wdClose.Call(activeRedirector.hRet)
+		if activeRedirector.hOut != 0 {
+			_, _, _ = wdClose.Call(activeRedirector.hOut)
+		}
+		if activeRedirector.hRet != 0 {
+			_, _, _ = wdClose.Call(activeRedirector.hRet)
+		}
 		if activeRedirector.hOut6 != 0 {
 			_, _, _ = wdClose.Call(activeRedirector.hOut6)
 		}
@@ -772,16 +813,27 @@ func (r *wdRedirector) outLoop() {
 			r.running.Store(false)
 		}
 	}()
-	pkt := make([]byte, 65535)
+	pkt := make([]byte, winDivertBufferSize)
+	var consecErr int
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hOut, pkt)
 		if err != nil {
-			if r.running.Load() {
-				logf("redirector: recv: %v", err)
-				r.running.Store(false)
+			if !r.running.Load() || isFatalWinDivertError(err) {
+				return
 			}
-			return
+			consecErr++
+			if consecErr <= 3 || consecErr%50 == 0 {
+				logf("redirector: recv: %v (consecutive errors: %d)", err, consecErr)
+			}
+			if consecErr > 100 {
+				logf("redirector: too many consecutive recv errors (%d), terminating outLoop", consecErr)
+				r.running.Store(false)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
+		consecErr = 0
 		p := pkt[:n]
 		m, ok := parseTCPv4(p)
 		if !ok || isSelfDialPort(m.sport) {
@@ -825,16 +877,27 @@ func (r *wdRedirector) retLoop() {
 			r.running.Store(false)
 		}
 	}()
-	pkt := make([]byte, 65535)
+	pkt := make([]byte, winDivertBufferSize)
+	var consecErr int
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hRet, pkt)
 		if err != nil {
-			if r.running.Load() {
-				logf("redirector: ret recv: %v", err)
-				r.running.Store(false)
+			if !r.running.Load() || isFatalWinDivertError(err) {
+				return
 			}
-			return
+			consecErr++
+			if consecErr <= 3 || consecErr%50 == 0 {
+				logf("redirector: ret recv: %v (consecutive errors: %d)", err, consecErr)
+			}
+			if consecErr > 100 {
+				logf("redirector: too many consecutive ret recv errors (%d), terminating retLoop", consecErr)
+				r.running.Store(false)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
+		consecErr = 0
 		p := pkt[:n]
 		m, ok := parseTCPv4(p)
 		if !ok {
@@ -934,16 +997,27 @@ func (r *wdRedirector) out6Loop() {
 			r.running.Store(false)
 		}
 	}()
-	pkt := make([]byte, 65535)
+	pkt := make([]byte, winDivertBufferSize)
+	var consecErr int
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hOut6, pkt)
 		if err != nil {
-			if r.running.Load() {
-				logf("redirector: v6 recv: %v", err)
-				r.running.Store(false)
+			if !r.running.Load() || isFatalWinDivertError(err) {
+				return
 			}
-			return
+			consecErr++
+			if consecErr <= 3 || consecErr%50 == 0 {
+				logf("redirector: v6 recv: %v (consecutive errors: %d)", err, consecErr)
+			}
+			if consecErr > 100 {
+				logf("redirector: too many consecutive v6 recv errors (%d), terminating out6Loop", consecErr)
+				r.running.Store(false)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
+		consecErr = 0
 		p := pkt[:n]
 		switch processOut6(p) {
 		case v6Rewritten:
@@ -964,16 +1038,27 @@ func (r *wdRedirector) ret6Loop() {
 			r.running.Store(false)
 		}
 	}()
-	pkt := make([]byte, 65535)
+	pkt := make([]byte, winDivertBufferSize)
+	var consecErr int
 	for r.running.Load() {
 		n, addr, err := wdRecvPacket(r.hRet6, pkt)
 		if err != nil {
-			if r.running.Load() {
-				logf("redirector: v6 ret recv: %v", err)
-				r.running.Store(false)
+			if !r.running.Load() || isFatalWinDivertError(err) {
+				return
 			}
-			return
+			consecErr++
+			if consecErr <= 3 || consecErr%50 == 0 {
+				logf("redirector: v6 ret recv: %v (consecutive errors: %d)", err, consecErr)
+			}
+			if consecErr > 100 {
+				logf("redirector: too many consecutive v6 ret recv errors (%d), terminating ret6Loop", consecErr)
+				r.running.Store(false)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
+		consecErr = 0
 		p := pkt[:n]
 		if processRet6(p) {
 			addr.clearLoopback()
@@ -1006,6 +1091,18 @@ func redirectorHealthy() bool {
 func ensureRedirector() error {
 	if redirectorHealthy() {
 		return nil
+	}
+	// If running in the daemon process with admin rights and local redirector is down,
+	// attempt to start it immediately.
+	if isElevated() && !localRedirectorHealthy() {
+		if b, e := os.ReadFile(path("tgws.pid")); e == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid == os.Getpid() {
+				_ = startRedirector()
+				if localRedirectorHealthy() {
+					return nil
+				}
+			}
+		}
 	}
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {

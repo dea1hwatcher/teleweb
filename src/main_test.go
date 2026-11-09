@@ -4543,6 +4543,88 @@ func TestPipeWSTunnel_WorkerSilentStall_ClosesAndStrikes(t *testing.T) {
 	}
 }
 
+func TestPipeWSTunnel_NonWorker_DoesNotStallCut(t *testing.T) {
+	prevClose, prevDue, prevGaveUp := getRelayStallClose(), getRelayAnswerDue(), getRelayGaveUpWithin()
+	setRelayStallTimeouts(50*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond)
+	t.Cleanup(func() {
+		setRelayStallTimeouts(prevClose, prevDue, prevGaveUp)
+	})
+
+	frontHost := "web.telegram.org"
+	dc := 2
+
+	clientConn, proxyClient := net.Pipe()
+	defer clientConn.Close()
+	defer proxyClient.Close()
+
+	serverConn, proxyServer := net.Pipe()
+	defer serverConn.Close()
+	defer proxyServer.Close()
+
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	ws := &wsConn{
+		conn:     proxyServer,
+		r:        bufio.NewReader(proxyServer),
+		host:     frontHost,
+		isWorker: false,
+	}
+
+	init := make([]byte, 64)
+	for i := 0; i < 56; i++ {
+		init[i] = byte(i + 1)
+	}
+	block, err := aes.NewCipher(init[8:40])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctr := cipher.NewCTR(block, init[40:56])
+	ctr.XORKeyStream(make([]byte, 56), make([]byte, 56))
+	plainTail := make([]byte, 8)
+	binary.LittleEndian.PutUint32(plainTail[:4], 0xEFEFEFEF)
+	plainTail[4], plainTail[5] = 0x02, 0x00
+	ctr.XORKeyStream(init[56:], plainTail)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeWSTunnel(proxyClient, ws, init, 1002, dc, false, "149.154.167.50", false)
+	}()
+
+	clientCTR := cipher.NewCTR(block, init[40:56])
+	clientCTR.XORKeyStream(make([]byte, 64), make([]byte, 64))
+
+	pkt1 := make([]byte, 17)
+	pkt1[0] = 4
+	encPkt1 := make([]byte, 17)
+	clientCTR.XORKeyStream(encPkt1, pkt1)
+	_, _ = clientConn.Write(encPkt1)
+
+	time.Sleep(15 * time.Millisecond)
+
+	pkt2 := make([]byte, 17)
+	pkt2[0] = 4
+	encPkt2 := make([]byte, 17)
+	clientCTR.XORKeyStream(encPkt2, pkt2)
+	_, _ = clientConn.Write(encPkt2)
+
+	select {
+	case <-done:
+		t.Fatal("pipeWSTunnel unexpectedly cut non-worker relay on silence")
+	case <-time.After(80 * time.Millisecond):
+	}
+
+	_ = clientConn.Close()
+	<-done
+}
+
 func TestCFDomainsMirrorURL_Defined(t *testing.T) {
 	if mirrorCFDomainsURL == "" {
 		t.Fatal("mirrorCFDomainsURL must not be empty")
