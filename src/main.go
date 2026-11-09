@@ -2612,9 +2612,9 @@ func daemonHealthy() bool {
 			return true
 		}
 	}
-	// If the daemon wrote a fresh status snapshot within the last 5s, it is
+	// If the daemon wrote a fresh status snapshot within the last 15s, it is
 	// actively executing its loop; avoid an unnecessary TCP probe.
-	if st, err := os.Stat(path("status.json")); err == nil && time.Since(st.ModTime()) < 5*time.Second {
+	if st, err := os.Stat(path("status.json")); err == nil && time.Since(st.ModTime()) < 15*time.Second {
 		return true
 	}
 	return serverListening()
@@ -2817,9 +2817,19 @@ func watchdog() {
 		}
 		retryFailedIPv6Rules()
 		if !rulesHealthy() {
-			logf("watchdog: iptables rules reset or corrupted, restoring; iptables=%q", findBin("iptables"))
-			if err := setupRules(); err != nil {
-				logf("watchdog: failed to restore iptables: %v", err)
+			if redirectorSupported() {
+				logf("watchdog: redirector not healthy, attempting restore")
+				if err := setupRules(); err != nil {
+					logf("watchdog: setupRules failed: %v; recycling daemon to restore WinDivert", err)
+					if rerr := restoreDaemon(); rerr != nil {
+						logf("watchdog: daemon restore failed: %v", rerr)
+					}
+				}
+			} else {
+				logf("watchdog: iptables rules reset or corrupted, restoring; iptables=%q", findBin("iptables"))
+				if err := setupRules(); err != nil {
+					logf("watchdog: failed to restore iptables: %v", err)
+				}
 			}
 		}
 	}
@@ -3619,6 +3629,10 @@ func serve() {
 			case <-workerCtx.Done():
 				return
 			case <-t.C:
+				if redirectorSupported() && readEnabled() && !localRedirectorHealthy() {
+					logf("redirector: local redirector stopped unexpectedly; attempting restart")
+					_ = startRedirector()
+				}
 				writeStatus()
 			}
 		}
@@ -4417,6 +4431,9 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 	gaveUpWithin := getRelayGaveUpWithin()
 
 	stalled := func() bool {
+		if ws == nil || !ws.isWorker || isMedia {
+			return false
+		}
 		if upSinceDown.Load() == 0 || upWrites.Load() < 2 {
 			return false
 		}
@@ -4426,6 +4443,9 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 	}
 
 	gaveUp := func() bool {
+		if ws == nil || !ws.isWorker || isMedia {
+			return false
+		}
 		if upSinceDown.Load() == 0 {
 			return false
 		}
@@ -4442,31 +4462,33 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 		}
 	}
 
-	go func() {
-		tick := stallClose / 8
-		if tick > time.Second {
-			tick = time.Second
-		}
-		if tick < 10*time.Millisecond {
-			tick = 10 * time.Millisecond
-		}
-		ticker := time.NewTicker(tick)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stopIdle:
-				return
-			case <-ticker.C:
-				if stalled() {
-					logf("conn #%d DC%d: %s silent for >%v with %d B awaiting answer; cutting stalled relay",
-						id, dc, ws.host, stallClose, upSinceDown.Load())
-					reportStall()
-					closeBoth()
+	if ws != nil && ws.isWorker && !isMedia {
+		go func() {
+			tick := stallClose / 8
+			if tick > time.Second {
+				tick = time.Second
+			}
+			if tick < 10*time.Millisecond {
+				tick = 10 * time.Millisecond
+			}
+			ticker := time.NewTicker(tick)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopIdle:
 					return
+				case <-ticker.C:
+					if stalled() {
+						logf("conn #%d DC%d: %s silent for >%v with %d B awaiting answer; cutting stalled relay",
+							id, dc, ws.host, stallClose, upSinceDown.Load())
+						reportStall()
+						closeBoth()
+						return
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
