@@ -221,20 +221,29 @@ type natEntry struct {
 	// the RFC 5382 idle timeout instead of a couple of minutes: dropping a live
 	// mapping leaves the replies forwarded to the client unrewritten.
 	established atomic.Bool
+	// closing turns true once a FIN or RST packet is observed, allowing the
+	// mapping to be reclaimed after a short 2*MSL timeout instead of pinning
+	// the NAT port for two hours.
+	closing atomic.Bool
 }
 
 // TCP control bits, as they appear in the flags octet.
 const (
+	tcpFlagFIN = 0x01
 	tcpFlagSYN = 0x02
+	tcpFlagRST = 0x04
 	tcpFlagACK = 0x10
 )
 
 // touch records traffic on the flow and upgrades it to established when the
-// flags show a completed handshake.
+// flags show a completed handshake, or marks it closing on FIN/RST.
 func (e *natEntry) touch(flags byte, now int64) {
 	e.lastSeen.Store(now)
 	if flags&tcpFlagACK != 0 && flags&tcpFlagSYN == 0 {
 		e.established.Store(true)
+	}
+	if flags&(tcpFlagFIN|tcpFlagRST) != 0 {
+		e.closing.Store(true)
 	}
 }
 
@@ -365,10 +374,10 @@ func natLookupFlowV6(flow natFlowKeyV6) *natEntry {
 
 // Idle timeouts from RFC 5382: a connection that never finished its handshake
 // goes stale after four minutes, an established one only after two hours and
-// four minutes. The single 360 s cutoff that was here before dropped connections
-// that were alive but quiet, and a dropped mapping sends the replies to the
-// client unrewritten, which the client sees as a broken connection.
+// four minutes. A connection closed with FIN or RST transitions to a 2-minute
+// 2*MSL timeout so NAT ports are promptly returned to the pool.
 const (
+	natClosingTimeout     = 2 * time.Minute
 	natIdleTimeout        = 4 * time.Minute
 	natEstablishedTimeout = 2*time.Hour + 4*time.Minute
 )
@@ -376,11 +385,14 @@ const (
 // pruneFlowMap drops stale mappings from one family's flow map. The caller
 // holds natTable.mu.
 func pruneFlowMap[K comparable](flows map[K]*natEntry, now time.Time) {
+	closingCutoff := now.Add(-natClosingTimeout).UnixNano()
 	idleCutoff := now.Add(-natIdleTimeout).UnixNano()
 	establishedCutoff := now.Add(-natEstablishedTimeout).UnixNano()
 	for k, e := range flows {
 		cutoff := idleCutoff
-		if e.established.Load() {
+		if e.closing.Load() {
+			cutoff = closingCutoff
+		} else if e.established.Load() {
 			cutoff = establishedCutoff
 		}
 		if e.lastSeen.Load() < cutoff {

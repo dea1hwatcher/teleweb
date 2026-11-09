@@ -226,8 +226,12 @@ func (p *WsPool) rotate() {
 				if entry == nil || entry.ws == nil {
 					continue
 				}
-				// Discard if older than wsPoolMaxAge
-				if now.Sub(entry.createdAt) > wsPoolMaxAge {
+				// Discard if older than maxAge (45s for worker sockets, 90s for standard)
+				maxAge := wsPoolMaxAge
+				if entry.ws.isWorker {
+					maxAge = 45 * time.Second
+				}
+				if now.Sub(entry.createdAt) > maxAge {
 					_ = entry.ws.Close()
 					continue
 				}

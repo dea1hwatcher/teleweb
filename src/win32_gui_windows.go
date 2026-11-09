@@ -116,6 +116,19 @@ func setMainHwnd(hwnd uintptr) {
 	mainHwndMu.Unlock()
 }
 
+var enumWindowsCallback = syscall.NewCallback(func(hwnd, lParam uintptr) uintptr {
+	var wndPid uint32
+	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&wndPid)))
+	trayMu.Lock()
+	isTray := (hwnd == trayHwnd)
+	trayMu.Unlock()
+	if wndPid == windows.GetCurrentProcessId() && !isTray {
+		mainHwnd = hwnd
+		return 0 // stop enumeration
+	}
+	return 1 // continue
+})
+
 func findMainWindow() uintptr {
 	mainHwndMu.Lock()
 	defer mainHwndMu.Unlock()
@@ -126,19 +139,7 @@ func findMainWindow() uintptr {
 		}
 		mainHwnd = 0
 	}
-	pid := windows.GetCurrentProcessId()
-	procEnumWindows.Call(syscall.NewCallback(func(hwnd, lParam uintptr) uintptr {
-		var wndPid uint32
-		procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&wndPid)))
-		trayMu.Lock()
-		isTray := (hwnd == trayHwnd)
-		trayMu.Unlock()
-		if wndPid == pid && !isTray {
-			mainHwnd = hwnd
-			return 0 // stop enumeration
-		}
-		return 1 // continue
-	}), 0)
+	procEnumWindows.Call(enumWindowsCallback, 0)
 	if mainHwnd == 0 {
 		title, _ := windows.UTF16PtrFromString("TeleWEB")
 		h, _, _ := procFindWindow.Call(0, uintptr(unsafe.Pointer(title)))
