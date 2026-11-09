@@ -11,10 +11,12 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 func defaultBaseDir() string {
@@ -127,4 +129,51 @@ func setDialSockOpts(c syscall.RawConn) error {
 		l := windows.Linger{Onoff: 1, Linger: 0}
 		_ = windows.SetsockoptLinger(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_LINGER, &l)
 	})
+}
+
+func resetNetworkStack() error {
+	var errs []string
+
+	// 1. Flush DNS cache via DnsFlushResolverCache or ipconfig /flushdns
+	dnsapi := windows.NewLazySystemDLL("dnsapi.dll")
+	procDnsFlushResolverCache := dnsapi.NewProc("DnsFlushResolverCache")
+	if r, _, _ := procDnsFlushResolverCache.Call(); r == 0 {
+		cmd := exec.Command("ipconfig", "/flushdns")
+		setCmdNoWindow(cmd)
+		if err := cmd.Run(); err != nil {
+			errs = append(errs, fmt.Sprintf("flushdns: %v", err))
+		}
+	}
+
+	// 2. Clear dead 127.0.0.1 / localhost ProxyServer in registry
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Internet Settings`, registry.QUERY_VALUE|registry.SET_VALUE)
+	if err == nil {
+		defer k.Close()
+		proxyEnable, _, err := k.GetIntegerValue("ProxyEnable")
+		if err == nil && proxyEnable != 0 {
+			proxyServer, _, _ := k.GetStringValue("ProxyServer")
+			lowered := strings.ToLower(proxyServer)
+			if strings.Contains(lowered, "127.0.0.1") || strings.Contains(lowered, "localhost") {
+				_ = k.SetDWordValue("ProxyEnable", 0)
+				// Notify WinINet that proxy settings changed
+				wininet := windows.NewLazySystemDLL("wininet.dll")
+				procInternetSetOption := wininet.NewProc("InternetSetOptionW")
+				const internetOptionSettingsChanged = 39
+				const internetOptionRefresh = 37
+				_, _, _ = procInternetSetOption.Call(0, uintptr(internetOptionSettingsChanged), 0, 0)
+				_, _, _ = procInternetSetOption.Call(0, uintptr(internetOptionRefresh), 0, 0)
+				logf("net-reset: disabled orphaned local proxy (%s) in Windows Internet Settings", proxyServer)
+			}
+		}
+	}
+
+	// 3. Delete ARP cache
+	cmd := exec.Command("netsh", "interface", "ip", "delete", "arpcache")
+	setCmdNoWindow(cmd)
+	_ = cmd.Run()
+
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
 }

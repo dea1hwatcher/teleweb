@@ -3564,6 +3564,13 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "net-reset":
+			if err := resetNetworkStack(); err != nil {
+				fmt.Fprintf(os.Stderr, "net-reset: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Network stack reset completed successfully")
+			return
 		}
 	}
 	if !isAndroidRuntime() {
@@ -3571,7 +3578,7 @@ func main() {
 		cmdGui("")
 		return
 	}
-	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run")
+	fmt.Println("TeleWEB transparent WebSocket engine\ncommands: boot | ensure | status | stop | watchdog | run | gui [addr] | api BASE64_JSON | check | svc-install | svc-uninstall | svc-run | net-reset")
 }
 
 func serve() {
@@ -4287,11 +4294,18 @@ func directDialMarkFail(ipStr string) { directDialFails.markFail(ipStr) }
 
 func directDialMarkReachable(ipStr string) { directDialFails.markReachable(ipStr) }
 
+// directProofBytes is the minimum amount of payload that must be transferred
+// downstream before a direct TCP route is considered verified. Censorship DPI
+// (TSPU) typically cuts direct connections inside a 12-36 KB "cut window"
+// (~16 KB) after completing the initial handshake.
+const directProofBytes = 32 * 1024
+
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	statsMu.Lock()
 	dcCounts["203"]++
 	statsMu.Unlock()
 
+	// Level 1: Personal Cloudflare Worker (if configured)
 	worker := customCFWorkerCached()
 	if worker != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -4305,16 +4319,17 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 			pipeWSTunnel(c, ws, init, id, 203, false, orig.Addr().String(), false)
 			return
 		}
-		logf("conn #%d CDN203: Cloudflare Worker %s did not respond: %v; falling back to direct TCP", id, worker, err)
+		logf("conn #%d CDN203: Cloudflare Worker %s did not respond: %v; falling back", id, worker, err)
 	}
 
-	// Dedicated native TCP pass-through to the client's original CDN
-	// destination (IP and port as dialed by the client — CDN203 serves both
-	// :443 and :80).
-	if !dc203DirectTCPCached() {
+	cfPri := cfPriorityCached()
+	directTCP := dc203DirectTCPCached()
+
+	if !directTCP && !cfPri && worker == "" {
 		logf("conn #%d CDN203 direct TCP disabled by configuration", id)
 		return
 	}
+
 	if !isCDN203IP(orig.Addr()) {
 		// Defense in depth: a forged DC203 tag must never turn this function
 		// into a raw TCP tunnel to an arbitrary destination.
@@ -4322,28 +4337,100 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		return
 	}
 	dst := net.JoinHostPort(orig.Addr().String(), strconv.Itoa(int(orig.Port())))
-	if cdn203BlockedRecently(dst) {
-		return
+
+	// Helper to dial Cloudflare Fronts or Public Workers (WSS fallback)
+	dialWSSFallback := func() bool {
+		domains := cfDomainsCached()
+		if len(domains) > 0 {
+			resolver := systemDNSResolver()
+			start := int(atomic.AddUint64(&cfFrontSeq, 1) % uint64(len(domains)))
+			frontHosts := frontCandidatesForRace(203, domains, start, 2)
+			if len(frontHosts) > 0 {
+				var candList []dialCandidate
+				for _, host := range frontHosts {
+					h := host
+					candList = append(candList, dialCandidate{
+						name: fmt.Sprintf("cf-domain (%s)", h),
+						dial: func(ctx context.Context) (*wsConn, error) {
+							return dialCFHost(ctx, resolver, h)
+						},
+					})
+				}
+				raceCtx, raceCancel := context.WithTimeout(context.Background(), 8*time.Second)
+				ws, winner, err := raceCandidates(raceCtx, candList, 250*time.Millisecond, 2)
+				raceCancel()
+				if err == nil {
+					atomic.AddInt64(&wsCount, 1)
+					defer atomic.AddInt64(&wsCount, -1)
+					logf("conn #%d %s -> CDN203 via Cloudflare front %s", id, orig, winner)
+					defer ws.Close()
+					pipeWSTunnel(c, ws, init, id, 203, true, orig.Addr().String(), false)
+					return true
+				}
+				logf("conn #%d CDN203: Cloudflare fronts did not respond: %v; falling back", id, err)
+			}
+		}
+
+		if worker == "" {
+			if pubWorker := nextPublicWorker(); pubWorker != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				ws, err := dialCFWorker(ctx, 203, cdn203IP, pubWorker, false)
+				cancel()
+				if err == nil {
+					atomic.AddInt64(&wsCount, 1)
+					defer atomic.AddInt64(&wsCount, -1)
+					logf("conn #%d %s -> CDN203 via public Cloudflare Worker %s", id, orig, pubWorker)
+					defer ws.Close()
+					pipeWSTunnel(c, ws, init, id, 203, false, orig.Addr().String(), false)
+					return true
+				}
+				logf("conn #%d CDN203: public Cloudflare Worker %s did not respond: %v", id, pubWorker, err)
+			}
+		}
+		return false
 	}
-	remote, err := trackedDial(context.Background(), "tcp4", dst, 5*time.Second)
-	if err != nil {
-		if !isNeutralError(err) {
+
+	// If CF priority is forced, try WSS first
+	if cfPri {
+		if dialWSSFallback() {
+			return
+		}
+	}
+
+	// Try dedicated native TCP pass-through if enabled and not blocked recently
+	if directTCP && !cdn203BlockedRecently(dst) {
+		remote, err := trackedDial(context.Background(), "tcp4", dst, 3*time.Second)
+		if err == nil {
+			defer remote.Close()
+			setConnSockOpts(remote)
+			if err := writeFull(remote, init); err == nil {
+				atomic.AddInt64(&trafficUpBytes, int64(len(init)))
+				logf("conn #%d %s -> CDN203 (%s) via direct TCP pass-through", id, orig, dst)
+				pipeTCPToTCP(c, remote, id, 203, func(up, down int64) {
+					if down >= directProofBytes {
+						cdn203MarkReachable(dst)
+					} else if (up > 0 || len(init) > 0) && down < directProofBytes {
+						logf("conn #%d CDN203 (%s) direct TCP cut early (%d up, %d down < %d bytes threshold); marking fail", id, dst, up+int64(len(init)), down, directProofBytes)
+						atomic.AddInt64(&failCnt, 1)
+						cdn203MarkFail(dst)
+					}
+				})
+				return
+			}
+			logf("conn #%d CDN203 write init failed: %v", id, err)
+		}
+		if err != nil && !isNeutralError(err) {
 			atomic.AddInt64(&failCnt, 1)
 			cdn203MarkFail(dst)
 		}
-		return
 	}
-	cdn203MarkReachable(dst)
-	defer remote.Close()
-	setConnSockOpts(remote)
 
-	if err := writeFull(remote, init); err != nil {
-		logf("conn #%d CDN203 write init failed: %v", id, err)
-		return
+	// Direct TCP was blocked, failed, or disabled; fall back to WSS (Cloudflare Fronts & Public Workers)
+	if !cfPri {
+		if dialWSSFallback() {
+			return
+		}
 	}
-	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
-	logf("conn #%d %s -> CDN203 (%s) via direct TCP pass-through", id, orig, dst)
-	pipeTCPToTCP(c, remote, id, 203)
 }
 
 // startIdleWatchdog closes the connection through onIdle once no bytes have
@@ -4367,7 +4454,7 @@ func startIdleWatchdog(stopIdle <-chan struct{}, lastActivity *atomic.Int64, onI
 	}
 }
 
-func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
+func pipeTCPToTCP(c, remote net.Conn, id int64, dc int, onFinish func(up, down int64)) {
 	setConnSockOpts(c)
 	setConnSockOpts(remote)
 	var upBytes, downBytes int64
@@ -4456,6 +4543,9 @@ func pipeTCPToTCP(c, remote net.Conn, id int64, dc int) {
 		}
 	}()
 	wg.Wait()
+	if onFinish != nil {
+		onFinish(atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
+	}
 }
 
 var (
@@ -4644,6 +4734,11 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 									logf("conn #%d %s: remapped to sibling DC%d (was DC%d) after -444", id, targetIP, alt, dc)
 								}
 							}
+							closeBoth()
+							return
+						}
+						if code == -404 {
+							logf("conn #%d DC%d: upstream returned -404 (KEY_NOT_FOUND); suppressing from client to preserve session key", id, dc)
 							closeBoth()
 							return
 						}
@@ -4987,7 +5082,9 @@ var dcSpecs = map[int]dcSpec{
 		workerDst:  "149.154.171.5",
 	},
 	203: {
-		workerDst: cdn203IP,
+		ingress:    cdn203IP,
+		candidates: []string{cdn203IP},
+		workerDst:  cdn203IP,
 	},
 }
 
@@ -5015,6 +5112,24 @@ var builtInCFDomains = []string{
 	"sorokodin.co.uk", "pyatdesyatodin.co.uk", "notelega.co.uk", "ebally.co.uk",
 	"nebally.co.uk", "havegreatday.co.uk", "pomogite.co.uk", "fixtelega.co.uk",
 	"sadnews.co.uk", "onedaychamp.co.uk", "stopblocking.co.uk", "nothingthere.co.uk",
+}
+
+// publicTunnelWorkers provides a Tier-3 fallback pool of public Cloudflare Workers
+// when neither a personal worker is configured nor Cloudflare fronts respond.
+var publicTunnelWorkers = []string{
+	"edge.amberwick.workers.dev",
+	"fuckyourkn.copperbrook.workers.dev",
+	"nodeone.brackencombe.workers.dev",
+}
+
+var publicWorkerSeq atomic.Uint64
+
+func nextPublicWorker() string {
+	if len(publicTunnelWorkers) == 0 {
+		return ""
+	}
+	idx := int(publicWorkerSeq.Add(1) % uint64(len(publicTunnelWorkers)))
+	return publicTunnelWorkers[idx]
 }
 
 var domainPattern = regexp.MustCompile(`^(?i)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -5993,6 +6108,20 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 					},
 				}
 				candidates = append(candidates, candDomain)
+			}
+		}
+
+		// 7. Public Cloudflare Worker fallback (Tier-3)
+		if worker == "" {
+			if pubWorker := nextPublicWorker(); pubWorker != "" {
+				dst := workerDstForDC(dc)
+				candPubWorker := dialCandidate{
+					name: fmt.Sprintf("cf-worker (%s)", pubWorker),
+					dial: func(c context.Context) (*wsConn, error) {
+						return dialCFWorker(c, dc, dst, pubWorker, false)
+					},
+				}
+				deferCandidates = append(deferCandidates, candPubWorker)
 			}
 		}
 	}
