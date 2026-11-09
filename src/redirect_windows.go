@@ -117,10 +117,24 @@ func explainWinDivertError(err error) error {
 	}
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
-		if errno == 433 {
+		switch uint32(errno) {
+		case 5:
+			return fmt.Errorf("WinDivertOpen failed (ERROR_ACCESS_DENIED 5): administrator rights required or driver blocked by antivirus/security software: %w", err)
+		case 433:
 			return fmt.Errorf("WinDivertOpen failed (ERROR_NO_SUCH_DEVICE 433): driver is hung or held by another bypass tool (GoodbyeDPI, Zapret). Try closing them or rebooting: %w", err)
-		}
-		if uint32(errno) == 0x8032000A {
+		case 577:
+			return fmt.Errorf("WinDivertOpen failed (ERROR_INVALID_IMAGE_HASH 577): Windows blocked unsigned driver or digital signature check failed: %w", err)
+		case 1058:
+			return fmt.Errorf("WinDivertOpen failed (ERROR_SERVICE_DISABLED 1058): Base Filtering Engine (BFE) or WinDivert service is disabled in services.msc: %w", err)
+		case 1068:
+			return fmt.Errorf("WinDivertOpen failed (ERROR_SERVICE_DEPENDENCY_FAIL 1068): Base Filtering Engine (BFE) service failed to start: %w", err)
+		case 1072:
+			return fmt.Errorf("WinDivertOpen failed (ERROR_SERVICE_MARKED_FOR_DELETE 1072): WinDivert service is marked for deletion; please wait or restart TeleWEB: %w", err)
+		case 1753:
+			return fmt.Errorf("WinDivertOpen failed (ERROR_EPT_S_NOT_REGISTERED 1753): RPC endpoint mapper error (Base Filtering Engine not ready): %w", err)
+		case 0x80320009:
+			return fmt.Errorf("WinDivertOpen failed (FWP_E_ALREADY_EXISTS 0x80320009): WFP filter conflict with another filtering software: %w", err)
+		case 0x8032000A:
 			return fmt.Errorf("WinDivertOpen failed (FWP_E_IN_USE 0x8032000A): WFP filter object is still in use by Windows. Wait a few seconds or reboot: %w", err)
 		}
 	}
@@ -136,17 +150,29 @@ func wdOpenHandle(filter string) (uintptr, error) {
 	// trailing UINT64 occupies two 32-bit stdcall slots; passing a single
 	// uintptr leaves garbage in the high half and WinDivertOpen rejects it
 	// with ERROR_INVALID_PARAMETER.
-	var h uintptr
-	var callErr error
-	if unsafe.Sizeof(uintptr(0)) == 4 {
-		h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0, 0)
-	} else {
-		h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0)
-	}
-	if h == wdInvalid || h == 0 {
+	const maxRetries = 4
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		var h uintptr
+		var callErr error
+		if unsafe.Sizeof(uintptr(0)) == 4 {
+			h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0, 0)
+		} else {
+			h, _, callErr = wdOpen.Call(uintptr(unsafe.Pointer(f)), wdLayerNetwork, 0, 0)
+		}
+		if h != wdInvalid && h != 0 {
+			return h, nil
+		}
+		var errno syscall.Errno
+		if errors.As(callErr, &errno) {
+			// 1072 = ERROR_SERVICE_MARKED_FOR_DELETE, 1753 = ERROR_EPT_S_NOT_REGISTERED
+			if (errno == 1072 || errno == 1753) && attempt < maxRetries-1 {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+		}
 		return 0, explainWinDivertError(callErr)
 	}
-	return h, nil
+	return 0, explainWinDivertError(errors.New("WinDivertOpen timed out after retries"))
 }
 
 func wdRecvPacket(h uintptr, pkt []byte) (int, wdAddr, error) {
@@ -671,6 +697,50 @@ func v6CoverageNotice(hasIPv6 bool) string {
 	return fmt.Sprintf("redirector: IPv4 only; %s is not intercepted (%s)", strings.Join(ranges, ", "), detail)
 }
 
+// ensureBFEService verifies that the Windows Base Filtering Engine (BFE) is
+// enabled and running. WinDivert requires BFE to register WFP callouts.
+func ensureBFEService() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect()
+
+	s, err := m.OpenService("BFE")
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	status, err := s.Query()
+	if err != nil {
+		return err
+	}
+	if status.State == svc.Running {
+		return nil
+	}
+
+	cfg, err := s.Config()
+	if err == nil && cfg.StartType == mgr.StartDisabled {
+		cfg.StartType = mgr.StartAutomatic
+		_ = s.UpdateConfig(cfg)
+	}
+
+	if err := s.Start(); err != nil {
+		return fmt.Errorf("start BFE: %w", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		st, err := s.Query()
+		if err == nil && st.State == svc.Running {
+			return nil
+		}
+	}
+	return nil
+}
+
 func startRedirector() error {
 	redirectorMu.Lock()
 	defer redirectorMu.Unlock()
@@ -700,6 +770,9 @@ func startRedirector() error {
 	}
 	if !isElevated() {
 		return errAdminRequired
+	}
+	if err := ensureBFEService(); err != nil {
+		logf("redirector: Base Filtering Engine (BFE) check: %v", err)
 	}
 	driverDir, err := resolveDriverDir()
 	if err != nil {

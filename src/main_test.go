@@ -1465,7 +1465,15 @@ func TestStatusRefreshesDC203Config(t *testing.T) {
 func TestCDN203DisabledDoesNotCountInit(t *testing.T) {
 	oldDir := getBaseDir()
 	setBaseDir(t.TempDir())
-	t.Cleanup(func() { setBaseDir(oldDir) })
+	origLog := logFile
+	logFile = nil
+	t.Cleanup(func() {
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		setBaseDir(oldDir)
+	})
 	if err := writeDC203DirectTCP(false); err != nil {
 		t.Fatal(err)
 	}
@@ -1546,7 +1554,7 @@ func TestPipeTCPToTCPBidirectional(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		pipeTCPToTCP(c, remote, 999, 203)
+		pipeTCPToTCP(c, remote, 999, 203, nil)
 		close(done)
 	}()
 
@@ -4875,4 +4883,148 @@ func TestH2PostPacket_Non200Sets10MinCooldown(t *testing.T) {
 	if inSuccess {
 		t.Fatalf("expected test-post-host to be deleted from h2Success")
 	}
+}
+
+func TestDC203FrontHostAndSpecs(t *testing.T) {
+	gotHost := frontHost(203, "pclead.co.uk")
+	if gotHost != "kws203.pclead.co.uk" {
+		t.Fatalf("frontHost(203, pclead.co.uk) = %q, want kws203.pclead.co.uk", gotHost)
+	}
+
+	cands := frontCandidatesForRace(203, []string{"pclead.co.uk"}, 0, 1)
+	if len(cands) != 1 || cands[0] != "kws203.pclead.co.uk" {
+		t.Fatalf("frontCandidatesForRace(203, ...) = %v, want [kws203.pclead.co.uk]", cands)
+	}
+
+	spec, ok := dcSpecs[203]
+	if !ok {
+		t.Fatal("dcSpecs[203] not found")
+	}
+	if spec.ingress != cdn203IP || len(spec.candidates) == 0 || spec.candidates[0] != cdn203IP || spec.workerDst != cdn203IP {
+		t.Fatalf("unexpected dcSpecs[203]: %+v", spec)
+	}
+}
+
+func TestPublicTunnelWorkersRoundRobin(t *testing.T) {
+	if len(publicTunnelWorkers) == 0 {
+		t.Fatal("publicTunnelWorkers is empty")
+	}
+	seen := make(map[string]bool)
+	for i := 0; i < len(publicTunnelWorkers)*2; i++ {
+		w := nextPublicWorker()
+		if w == "" {
+			t.Fatal("nextPublicWorker() returned empty string")
+		}
+		seen[w] = true
+	}
+	for _, w := range publicTunnelWorkers {
+		if !seen[w] {
+			t.Errorf("worker %s was not returned by nextPublicWorker", w)
+		}
+	}
+}
+
+func TestPipeTCPToTCPCutWindowProofBytes(t *testing.T) {
+	clientSide, c := net.Pipe()
+	remote, serverSide := net.Pipe()
+
+	var finishedUp, finishedDown int64
+	done := make(chan struct{})
+	go func() {
+		pipeTCPToTCP(c, remote, 1001, 203, func(up, down int64) {
+			finishedUp = up
+			finishedDown = down
+		})
+		close(done)
+	}()
+
+	// Client sends small request
+	req := []byte("request-data-123")
+	go func() {
+		_, _ = clientSide.Write(req)
+	}()
+
+	srvBuf := make([]byte, len(req))
+	if _, err := io.ReadFull(serverSide, srvBuf); err != nil {
+		t.Fatalf("server read failed: %v", err)
+	}
+
+	// Server sends 16 KB (simulating DPI cut inside 12-36 KB window)
+	payload16K := make([]byte, 16*1024)
+	go func() {
+		_, _ = serverSide.Write(payload16K)
+		_ = serverSide.Close() // DPI drops connection
+	}()
+
+	clientRecv := make([]byte, len(payload16K))
+	if _, err := io.ReadFull(clientSide, clientRecv); err != nil {
+		t.Fatalf("client read failed: %v", err)
+	}
+	_ = clientSide.Close()
+
+	<-done
+
+	if finishedUp != int64(len(req)) {
+		t.Errorf("finishedUp = %d, want %d", finishedUp, len(req))
+	}
+	if finishedDown != int64(len(payload16K)) {
+		t.Errorf("finishedDown = %d, want %d", finishedDown, len(payload16K))
+	}
+	if finishedDown >= directProofBytes {
+		t.Errorf("finishedDown (%d) >= directProofBytes (%d), expected cut window failure", finishedDown, directProofBytes)
+	}
+}
+
+func TestPipeWSTunnel_InterceptMinus404_KeyNotFoundSuppressed(t *testing.T) {
+	clientConn, proxyClient := net.Pipe()
+	defer clientConn.Close()
+	defer proxyClient.Close()
+
+	serverConn, proxyServer := net.Pipe()
+	defer serverConn.Close()
+	defer proxyServer.Close()
+
+	// Drain frames written to serverConn
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	ws := &wsConn{
+		conn: proxyServer,
+		r:    bufio.NewReader(proxyServer),
+		host: "test-cf-front.invalid",
+	}
+
+	init := makeObfuscatedInit(t, 2, 0xEEEEEEEE)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeWSTunnel(proxyClient, ws, init, 1002, 2, false, "149.154.167.51", false)
+	}()
+
+	// Upstream sends 4-byte -404 error frame: -404 = 0xfffffe6c (little-endian: 0x6c, 0xfe, 0xff, 0xff)
+	minus404Payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(minus404Payload, 0xfffffe6c)
+	wsServer := &wsConn{conn: serverConn, r: bufio.NewReader(serverConn), host: "srv"}
+	if err := wsServer.writeFrame(2, minus404Payload); err != nil {
+		t.Fatalf("writeFrame error: %v", err)
+	}
+
+	// Client must NOT receive the -404 frame; it should get EOF on connection close
+	clientBuf := make([]byte, 16)
+	_ = clientConn.SetReadDeadline(time.Now().Add(1000 * time.Millisecond))
+	n, readErr := clientConn.Read(clientBuf)
+	if n != 0 {
+		t.Fatalf("expected 0 bytes to client after -404, got %d: %v", n, clientBuf[:n])
+	}
+	if readErr == nil {
+		t.Fatal("expected EOF on client after suppression of -404, got nil error")
+	}
+
+	<-done
 }
