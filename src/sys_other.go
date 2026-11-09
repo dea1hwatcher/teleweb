@@ -78,3 +78,5 @@ func setDialSockOpts(c syscall.RawConn) error { return nil }
 func startConsole() {}
 
 func setCmdNoWindow(cmd *exec.Cmd) {}
+
+func resetNetworkStack() error { return nil }

@@ -192,3 +192,13 @@ func setDialSockOpts(c syscall.RawConn) error { return setReuseAddr(c) }
 func startConsole() {}
 
 func setCmdNoWindow(cmd *exec.Cmd) {}
+
+func resetNetworkStack() error {
+	if isAndroidRuntime() {
+		_ = exec.Command("ndc", "resolver", "flushnet", "wlan0").Run()
+		return nil
+	}
+	_ = exec.Command("resolvectl", "flush-caches").Run()
+	_ = exec.Command("systemd-resolve", "--flush-caches").Run()
+	return nil
+}
