@@ -210,6 +210,13 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 
 	resp, err := client.Do(req)
 	if err != nil {
+		h2FailsMu.Lock()
+		h2Fails[host] = time.Now().Add(10 * time.Minute)
+		capFailMapLocked(h2Fails)
+		h2FailsMu.Unlock()
+		h2SuccessMu.Lock()
+		delete(h2Success, host)
+		h2SuccessMu.Unlock()
 		return nil
 	}
 	defer resp.Body.Close()
@@ -225,7 +232,7 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 
 	if resp.StatusCode != http.StatusOK {
 		h2FailsMu.Lock()
-		h2Fails[host] = time.Now().Add(30 * time.Second)
+		h2Fails[host] = time.Now().Add(10 * time.Minute)
 		capFailMapLocked(h2Fails)
 		h2FailsMu.Unlock()
 		h2SuccessMu.Lock()
@@ -325,19 +332,21 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		preCancel() // release context timer immediately after request completes
 		if err != nil {
 			h2FailsMu.Lock()
-			h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
+			h2Fails[selectedHost] = time.Now().Add(10 * time.Minute)
 			capFailMapLocked(h2Fails)
 			h2FailsMu.Unlock()
+			logf("H2 media bridge: %s preflight HEAD failed: %v; falling back to WSS", selectedHost, err)
 			return false
 		}
 		_ = headResp.Body.Close()
 
-		// Must negotiate HTTP/2 and return 2xx / 405 / 501
-		if headResp.ProtoMajor < 2 || !(headResp.StatusCode >= 200 && headResp.StatusCode < 300 || headResp.StatusCode == http.StatusMethodNotAllowed || headResp.StatusCode == http.StatusNotImplemented) {
+		// Must negotiate HTTP/2 and return 2xx (status 200..299)
+		if headResp.ProtoMajor < 2 || headResp.StatusCode < 200 || headResp.StatusCode >= 300 {
 			h2FailsMu.Lock()
-			h2Fails[selectedHost] = time.Now().Add(60 * time.Second)
+			h2Fails[selectedHost] = time.Now().Add(10 * time.Minute)
 			capFailMapLocked(h2Fails)
 			h2FailsMu.Unlock()
+			logf("H2 media bridge: %s does not support HTTP/2 POST /api (proto=%s, status=%d); falling back to WSS", selectedHost, headResp.Proto, headResp.StatusCode)
 			return false
 		}
 		h2SuccessMu.Lock()

@@ -4684,3 +4684,185 @@ func TestExecuteAPICommand_CFTest(t *testing.T) {
 		t.Errorf("expected reachable=false for invalid host: %v", resMap)
 	}
 }
+
+type fakeRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f fakeRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestH2Preflight_RejectsNon2xxAndFallsBack(t *testing.T) {
+	tmpDir := t.TempDir()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	logMu.Lock()
+	origLog := logFile
+	logFile = nil
+	logMu.Unlock()
+	defer func() {
+		setBaseDir(origBase)
+		logMu.Lock()
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		logMu.Unlock()
+	}()
+	t.Setenv("TELEWEB_DIR", tmpDir)
+
+	if err := os.WriteFile(path("h2_media_enabled"), []byte("1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	testDomain := "test-preflight-domain.example"
+	if err := os.WriteFile(path("cf-domains"), []byte(testDomain+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	h2FailsMu.Lock()
+	origFails := h2Fails
+	h2Fails = make(map[string]time.Time)
+	h2FailsMu.Unlock()
+	defer func() {
+		h2FailsMu.Lock()
+		h2Fails = origFails
+		h2FailsMu.Unlock()
+	}()
+
+	h2SuccessMu.Lock()
+	origSuccess := h2Success
+	h2Success = make(map[string]time.Time)
+	h2SuccessMu.Unlock()
+	defer func() {
+		h2SuccessMu.Lock()
+		h2Success = origSuccess
+		h2SuccessMu.Unlock()
+	}()
+
+	h2ClientsMu.Lock()
+	origClients := h2Clients
+	h2Clients = make(map[string]*http.Client)
+	h2ClientsMu.Unlock()
+	defer func() {
+		h2ClientsMu.Lock()
+		h2Clients = origClients
+		h2ClientsMu.Unlock()
+	}()
+
+	selectedHost := fmt.Sprintf("kws2.%s", testDomain)
+
+	var testStatus atomic.Int32
+	var testProtoMajor atomic.Int32
+	testProtoMajor.Store(2)
+	testStatus.Store(http.StatusMethodNotAllowed)
+
+	mockClient := &http.Client{
+		Transport: fakeRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: int(testStatus.Load()),
+				Proto:      "HTTP/2.0",
+				ProtoMajor: int(testProtoMajor.Load()),
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+			}, nil
+		}),
+	}
+	h2ClientsMu.Lock()
+	h2Clients[selectedHost] = mockClient
+	h2ClientsMu.Unlock()
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	initBytes := make([]byte, 64)
+	if tryBridgeH2Media(c1, initBytes, 1001, 2, false) {
+		t.Fatalf("expected tryBridgeH2Media to return false on 405 Method Not Allowed")
+	}
+
+	h2FailsMu.RLock()
+	failUntil, hasFail := h2Fails[selectedHost]
+	h2FailsMu.RUnlock()
+	if !hasFail || time.Until(failUntil) < 9*time.Minute {
+		t.Fatalf("expected host %s to be placed in h2Fails for ~10m, got hasFail=%t until=%v", selectedHost, hasFail, failUntil)
+	}
+
+	h2SuccessMu.RLock()
+	_, hasSuccess := h2Success[selectedHost]
+	h2SuccessMu.RUnlock()
+	if hasSuccess {
+		t.Fatalf("host %s must not be marked in h2Success on 405", selectedHost)
+	}
+
+	// Subtest 2: 404 Not Found must also be rejected
+	h2FailsMu.Lock()
+	delete(h2Fails, selectedHost)
+	h2FailsMu.Unlock()
+	testStatus.Store(http.StatusNotFound)
+	if tryBridgeH2Media(c1, initBytes, 1002, 2, false) {
+		t.Fatalf("expected tryBridgeH2Media to return false on 404 Not Found")
+	}
+
+	// Subtest 3: HTTP/1.1 (ProtoMajor < 2) must be rejected even on 200 OK
+	h2FailsMu.Lock()
+	delete(h2Fails, selectedHost)
+	h2FailsMu.Unlock()
+	testStatus.Store(http.StatusOK)
+	testProtoMajor.Store(1)
+	if tryBridgeH2Media(c1, initBytes, 1003, 2, false) {
+		t.Fatalf("expected tryBridgeH2Media to return false on HTTP/1.1 proto")
+	}
+}
+
+func TestH2PostPacket_Non200Sets10MinCooldown(t *testing.T) {
+	h2FailsMu.Lock()
+	origFails := h2Fails
+	h2Fails = make(map[string]time.Time)
+	h2FailsMu.Unlock()
+	defer func() {
+		h2FailsMu.Lock()
+		h2Fails = origFails
+		h2FailsMu.Unlock()
+	}()
+
+	h2SuccessMu.Lock()
+	origSuccess := h2Success
+	h2Success = make(map[string]time.Time)
+	h2Success["test-post-host"] = time.Now().Add(5 * time.Minute)
+	h2SuccessMu.Unlock()
+	defer func() {
+		h2SuccessMu.Lock()
+		h2Success = origSuccess
+		h2SuccessMu.Unlock()
+	}()
+
+	fakeClient := &http.Client{
+		Transport: fakeRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusMethodNotAllowed,
+				Proto:      "HTTP/2.0",
+				ProtoMajor: 2,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+			}, nil
+		}),
+	}
+
+	res := h2PostPacket(context.Background(), fakeClient, "https://test-post-host/api", "test-post-host", []byte("data"))
+	if res != nil {
+		t.Fatalf("expected nil result on 405 POST")
+	}
+
+	h2FailsMu.RLock()
+	until, ok := h2Fails["test-post-host"]
+	h2FailsMu.RUnlock()
+	if !ok || time.Until(until) < 9*time.Minute {
+		t.Fatalf("expected test-post-host to be in h2Fails for ~10m, got ok=%t until=%v", ok, until)
+	}
+
+	h2SuccessMu.RLock()
+	_, inSuccess := h2Success["test-post-host"]
+	h2SuccessMu.RUnlock()
+	if inSuccess {
+		t.Fatalf("expected test-post-host to be deleted from h2Success")
+	}
+}
