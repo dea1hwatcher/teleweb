@@ -45,4 +45,3 @@ systemctl restart teleweb.service
 echo "TeleWEB installed and started."
 echo "  status:  tgws status"
 echo "  logs:    journalctl -u teleweb -f   (or /var/lib/teleweb/tgws.log)"
-echo "  socks:   tgws socks 127.0.0.1:17845  (no-root alternative, set proxy in Telegram)"

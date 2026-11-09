@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"time"
@@ -32,51 +31,24 @@ func buildObfuscatedInit(dc int16) ([]byte, cipher.Stream) {
 }
 
 func main() {
-	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: e2eclient <socks|direct> <host:port>")
-		fmt.Fprintln(os.Stderr, "  socks  - connect through a running `tgws socks` listener")
-		fmt.Fprintln(os.Stderr, "  direct - connect straight to a listener (SOCKS or the 17841 port)")
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: e2eclient <host:port>")
+		fmt.Fprintln(os.Stderr, "  connect straight to a listener (e.g. 127.0.0.1:17841)")
 		os.Exit(2)
 	}
-	mode := os.Args[1]
-	target := os.Args[2]
+	target := os.Args[1]
+	if len(os.Args) >= 3 && os.Args[1] == "direct" {
+		target = os.Args[2]
+	}
 	init, stream := buildObfuscatedInit(2) // DC2
 
-	var c net.Conn
-	var err error
-	if mode == "socks" {
-		c, err = net.DialTimeout("tcp", target, 5*time.Second)
-		if err != nil {
-			fmt.Println("dial socks:", err)
-			os.Exit(1)
-		}
-		_ = c.SetDeadline(time.Now().Add(15 * time.Second))
-		_, _ = c.Write([]byte{5, 1, 0})
-		rep := make([]byte, 2)
-		if _, err := io.ReadFull(c, rep); err != nil || rep[0] != 5 || rep[1] != 0 {
-			fmt.Printf("socks auth failed: %v %v\n", rep, err)
-			os.Exit(1)
-		}
-		_, _ = c.Write([]byte{5, 1, 0, 1, 149, 154, 167, 220, 0x01, 0xBB})
-		rep = make([]byte, 10)
-		if _, err := io.ReadFull(c, rep); err != nil {
-			fmt.Println("socks connect read:", err)
-			os.Exit(1)
-		}
-		fmt.Printf("socks reply: %v\n", rep)
-		if rep[1] != 0 {
-			fmt.Println("socks connect rejected")
-			os.Exit(1)
-		}
-	} else {
-		c, err = net.DialTimeout("tcp", target, 5*time.Second)
-		if err != nil {
-			fmt.Println("dial:", err)
-			os.Exit(1)
-		}
-		fmt.Printf("connected to %s (local %s)\n", c.RemoteAddr(), c.LocalAddr())
-		_ = c.SetDeadline(time.Now().Add(12 * time.Second))
+	c, err := net.DialTimeout("tcp", target, 5*time.Second)
+	if err != nil {
+		fmt.Println("dial:", err)
+		os.Exit(1)
 	}
+	fmt.Printf("connected to %s (local %s)\n", c.RemoteAddr(), c.LocalAddr())
+	_ = c.SetDeadline(time.Now().Add(12 * time.Second))
 	_, _ = c.Write(init)
 
 	// Keep the tunnel busy: send a small padded-transport style frame (4-byte
