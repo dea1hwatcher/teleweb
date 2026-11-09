@@ -39,7 +39,7 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 Get-ChildItem $DistDir -File -Filter "tgws-windows-*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
 # ---- Windows (standalone exe per architecture) ----
-# amd64/386 get transparent mode (embedded WinDivert); arm64 is SOCKS-only.
+# amd64/386 get transparent mode (embedded WinDivert); arm64 has no WinDivert driver.
 $winTargets = @(
     @{ Arch = "amd64"; Driver = $true },
     @{ Arch = "386";   Driver = $true },

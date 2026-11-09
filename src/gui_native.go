@@ -248,7 +248,7 @@ func guiPollLoop(w *app.Window, st *guiState, stop chan struct{}) {
 				if st.st.Running {
 					tip = "TeleWEB: Активен (WinDivert)"
 					if !st.st.Redirector {
-						tip = "TeleWEB: Активен (SOCKS / WSS)"
+						tip = "TeleWEB: Активен (WSS)"
 					}
 				}
 				updateSystemTray(st.st.Running, tip)
@@ -862,7 +862,7 @@ func renderStatusBadge(gtx layout.Context, th *material.Theme, running, redirect
 		bg = colAccentContainer
 		stroke = color.NRGBA{R: 0x00, G: 0x5C, B: 0x94, A: 0xFF}
 		fg = colAccent
-		text = "● Активен (SOCKS5 / WSS)"
+		text = "● Активен (WSS)"
 	}
 
 	return fluentCard(gtx, bg, stroke, 12, func(gtx layout.Context) layout.Dimensions {
@@ -915,7 +915,7 @@ func renderElevationInfoBar(st *guiState, gtx layout.Context, th *material.Theme
 									}),
 									layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Caption(th, "Для сетевого перехвата WinDivert требуются права Администратора. Без них доступен только локальный SOCKS5.")
+										lbl := material.Caption(th, "Для сетевого перехвата WinDivert требуются права Администратора.")
 										lbl.Color = colTextSecondary
 										lbl.Font.Typeface = fontSegoe
 										return lbl.Layout(gtx)
@@ -1181,11 +1181,11 @@ func renderServiceInfoCard(st *guiState, gtx layout.Context, th *material.Theme,
 						}),
 						layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							socksPort := strconv.Itoa(s.Port)
-							if socksPort == "0" {
-								socksPort = "1080"
+							port := strconv.Itoa(s.Port)
+							if port == "0" {
+								port = "17841"
 							}
-							info := fmt.Sprintf("Локальный SOCKS5-прокси: 127.0.0.1:%s (для приложений без сетевого перехвата)", socksPort)
+							info := fmt.Sprintf("Локальный порт службы: %s (прозрачный перехват WinDivert)", port)
 							lbl := material.Body2(th, info)
 							lbl.Color = colTextSecondary
 							lbl.Font.Typeface = fontSegoe

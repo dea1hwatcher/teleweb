@@ -43,7 +43,7 @@
 
 ## Windows и Linux
 
-Десктопные порты: прозрачный перехват через WinDivert (Windows) и iptables (Linux), режим SOCKS5 без драйверов, служба Windows / systemd, локальный WebUI. Подробности и ограничения — [`docs/DESKTOP.md`](docs/DESKTOP.md). Сборка пакетов: `build_desktop.ps1`.
+Десктопные порты: прозрачный перехват через WinDivert (Windows) и iptables (Linux), служба Windows / systemd, нативный Fluent GUI и локальный WebUI. Подробности и ограничения — [`docs/DESKTOP.md`](docs/DESKTOP.md). Сборка пакетов: `build_desktop.ps1`.
 
 ## Установка
 

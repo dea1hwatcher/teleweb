@@ -122,7 +122,6 @@ Manager, токены в файлы не пишутся.
 | `src/main.go` | ядро: перехват, диспетчеризация DC, WSS-релей, пул, маршруты, iptables, watchdog, API |
 | `src/cf_h2.go` | H2 media bridge (POST на Cloudflare) |
 | `src/ws_pool.go` | пул предпрогретых WSS-сокетов |
-| `src/socks.go` | SOCKS5-листенер и allowlist Telegram-адресов |
 | `src/doh.go`, `src/cf_update.go` | DoH-резолвинг, обновление списка фронтов |
 | `src/redirect_windows.go` | WinDivert: перехват IPv4/IPv6, NAT-таблица |
 | `src/sys_*.go`, `src/redirect_other.go` | платформенные примитивы |
@@ -149,8 +148,8 @@ Manager, токены в файлы не пишутся.
    схлопывается до direct-IP, которые в цензурируемой сети заблокированы.
 4. **`force_test_dc` применяется только к DC, у которых есть `testIP`** (DC1–DC3).
    Для DC4/DC5 это гарантированный ноль маршрутов.
-5. **Allowlist остаётся allowlist'ом.** SOCKS5 и `handleCDN203` не должны давать
-   туннель на произвольный адрес: проверка `isTelegramEndpoint`/`isCDN203IP`
+5. **Allowlist остаётся allowlist'ом.** `handleCDN203` не должен давать
+   туннель на произвольный адрес: проверка `isCDN203IP`
    обязательна. Это уже было P0-дырой (открытый прокси).
 6. **IPv6-пакеты нельзя терять молча.** Если пакет является материалом для
    туннеля, но замапить его не удалось — он дропается (`v6Drop`), а не уходит

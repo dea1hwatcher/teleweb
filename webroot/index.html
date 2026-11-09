@@ -1866,24 +1866,6 @@ body.swiping .state::after {
       </div>
     </div>
 
-    <!-- Local SOCKS5 Proxy Card -->
-    <div class="card">
-      <h2 class="subhead">Интерфейсы и Службы</h2>
-      <div style="font-size:13px; color:var(--on-surface-variant); margin-bottom:12px; line-height:1.4;">
-        Локальный SOCKS5-прокси: <strong>127.0.0.1:17841</strong> (для приложений без сетевого перехвата)
-      </div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <a href="tg://socks?server=127.0.0.1&port=17841" class="btn tonal with-icon state" style="text-decoration:none; display:inline-flex; align-items:center;">
-          <svg class="icon s18"><use href="#i-tg"/></svg>
-          <span>Подключить в Telegram</span>
-        </a>
-        <button class="btn text with-icon state" type="button" onclick="copySocksLink()">
-          <svg class="icon s18"><use href="#i-copy"/></svg>
-          <span id="socksCopyLabel">Копировать ссылку</span>
-        </button>
-      </div>
-    </div>
-
     <!-- Express Diagnostics Card -->
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -3241,24 +3223,6 @@ async function testCFEndpoint(type) {
     resEl.innerHTML = `<span style="color:#f44336;font-weight:500;">✗ Ошибка: ${escapeHTML(e.message || String(e))}</span>`;
   } finally {
     if (btn) btn.disabled = false;
-  }
-}
-
-function copySocksLink() {
-  const link = 'tg://socks?server=127.0.0.1&port=17841';
-  const lbl = $('socksCopyLabel');
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(link).then(() => {
-      if (lbl) {
-        const orig = lbl.textContent;
-        lbl.textContent = 'Скопировано! ✓';
-        setTimeout(() => { lbl.textContent = orig; }, 2000);
-      }
-    }).catch(() => {
-      prompt('Скопируйте ссылку на SOCKS5:', link);
-    });
-  } else {
-    prompt('Скопируйте ссылку на SOCKS5:', link);
   }
 }
 
