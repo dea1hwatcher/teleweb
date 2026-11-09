@@ -581,12 +581,19 @@ func cfgFileSig(name string) uint64 {
 func cachedFileRead(name string, load func() any) any {
 	sig := cfgFileSig(name)
 	cfgFileCache.mu.Lock()
-	defer cfgFileCache.mu.Unlock()
 	if e, ok := cfgFileCache.entries[name]; ok && e.sig == sig {
-		return e.value
+		v := e.value
+		cfgFileCache.mu.Unlock()
+		return v
 	}
+	cfgFileCache.mu.Unlock()
+
 	v := load()
-	cfgFileCache.entries[name] = cfgFileEntry{sig: sig, value: v}
+
+	newSig := cfgFileSig(name)
+	cfgFileCache.mu.Lock()
+	cfgFileCache.entries[name] = cfgFileEntry{sig: newSig, value: v}
+	cfgFileCache.mu.Unlock()
 	return v
 }
 
@@ -624,6 +631,10 @@ func dc203DirectTCPCached() bool {
 
 func cfDomainsCached() []string {
 	return cachedFileRead("cf-domains", func() any { return cfDomains() }).([]string)
+}
+
+func customCFDomainCached() string {
+	return cachedFileRead("custom-cf-domain", func() any { return readCustomCFDomain() }).(string)
 }
 
 func readFlag(name string, defaultValue bool) bool {
@@ -1109,14 +1120,14 @@ func discoverActiveTelegramClients() {
 		return
 	}
 	appCacheMu.Lock()
-	defer appCacheMu.Unlock()
-
 	known := map[int]bool{}
 	for _, u := range uidCache {
 		known[u] = true
 	}
+	appCacheMu.Unlock()
 
-	dirty := false
+	var newApps []App
+	var newUIDs []int
 	for _, uid := range activeUIDs {
 		if known[uid] || rejectedLiveUIDs[uid] {
 			continue
@@ -1137,14 +1148,27 @@ func discoverActiveTelegramClients() {
 			continue
 		}
 		normalIco, monetIco := extractAPKIcons(apkPath)
-		appCache = append(appCache, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
-		uidCache = append(uidCache, uid)
+		newApps = append(newApps, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
+		newUIDs = append(newUIDs, uid)
 		known[uid] = true
-		dirty = true
 		logf("detected Telegram client by live traffic: %s (uid=%d)", pkg, uid)
 	}
-	if dirty {
-		saveCachedApps(appCache)
+	if len(newApps) > 0 {
+		appCacheMu.Lock()
+		existing := map[int]bool{}
+		for _, u := range uidCache {
+			existing[u] = true
+		}
+		for i, u := range newUIDs {
+			if !existing[u] {
+				appCache = append(appCache, newApps[i])
+				uidCache = append(uidCache, u)
+				existing[u] = true
+			}
+		}
+		appsCopy := append([]App(nil), appCache...)
+		appCacheMu.Unlock()
+		saveCachedApps(appsCopy)
 	}
 }
 
@@ -2112,7 +2136,7 @@ func learnDC(ip string, dc int, isMedia bool) {
 	if addr, err := netip.ParseAddr(ip); err != nil || !isTelegramAggregate(addr) {
 		return
 	}
-	if known := knownDCMap[ip]; known != 0 && known != dc {
+	if dcInitContradictsKnownIP(ip, dc) {
 		return
 	}
 	if val, ok := learnedDCs.Load(ip); ok {
@@ -3996,7 +4020,7 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 			return
 		}
 		if globalWsPool != nil && globalWsPool.size.Load() > 0 {
-			go globalWsPool.Refill(dc, isMedia, isTestDC)
+			globalWsPool.Refill(dc, isMedia, isTestDC)
 		}
 	}
 	atomic.AddInt64(&wsCount, 1)
@@ -4881,7 +4905,7 @@ func cfDomains() []string {
 		}
 	}
 
-	if custom := readCustomCFDomain(); custom != "" {
+	if custom := customCFDomainCached(); custom != "" {
 		out := make([]string, 0, len(list)+1)
 		out = append(out, custom)
 		for _, d := range list {
@@ -6456,7 +6480,7 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 	if target == "" {
 		if cw := readCustomCFWorker(); cw != "" {
 			target = cw
-		} else if cd := readCustomCFDomain(); cd != "" {
+		} else if cd := customCFDomainCached(); cd != "" {
 			target = cd
 		} else {
 			dyn := getDynamicCFDomains()
@@ -6475,6 +6499,7 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 	isWorker := strings.Contains(target, "workers.dev") || strings.Contains(target, "worker")
 	var host, path string
 	var honorFrontingSNI bool
+	var ips []netip.Addr
 
 	if isWorker {
 		target = normalizeWorkerAddress(target)
@@ -6506,26 +6531,32 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 		if idx := strings.IndexByte(host, '?'); idx != -1 {
 			host = host[:idx]
 		}
-		if !strings.HasPrefix(host, "kws") && host != "web.telegram.org" {
-			host = "kws2." + host
+		if addr, err := netip.ParseAddr(host); err == nil {
+			honorFrontingSNI = true
+			ips = []netip.Addr{addr}
+		} else {
+			if !strings.HasPrefix(host, "kws") && host != "web.telegram.org" {
+				host = "kws2." + host
+			}
+			honorFrontingSNI = (host != "web.telegram.org")
 		}
 		path = "/apiws"
-		honorFrontingSNI = (host != "web.telegram.org")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 
-	var ips []netip.Addr
-	if doHEnabledCached() {
-		dohCtx, dohCancel := context.WithTimeout(ctx, 2*time.Second)
-		ips, _ = resolveDoHRace(dohCtx, host)
-		dohCancel()
-	}
 	if len(ips) == 0 {
-		dnsCtx, dnsCancel := context.WithTimeout(ctx, 2*time.Second)
-		ips, _ = systemDNSResolver().LookupNetIP(dnsCtx, "ip4", host)
-		dnsCancel()
+		if doHEnabledCached() {
+			dohCtx, dohCancel := context.WithTimeout(ctx, 2*time.Second)
+			ips, _ = resolveDoHRace(dohCtx, host)
+			dohCancel()
+		}
+		if len(ips) == 0 {
+			dnsCtx, dnsCancel := context.WithTimeout(ctx, 2*time.Second)
+			ips, _ = systemDNSResolver().LookupNetIP(dnsCtx, "ip4", host)
+			dnsCancel()
+		}
 	}
 	if len(ips) == 0 {
 		return map[string]any{

@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -114,5 +117,67 @@ func TestSOCKS5NonTelegramDomainRejection(t *testing.T) {
 	}
 	if resp[1] != 2 {
 		t.Fatalf("expected REP=2 (Connection not allowed) for non-Telegram domain %q, got %d", domain, resp[1])
+	}
+}
+
+func TestSOCKS5TelegramDomainResolvingToNonTelegramIPRejection(t *testing.T) {
+	// A domain matching isTelegramDomain() that resolves to a non-Telegram IP
+	// must be rejected (REP=2), preventing open-proxy tunneling via DNS spoofing.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/dns-json")
+		resp := dohResponse{
+			Status: 0,
+			Answer: []dohAnswer{
+				{Name: "spoofed.telegram.org", Type: 1, TTL: 120, Data: "8.8.8.8"},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	origEndpoints := getDoHEndpoints()
+	setDoHEndpoints([]string{server.URL})
+	defer func() { setDoHEndpoints(origEndpoints) }()
+
+	tmpDir := t.TempDir()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
+
+	if err := writeDoHEnabled(true); err != nil {
+		t.Fatalf("failed to enable DoH: %v", err)
+	}
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	logger := log.New(io.Discard, "", 0)
+	go socksHandle(c2, logger)
+
+	if _, err := c1.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatalf("write greeting: %v", err)
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(c1, reply); err != nil {
+		t.Fatalf("read greeting reply: %v", err)
+	}
+	if !bytes.Equal(reply, []byte{5, 0}) {
+		t.Fatalf("unexpected greeting reply: %v", reply)
+	}
+
+	domain := "spoofed.telegram.org"
+	req := append([]byte{5, 1, 0, 3, byte(len(domain))}, []byte(domain)...)
+	req = append(req, 0x01, 0xBB)
+	if _, err := c1.Write(req); err != nil {
+		t.Fatalf("write connect req: %v", err)
+	}
+	resp := make([]byte, 10)
+	if _, err := io.ReadFull(c1, resp); err != nil {
+		t.Fatalf("read connect resp: %v", err)
+	}
+	if resp[1] != 2 {
+		t.Fatalf("expected REP=2 (Connection not allowed) for spoofed domain resolving to non-Telegram IP, got %d", resp[1])
 	}
 }

@@ -271,9 +271,9 @@ func TestFillGCStatsReportsCollectionProgress(t *testing.T) {
 func TestGCMetricsReachACLIStatusReader(t *testing.T) {
 	// The daemon persists its snapshot and a CLI process rebuilds the status
 	// from that file; a metric the second leg forgets never reaches the device.
-	oldDir := baseDir
-	baseDir = t.TempDir()
-	t.Cleanup(func() { baseDir = oldDir })
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(oldDir) })
 	runtime.GC()
 	writeStatus()
 	b, err := os.ReadFile(path("status.json"))
@@ -516,10 +516,10 @@ func TestParseMTProtoDCAndMediaFlag(t *testing.T) {
 }
 
 func TestCFDomainListValidation(t *testing.T) {
-	oldDir := baseDir
+	oldDir := getBaseDir()
 	tmp := t.TempDir()
-	baseDir = tmp
-	defer func() { baseDir = oldDir }()
+	setBaseDir(tmp)
+	defer func() { setBaseDir(oldDir) }()
 	if err := os.WriteFile(filepath.Join(tmp, "cf-domains"), []byte("# comment\nexample.org\ninvalid domain\nexample.org\nweb.telegram.org\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -580,10 +580,10 @@ func TestDC203Normalization(t *testing.T) {
 }
 
 func TestFrontingSNIConfig(t *testing.T) {
-	oldDir := baseDir
+	oldDir := getBaseDir()
 	tmp := t.TempDir()
-	baseDir = tmp
-	defer func() { baseDir = oldDir }()
+	setBaseDir(tmp)
+	defer func() { setBaseDir(oldDir) }()
 
 	if got := configuredFrontingSNI(); got != "" {
 		t.Errorf("expected empty fronting SNI, got %q", got)
@@ -806,9 +806,9 @@ func TestNoteRouteHTTPFailureEscalatesWithinSeries(t *testing.T) {
 }
 
 func TestRouteCacheFreshnessTTL(t *testing.T) {
-	oldDir := baseDir
-	baseDir = t.TempDir()
-	t.Cleanup(func() { baseDir = oldDir })
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(oldDir) })
 
 	key, host := "ttl", "kws2.ttl.example"
 	saveRouteCache(key, host)
@@ -850,9 +850,19 @@ func TestRouteCachePersistence(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	origBase := baseDir
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
+
+	routeCacheMu.Lock()
+	oldRouteCache := routeCacheDisk
+	routeCacheDisk = map[string]persistedRoute{}
+	routeCacheMu.Unlock()
+	defer func() {
+		routeCacheMu.Lock()
+		routeCacheDisk = oldRouteCache
+		routeCacheMu.Unlock()
+	}()
 
 	testKey := "2"
 	testHost := "kws2.testpersist.co.uk"
@@ -896,9 +906,9 @@ func TestCustomCFDomainPrecedence(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	origBase := baseDir
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
 
 	if got := readCustomCFDomain(); got != "" {
 		t.Errorf("expected empty custom domain initially, got %s", got)
@@ -937,9 +947,9 @@ func TestDCOverridesParsing(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	origBase := baseDir
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
 
 	input := "1:149.154.175.55, 2:149.154.167.50, 4:149.154.167.99"
 	if err := writeDCOverrides(input); err != nil {
@@ -973,9 +983,9 @@ func TestCFPriorityAndBalanceStorage(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	origBase := baseDir
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
 
 	if readCFPriority() {
 		t.Error("expected cfPriority to be false by default")
@@ -1036,9 +1046,9 @@ func TestApiMainSetConfig(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	origBase := baseDir
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
 
 	cfPri := true
 	cfBal := true
@@ -1238,9 +1248,9 @@ func TestPrepareUTLSForHTTP1_Firefox(t *testing.T) {
 
 func TestAppsCachePersistence(t *testing.T) {
 	tempDir := t.TempDir()
-	origBaseDir := baseDir
-	baseDir = tempDir
-	defer func() { baseDir = origBaseDir }()
+	origBaseDir := getBaseDir()
+	setBaseDir(tempDir)
+	defer func() { setBaseDir(origBaseDir) }()
 
 	// Initially no cache
 	apps, uids := loadCachedApps()
@@ -1267,9 +1277,9 @@ func TestAppsCachePersistence(t *testing.T) {
 }
 
 func TestFlagStorageDefaultsAndValues(t *testing.T) {
-	oldDir := baseDir
-	baseDir = t.TempDir()
-	t.Cleanup(func() { baseDir = oldDir })
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(oldDir) })
 	flags := []struct {
 		name         string
 		defaultValue bool
@@ -1326,10 +1336,10 @@ func TestNormalizeWorkerAddress(t *testing.T) {
 }
 
 func TestCustomCFWorkerConfig(t *testing.T) {
-	oldDir := baseDir
+	oldDir := getBaseDir()
 	tmp := t.TempDir()
-	baseDir = tmp
-	defer func() { baseDir = oldDir }()
+	setBaseDir(tmp)
+	defer func() { setBaseDir(oldDir) }()
 
 	if got := readCustomCFWorker(); got != "" {
 		t.Errorf("expected empty worker initially, got %q", got)
@@ -1422,15 +1432,15 @@ func TestRunCmdRetriesOnlyLockFailures(t *testing.T) {
 }
 
 func TestStatusRefreshesDC203Config(t *testing.T) {
-	oldDir := baseDir
-	baseDir = t.TempDir()
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
 	appCacheMu.Lock()
 	oldApps, oldUIDs := appCache, uidCache
 	appCache = []App{{Pkg: "org.telegram.messenger", UID: 10001}}
 	uidCache = []int{10001}
 	appCacheMu.Unlock()
 	t.Cleanup(func() {
-		baseDir = oldDir
+		setBaseDir(oldDir)
 		appCacheMu.Lock()
 		appCache, uidCache = oldApps, oldUIDs
 		appCacheMu.Unlock()
@@ -1453,9 +1463,9 @@ func TestStatusRefreshesDC203Config(t *testing.T) {
 }
 
 func TestCDN203DisabledDoesNotCountInit(t *testing.T) {
-	oldDir := baseDir
-	baseDir = t.TempDir()
-	t.Cleanup(func() { baseDir = oldDir })
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(oldDir) })
 	if err := writeDC203DirectTCP(false); err != nil {
 		t.Fatal(err)
 	}
@@ -1661,10 +1671,10 @@ func TestWorkerCooldownAndRateLimit(t *testing.T) {
 }
 
 func TestDCLearnAndPersistence(t *testing.T) {
-	oldBase := baseDir
+	oldBase := getBaseDir()
 	tmp := t.TempDir()
-	baseDir = tmp
-	defer func() { baseDir = oldBase }()
+	setBaseDir(tmp)
+	defer func() { setBaseDir(oldBase) }()
 
 	// learnDC only accepts addresses inside Telegram aggregates; use an
 	// unassigned DC4 address (149.154.166.0/24, not in knownDCMap or the
@@ -1863,10 +1873,7 @@ func TestWsPool_Lifecycle(t *testing.T) {
 	defer cancel()
 
 	pool := newWsPool(ctx, 3)
-	defer func() {
-		pool.cancel()
-		pool.drainAll()
-	}()
+	defer pool.Close()
 
 	// 1. Initial Get on empty pool should miss
 	ws := pool.Get(2, false, false)
@@ -1950,9 +1957,9 @@ func TestDoH_ParsingAndCache(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	origEndpoints := dohEndpoints
-	dohEndpoints = []string{server.URL}
-	defer func() { dohEndpoints = origEndpoints }()
+	origEndpoints := getDoHEndpoints()
+	setDoHEndpoints([]string{server.URL})
+	defer func() { setDoHEndpoints(origEndpoints) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -1988,9 +1995,9 @@ func TestDoH_ParsingAndCache(t *testing.T) {
 
 func TestApiMain_PoolSize_And_DoH_Config(t *testing.T) {
 	tmpDir := t.TempDir()
-	origBase := baseDir
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
 
 	poolSz := 4
 	dohEn := false
@@ -2131,9 +2138,9 @@ func TestH2Media_ConfigAndReplyEncoding(t *testing.T) {
 
 func TestApiMain_NewFeaturesConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	origBase := baseDir
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
 	t.Setenv("TELEWEB_DIR", tmpDir)
 
 	forceTest := true
@@ -2249,9 +2256,9 @@ func TestRouteBackoffCapsAtThirtyMinutes(t *testing.T) {
 
 func TestDC203DirectTCP_Config(t *testing.T) {
 	dir := t.TempDir()
-	origDir := baseDir
-	baseDir = dir
-	defer func() { baseDir = origDir }()
+	origDir := getBaseDir()
+	setBaseDir(dir)
+	defer func() { setBaseDir(origDir) }()
 
 	// Default should be true
 	if !readDC203DirectTCP() {
@@ -2464,6 +2471,14 @@ func TestShouldPenalizeRoute(t *testing.T) {
 }
 
 func TestFrontCandidatesForRace(t *testing.T) {
+	dcDomainAffinityMu.Lock()
+	oldAffinity, hadAffinity := dcDomainAffinity[2]
+	delete(dcDomainAffinity, 2)
+	dcDomainAffinityMu.Unlock()
+	if hadAffinity {
+		defer setDCDomainAffinity(2, oldAffinity)
+	}
+
 	domains := []string{"a.example", "b.example", "c.example", "d.example", "e.example"}
 	for _, d := range domains {
 		clearRouteHealth(frontHost(2, d))
@@ -2590,9 +2605,9 @@ func TestH2ReplySequencerOrdering(t *testing.T) {
 
 func TestCachedFileReadInvalidation(t *testing.T) {
 	dir := t.TempDir()
-	origBase := baseDir
-	baseDir = dir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(dir)
+	defer func() { setBaseDir(origBase) }()
 
 	p := filepath.Join(dir, "cached-flag")
 	if err := os.WriteFile(p, []byte("1\n"), 0600); err != nil {
@@ -2683,15 +2698,15 @@ func TestParsePMPackagesListing(t *testing.T) {
 }
 
 func TestWriteStatusOmitsAppsAndLog(t *testing.T) {
-	oldDir := baseDir
-	baseDir = t.TempDir()
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
 	appCacheMu.Lock()
 	oldApps, oldUIDs := appCache, uidCache
 	appCache = []App{{Name: "Telegram", Pkg: "org.telegram.messenger", UID: 10123, IconNormal: "aGVsbG8=", IconMonet: "d29ybGQ="}}
 	uidCache = []int{10123}
 	appCacheMu.Unlock()
 	t.Cleanup(func() {
-		baseDir = oldDir
+		setBaseDir(oldDir)
 		appCacheMu.Lock()
 		appCache, uidCache = oldApps, oldUIDs
 		appCacheMu.Unlock()
@@ -2734,9 +2749,9 @@ func TestWriteStatusOmitsAppsAndLog(t *testing.T) {
 }
 
 func TestLoadCachedAppsDropsFabricatedEntries(t *testing.T) {
-	oldDir := baseDir
-	baseDir = t.TempDir()
-	t.Cleanup(func() { baseDir = oldDir })
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(oldDir) })
 	apps := []App{
 		{Name: "Telegram", Pkg: "org.telegram.messenger", UID: 10123},
 		{Name: "Uid10999", Pkg: "unknown.telegram.uid10999", UID: 10999},
@@ -2759,15 +2774,15 @@ func TestStatusSnapshotsDifferOnlyInAppsAndLog(t *testing.T) {
 	// pieces: buildStatus for the flags and liveMetrics for the counters. This
 	// keeps a field added to Status from being wired into one path only - the
 	// mistake that a hand-rolled second mapping invites.
-	oldDir := baseDir
-	baseDir = t.TempDir()
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
 	appCacheMu.Lock()
 	oldApps, oldUIDs := appCache, uidCache
 	appCache = []App{{Name: "Telegram", Pkg: "org.telegram.messenger", UID: 10123, IconNormal: "aGVsbG8="}}
 	uidCache = []int{10123}
 	appCacheMu.Unlock()
 	t.Cleanup(func() {
-		baseDir = oldDir
+		setBaseDir(oldDir)
 		appCacheMu.Lock()
 		appCache, uidCache = oldApps, oldUIDs
 		appCacheMu.Unlock()
@@ -2988,9 +3003,9 @@ func TestIsTelegramAPK(t *testing.T) {
 
 func TestExecuteAPIPayload_InProcess(t *testing.T) {
 	tmpDir := t.TempDir()
-	origBase := baseDir
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
 
 	// 1. Base64 payload
 	b64Req := base64.StdEncoding.EncodeToString([]byte(`{"cmd":"status"}`))
@@ -3130,10 +3145,10 @@ func TestIsTelegramEndpoint_IPv6(t *testing.T) {
 }
 
 func TestTailLog_BoundedTail(t *testing.T) {
-	origBase := baseDir
+	origBase := getBaseDir()
 	tmpDir := t.TempDir()
-	baseDir = tmpDir
-	defer func() { baseDir = origBase }()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
 
 	// 1. Non-existent log file
 	if got := tailLog(10); got != "" {
@@ -3297,14 +3312,14 @@ func TestCDN203Dispatch(t *testing.T) {
 }
 
 func TestServeConnRefusesForgedCDN203(t *testing.T) {
-	origDir := baseDir
-	baseDir = t.TempDir()
+	origDir := getBaseDir()
+	setBaseDir(t.TempDir())
 	origLog := logFile
 	logMu.Lock()
 	logFile = nil
 	logMu.Unlock()
 	defer func() {
-		baseDir = origDir
+		setBaseDir(origDir)
 		logMu.Lock()
 		if logFile != nil && logFile != origLog {
 			_ = logFile.Close()
@@ -3337,14 +3352,14 @@ func TestServeConnRefusesForgedCDN203(t *testing.T) {
 }
 
 func TestLearnDCRejectsNonTelegram(t *testing.T) {
-	origDir := baseDir
-	baseDir = t.TempDir()
+	origDir := getBaseDir()
+	setBaseDir(t.TempDir())
 	origLog := logFile
 	logMu.Lock()
 	logFile = nil
 	logMu.Unlock()
 	defer func() {
-		baseDir = origDir
+		setBaseDir(origDir)
 		logMu.Lock()
 		if logFile != nil && logFile != origLog {
 			_ = logFile.Close()
@@ -3370,9 +3385,15 @@ func TestLearnDCRejectsNonTelegram(t *testing.T) {
 	if _, ok := learnedDCs.Load("91.105.192.100"); !ok {
 		t.Fatal("CDN203 endpoint must be learnable")
 	}
+	// 149.154.174.100 is shared between DC1 and DC3; shared ingress must be learnable
+	learnDC("149.154.174.100", 3, false)
+	if val, ok := learnedDCs.Load("149.154.174.100"); !ok || val.(learnedDCEntry).DC != 3 {
+		t.Fatal("shared ingress endpoint 149.154.174.100 must be learnable as DC3")
+	}
 	// Persist synchronously while baseDir still points at the temp dir so
 	// the goroutines spawned by learnDC find nothing left to write.
 	persistLearnedDCs()
+	learnedDCs.Delete("149.154.174.100")
 	learnedDCs.Delete("149.154.175.52")
 	learnedDCs.Delete("91.105.192.100")
 }
@@ -3443,8 +3464,8 @@ func TestH2DispatchSemaphoreBounds(t *testing.T) {
 }
 
 func TestLogDeduplication(t *testing.T) {
-	origDir := baseDir
-	baseDir = t.TempDir()
+	origDir := getBaseDir()
+	setBaseDir(t.TempDir())
 	origLog := logFile
 	logMu.Lock()
 	logFile = nil
@@ -3453,7 +3474,7 @@ func TestLogDeduplication(t *testing.T) {
 	logMu.Unlock()
 	logSuppressed.Store(0)
 	defer func() {
-		baseDir = origDir
+		setBaseDir(origDir)
 		logMu.Lock()
 		if logFile != nil && logFile != origLog {
 			_ = logFile.Close()
@@ -3496,6 +3517,9 @@ func TestLogDeduplication(t *testing.T) {
 
 func TestNoteRouteHTTPFailure_RetryAfter(t *testing.T) {
 	host := "retry-after-test.invalid"
+	clearRouteHealth(host)
+	defer clearRouteHealth(host)
+
 	rle := &RateLimitError{
 		StatusCode: 429,
 		RetryAfter: 45 * time.Second,
@@ -4548,6 +4572,18 @@ func TestCFTestProbe_InvalidTarget(t *testing.T) {
 	errMsg, _ := res["error"].(string)
 	if errMsg == "" {
 		t.Errorf("expected non-empty error message in result: %v", res)
+	}
+}
+
+func TestCFTestProbe_LiteralIPTarget(t *testing.T) {
+	// A literal IP target must preserve the IP address in "host" without prepending "kws2."
+	res, err := runCFTestProbe("127.0.0.1")
+	if err != nil {
+		t.Fatalf("runCFTestProbe error: %v", err)
+	}
+	host, _ := res["host"].(string)
+	if host != "127.0.0.1" {
+		t.Errorf("expected host to be 127.0.0.1, got %q", host)
 	}
 }
 
