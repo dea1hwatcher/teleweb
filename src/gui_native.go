@@ -28,8 +28,8 @@ import (
 var (
 	colMicaBg           = color.NRGBA{R: 0x20, G: 0x20, B: 0x20, A: 0xFF} // SolidBackgroundFillColorBase (#202020)
 	colNavPaneBg        = color.NRGBA{R: 0x1A, G: 0x1A, B: 0x1A, A: 0xFF} // NavigationViewDefaultPaneBackground (#1A1A1A)
-	colNavPaneActive    = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0x0F} // Active nav item fill (6% white)
-	colNavPaneHover     = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0x08} // Hover nav item fill (3% white)
+	colNavPaneActive    = color.NRGBA{R: 0x33, G: 0x36, B: 0x3D, A: 0xFF} // Active nav item fill (#33363D)
+	colNavPaneHover     = color.NRGBA{R: 0x27, G: 0x2A, B: 0x30, A: 0xFF} // Hover nav item fill (#272A30)
 	colCardBg           = color.NRGBA{R: 0x2B, G: 0x2B, B: 0x2B, A: 0xFF} // CardBackgroundFillColorDefault (#2B2B2B)
 	colCardSecondary    = color.NRGBA{R: 0x32, G: 0x32, B: 0x32, A: 0xFF} // CardBackgroundFillColorSecondary (#323232)
 	colCardStroke       = color.NRGBA{R: 0x38, G: 0x38, B: 0x38, A: 0xFF} // CardStrokeColorDefault (#383838)
@@ -59,8 +59,8 @@ var (
 	colSuccessStroke    = color.NRGBA{R: 0x2B, G: 0x59, B: 0x32, A: 0xFF} // #2B5932
 
 	colError          = color.NRGBA{R: 0xFF, G: 0x99, B: 0xA4, A: 0xFF} // #FF99A4
-	colErrorContainer = color.NRGBA{R: 0x3E, G: 0x1B, B: 0x20, A: 0xFF} // #3E1B20
-	colErrorStroke    = color.NRGBA{R: 0x64, G: 0x28, B: 0x2D, A: 0xFF} // #64282D
+	colErrorContainer = color.NRGBA{R: 0x54, G: 0x22, B: 0x28, A: 0xFF} // #542228 (Stop button fill)
+	colErrorStroke    = color.NRGBA{R: 0x7E, G: 0x2D, B: 0x37, A: 0xFF} // #7E2D37 (Stop button stroke)
 
 	colWarning          = color.NRGBA{R: 0xFC, G: 0xE1, B: 0x00, A: 0xFF} // #FCE100
 	colWarningContainer = color.NRGBA{R: 0x3A, G: 0x33, B: 0x18, A: 0xFF} // #3A3318
@@ -512,35 +512,30 @@ func renderNavPane(st *guiState, gtx layout.Context, th *material.Theme) layout.
 					}),
 					layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return renderNavItem(gtx, th, &st.tabRoutingBtn, "⚙", "Маршрутизация", active == tabRouting)
+						return renderNavItem(gtx, th, &st.tabRoutingBtn, "⎕", "Маршрутизация", active == tabRouting)
 					}),
 					layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return renderNavItem(gtx, th, &st.tabLogsBtn, "▤", "Журнал событий", active == tabLogs)
+						return renderNavItem(gtx, th, &st.tabLogsBtn, "≣", "Журнал событий", active == tabLogs)
 					}),
 				)
 			}),
-			// Flexible spacer pushing footer down
-			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-				return layout.Dimensions{}
-			}),
-			// Footer divider
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				paint.FillShape(gtx.Ops, colDivider, clip.Rect{Max: image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))}.Op())
-				return layout.Dimensions{Size: image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))}
-			}),
-			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-			// Footer action buttons
+			layout.Rigid(layout.Spacer{Height: unit.Dp(24)}.Layout),
+			// Secondary actions (Status refresh & Tray minimize)
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return renderNavFooterBtn(gtx, th, &st.refreshBtn, "↻", "Обновить статус")
 					}),
-					layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return renderNavFooterBtn(gtx, th, &st.trayMinimizeBtn, "⤓", "Свернуть в трей")
+						return renderNavFooterBtn(gtx, th, &st.trayMinimizeBtn, "🗕", "Свернуть в трей")
 					}),
 				)
+			}),
+			// Flexible spacer filling remainder of sidebar
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return layout.Dimensions{}
 			}),
 		)
 	})
@@ -561,7 +556,7 @@ func renderNavItem(gtx layout.Context, th *material.Theme, btn *widget.Clickable
 			// Background
 			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
 				if bg.A > 0 {
-					rr := clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, 4)
+					rr := clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, 6)
 					paint.FillShape(gtx.Ops, bg, rr.Op(gtx.Ops))
 				}
 				return layout.Dimensions{Size: gtx.Constraints.Min}
@@ -623,7 +618,7 @@ func renderNavFooterBtn(gtx layout.Context, th *material.Theme, btn *widget.Clic
 		return layout.Stack{}.Layout(gtx,
 			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
 				if bg.A > 0 {
-					rr := clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, 4)
+					rr := clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, 6)
 					paint.FillShape(gtx.Ops, bg, rr.Op(gtx.Ops))
 				}
 				return layout.Dimensions{Size: gtx.Constraints.Min}
@@ -685,7 +680,7 @@ func renderAccentButton(gtx layout.Context, th *material.Theme, btn *widget.Clic
 		if btn.Pressed() {
 			bg = colAccentDark
 		}
-		return fluentCard(gtx, bg, color.NRGBA{}, 4, func(gtx layout.Context) layout.Dimensions {
+		return fluentCard(gtx, bg, color.NRGBA{}, 6, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(18), Right: unit.Dp(18)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Body2(th, text)
 				lbl.Color = fg
@@ -708,7 +703,7 @@ func renderStandardButton(gtx layout.Context, th *material.Theme, btn *widget.Cl
 		if btn.Pressed() {
 			bg = colControlBgPressed
 		}
-		return fluentCard(gtx, bg, stroke, 4, func(gtx layout.Context) layout.Dimensions {
+		return fluentCard(gtx, bg, stroke, 6, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Body2(th, text)
 				lbl.Color = fg
@@ -724,11 +719,15 @@ func renderDangerButton(gtx layout.Context, th *material.Theme, btn *widget.Clic
 	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		bg := colErrorContainer
 		stroke := colErrorStroke
-		fg := colError
+		fg := colTextPrimary
 		if btn.Hovered() {
-			bg = color.NRGBA{R: 0x4E, G: 0x22, B: 0x28, A: 0xFF}
+			bg = color.NRGBA{R: 0x66, G: 0x2A, B: 0x32, A: 0xFF}
+			stroke = color.NRGBA{R: 0x93, G: 0x35, B: 0x41, A: 0xFF}
 		}
-		return fluentCard(gtx, bg, stroke, 4, func(gtx layout.Context) layout.Dimensions {
+		if btn.Pressed() {
+			bg = color.NRGBA{R: 0x44, G: 0x1B, B: 0x20, A: 0xFF}
+		}
+		return fluentCard(gtx, bg, stroke, 6, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Body2(th, text)
 				lbl.Color = fg
@@ -936,7 +935,7 @@ func renderElevationInfoBar(st *guiState, gtx layout.Context, th *material.Theme
 }
 
 func renderHeroCard(st *guiState, gtx layout.Context, th *material.Theme, s Status, busy bool) layout.Dimensions {
-	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 12, func(gtx layout.Context) layout.Dimensions {
 		return layout.UniformInset(unit.Dp(18)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				// Header row
@@ -992,52 +991,73 @@ func renderHeroCard(st *guiState, gtx layout.Context, th *material.Theme, s Stat
 						}),
 					)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
-				// 6 Metrics in subcards
+				layout.Rigid(layout.Spacer{Height: unit.Dp(20)}.Layout),
+				// 6 Metrics in seamless row
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					traffic := fmt.Sprintf("↑%s  ↓%s", formatBytes(s.TrafficUpBytes), formatBytes(s.TrafficDownBytes))
 					pop := s.LastCFPoP
 					if pop == "" {
 						pop = "—"
 					}
-					metrics := []struct{ label, val string }{
-						{"Сессии", strconv.FormatInt(s.Active, 10)},
-						{"WS-сессии", strconv.FormatInt(s.WS, 10)},
-						{"Память RSS", formatBytes(s.MemNowBytes)},
-						{"Время работы", formatUptime(s.Uptime)},
-						{"Трафик", traffic},
-						{"CF PoP", pop},
+					upStr := "↑" + formatBytes(s.TrafficUpBytes)
+					downStr := "↓" + formatBytes(s.TrafficDownBytes)
+
+					type metricItem struct {
+						label string
+						val1  string
+						val2  string
+					}
+
+					metrics := []metricItem{
+						{label: "Сессии", val1: strconv.FormatInt(s.Active, 10)},
+						{label: "WS-сессии", val1: strconv.FormatInt(s.WS, 10)},
+						{label: "Память RSS", val1: formatBytes(s.MemNowBytes)},
+						{label: "Время работы", val1: formatUptime(s.Uptime)},
+						{label: "Трафик", val1: upStr, val2: downStr},
+						{label: "CF PoP", val1: pop},
 					}
 
 					children := make([]layout.FlexChild, 0, len(metrics))
 					for _, m := range metrics {
 						item := m
 						children = append(children, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return fluentCard(gtx, colCardSecondary, colControlStroke, 6, func(gtx layout.Context) layout.Dimensions {
-									return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Caption(th, item.label)
+									lbl.Color = colTextTertiary
+									lbl.Font.Typeface = fontSegoe
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									if item.val2 != "" {
 										return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Caption(th, item.label)
-												lbl.Color = colTextTertiary
+												lbl := material.Body1(th, item.val1)
+												lbl.Color = colTextPrimary
+												lbl.Font.Weight = font.Bold
 												lbl.Font.Typeface = fontSegoe
 												return lbl.Layout(gtx)
 											}),
-											layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
+											layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Body1(th, item.val)
+												lbl := material.Body1(th, item.val2)
 												lbl.Color = colTextPrimary
 												lbl.Font.Weight = font.Bold
 												lbl.Font.Typeface = fontSegoe
 												return lbl.Layout(gtx)
 											}),
 										)
-									})
-								})
-							})
+									}
+									lbl := material.H6(th, item.val1)
+									lbl.Color = colTextPrimary
+									lbl.Font.Weight = font.Bold
+									lbl.Font.Typeface = fontSegoe
+									return lbl.Layout(gtx)
+								}),
+							)
 						}))
 					}
-					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx, children...)
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
 				}),
 			)
 		})
@@ -1053,7 +1073,7 @@ func renderDCMatrixCard(gtx layout.Context, th *material.Theme, s Status) layout
 		"5": "Сингапур (Азия)",
 	}
 
-	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 12, func(gtx layout.Context) layout.Dimensions {
 		return layout.UniformInset(unit.Dp(18)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1063,7 +1083,7 @@ func renderDCMatrixCard(gtx layout.Context, th *material.Theme, s Status) layout
 					lbl.Font.Typeface = fontSegoe
 					return lbl.Layout(gtx)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					dcKeys := []string{"1", "2", "3", "4", "5"}
 					children := make([]layout.FlexChild, 0, 5)
@@ -1074,81 +1094,50 @@ func renderDCMatrixCard(gtx layout.Context, th *material.Theme, s Status) layout
 						city := cities[dcNum]
 
 						children = append(children, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								bg := colCardSecondary
-								stroke := colControlStroke
-								if count > 0 {
-									stroke = colAccent
-								}
-
-								return fluentCard(gtx, bg, stroke, 6, func(gtx layout.Context) layout.Dimensions {
-									return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.H6(th, "DC"+dcNum)
-												lbl.Color = colAccent
-												lbl.Font.Weight = font.Bold
-												lbl.Font.Typeface = fontSegoe
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Caption(th, city)
-												lbl.Color = colTextTertiary
-												lbl.Font.Typeface = fontSegoe
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												valCol := colTextTertiary
-												if count > 0 {
-													valCol = colSuccess
-												}
-												lbl := material.H5(th, strconv.Itoa(count))
-												lbl.Color = valCol
-												lbl.Font.Weight = font.Bold
-												lbl.Font.Typeface = fontSegoe
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												tagText := "Direct"
-												tagBg := colControlBg
-												tagFg := colTextTertiary
-												if s.Running {
-													tagText = "WSS"
-													tagBg = colAccentContainer
-													tagFg = colOnAccentCont
-												}
-												return fluentCard(gtx, tagBg, color.NRGBA{}, 4, func(gtx layout.Context) layout.Dimensions {
-													return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-														tLbl := material.Caption(th, tagText)
-														tLbl.Color = tagFg
-														tLbl.Font.Weight = font.SemiBold
-														tLbl.Font.Typeface = fontSegoe
-														return tLbl.Layout(gtx)
-													})
-												})
-											}),
-										)
-									})
-								})
-							})
+							return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.H6(th, "DC"+dcNum)
+									lbl.Color = colAccent
+									lbl.Font.Weight = font.Bold
+									lbl.Font.Typeface = fontSegoe
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Caption(th, city)
+									lbl.Color = colTextTertiary
+									lbl.Font.Typeface = fontSegoe
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									valCol := colTextTertiary
+									if count > 0 {
+										valCol = colSuccess
+									}
+									lbl := material.H4(th, strconv.Itoa(count))
+									lbl.Color = valCol
+									lbl.Font.Weight = font.Bold
+									lbl.Font.Typeface = fontSegoe
+									return lbl.Layout(gtx)
+								}),
+							)
 						}))
 					}
 					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx, children...)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(20)}.Layout),
 				// Summary bar
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return renderMetaChip(gtx, th, "Пул WSS", strconv.Itoa(s.PoolSize))
 						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(20)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return renderMetaChip(gtx, th, "Попадания в пул", strconv.FormatInt(s.PoolHits, 10))
 						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(20)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return renderMetaChip(gtx, th, "Ошибки перехвата", strconv.FormatInt(s.Fail, 10))
 						}),
@@ -1178,7 +1167,7 @@ func renderMetaChip(gtx layout.Context, th *material.Theme, label, val string) l
 }
 
 func renderServiceInfoCard(st *guiState, gtx layout.Context, th *material.Theme, s Status) layout.Dimensions {
-	return fluentCard(gtx, colCardBg, colCardStroke, 8, func(gtx layout.Context) layout.Dimensions {
+	return fluentCard(gtx, colCardBg, colCardStroke, 12, func(gtx layout.Context) layout.Dimensions {
 		return layout.UniformInset(unit.Dp(18)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
