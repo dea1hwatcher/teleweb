@@ -81,6 +81,22 @@ case "$CMD" in
     mobile_net_renew
     exit 0
     ;;
+  dns)
+    case "$2" in
+      get|status|"")
+        echo "Private DNS mode: $(get_private_dns_mode)"
+        echo "Private DNS host: $(get_private_dns_specifier)"
+        ;;
+      set)
+        if apply_private_dns "$3" "$4"; then
+          echo "Private DNS обновлен: mode=$3 host=$4"
+        else
+          echo "Использование: action.sh dns set <off|opportunistic|hostname> [specifier]"
+        fi
+        ;;
+    esac
+    exit 0
+    ;;
   logs|log|dump)
     echo "=========================================="
     echo "        TeleWEB - Системные журналы       "
