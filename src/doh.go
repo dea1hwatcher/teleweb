@@ -39,11 +39,29 @@ var (
 	dohClientOnce sync.Once
 )
 
-var dohEndpoints = []string{
-	"https://cloudflare-dns.com/dns-query",
-	"https://dns.google/dns-query",
-	"https://dns.quad9.net/dns-query",
-	"https://dns.adguard-dns.com/dns-query",
+var (
+	dohEndpointsMu sync.RWMutex
+	dohEndpoints   = []string{
+		"https://cloudflare-dns.com/dns-query",
+		"https://dns.google/dns-query",
+		"https://dns.quad9.net/dns-query",
+		"https://dns.adguard-dns.com/dns-query",
+	}
+)
+
+func getDoHEndpoints() []string {
+	dohEndpointsMu.RLock()
+	defer dohEndpointsMu.RUnlock()
+	out := make([]string, len(dohEndpoints))
+	copy(out, dohEndpoints)
+	return out
+}
+
+func setDoHEndpoints(eps []string) {
+	dohEndpointsMu.Lock()
+	defer dohEndpointsMu.Unlock()
+	dohEndpoints = make([]string, len(eps))
+	copy(dohEndpoints, eps)
 }
 
 // dohBootstrapIPs maps DoH hostnames to their canonical Anycast IPs so the DoH
@@ -148,10 +166,11 @@ func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
 	raceCtx, raceCancel := context.WithCancel(ctx)
 	defer raceCancel()
 
-	results := make(chan raceResult, len(dohEndpoints))
+	endpoints := getDoHEndpoints()
+	results := make(chan raceResult, len(endpoints))
 	var wg sync.WaitGroup
 
-	for _, ep := range dohEndpoints {
+	for _, ep := range endpoints {
 		endpoint := ep
 		wg.Add(1)
 		go func() {

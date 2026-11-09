@@ -41,6 +41,7 @@ type WsPool struct {
 	hits         atomic.Int64
 	misses       atomic.Int64
 	lastActivity atomic.Int64
+	refillWg     sync.WaitGroup
 }
 
 var (
@@ -119,7 +120,7 @@ func (p *WsPool) Get(dc int, isMedia bool, isTest bool) *wsConn {
 				continue
 			}
 			p.hits.Add(1)
-			go p.Refill(dc, isMedia, isTest)
+			p.Refill(dc, isMedia, isTest)
 			return entry.ws
 		default:
 			p.misses.Add(1)
@@ -133,7 +134,7 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 		return
 	}
 	sz := int(p.size.Load())
-	if sz <= 0 {
+	if sz <= 0 || p.ctx.Err() != nil {
 		return
 	}
 	slot := poolSlot{dc: dc, isMedia: isMedia, isTest: isTest}
@@ -142,7 +143,9 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 		return // another refiller is already running for this slot
 	}
 
+	p.refillWg.Add(1)
 	go func() {
+		defer p.refillWg.Done()
 		defer rf.Store(0)
 		needed := sz - len(q)
 		if needed <= 0 {
@@ -150,10 +153,8 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 		}
 
 		for i := 0; i < needed; i++ {
-			select {
-			case <-p.ctx.Done():
+			if int(p.size.Load()) <= 0 || p.ctx.Err() != nil {
 				return
-			default:
 			}
 
 			dialCtx, dialCancel := context.WithTimeout(p.ctx, 8*time.Second)
@@ -164,6 +165,10 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 			dialCancel()
 
 			if err == nil && ws != nil {
+				if int(p.size.Load()) <= 0 || p.ctx.Err() != nil {
+					_ = ws.Close()
+					return
+				}
 				entry := &poolEntry{ws: ws, createdAt: time.Now()}
 				select {
 				case q <- entry:
@@ -185,8 +190,8 @@ func (p *WsPool) Warmup(activeDCs []int) {
 	p.lastActivity.Store(time.Now().UnixNano())
 	for _, dc := range activeDCs {
 		if dc >= 1 && dc <= 5 {
-			go p.Refill(dc, false, false)
-			go p.Refill(dc, true, false)
+			p.Refill(dc, false, false)
+			p.Refill(dc, true, false)
 		}
 	}
 }
@@ -257,7 +262,7 @@ func (p *WsPool) rotate() {
 		const poolIdleTimeout = 10 * time.Minute
 		isIdle := time.Since(time.Unix(0, p.lastActivity.Load())) > poolIdleTimeout
 		if !isIdle && len(q) < sz {
-			go p.Refill(slot.dc, slot.isMedia, slot.isTest)
+			p.Refill(slot.dc, slot.isMedia, slot.isTest)
 		}
 		return true
 	})
@@ -282,6 +287,16 @@ func (p *WsPool) drainAll() {
 			}
 		}
 	})
+}
+
+// Close stops the pool, cancels background workers, and closes all connections.
+func (p *WsPool) Close() {
+	if p == nil {
+		return
+	}
+	p.cancel()
+	p.drainAll()
+	p.refillWg.Wait()
 }
 
 func (p *WsPool) IdleCount() int {

@@ -85,7 +85,6 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 		return
 	}
 	var ip netip.Addr
-	var isDomainAllowed bool
 	switch req[3] {
 	case 1:
 		var b [4]byte
@@ -104,20 +103,34 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 		}
 		domainStr := string(name)
 		if isTelegramDomain(domainStr) {
-			isDomainAllowed = true
 			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-			ips, err := systemDNSResolver().LookupNetIP(ctx, "ip", domainStr)
+			var ips []netip.Addr
+			var err error
+			if doHEnabledCached() {
+				dohCtx, dohCancel := context.WithTimeout(ctx, 2*time.Second)
+				ips, err = resolveDoHRace(dohCtx, domainStr)
+				dohCancel()
+			}
+			if err != nil || len(ips) == 0 {
+				ips, err = systemDNSResolver().LookupNetIP(ctx, "ip", domainStr)
+			}
 			cancel()
 			if err != nil || len(ips) == 0 {
 				_, _ = c.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0}) // host unreachable
 				return
 			}
-			ip = ips[0].Unmap()
+			for _, resolved := range ips {
+				u := resolved.Unmap()
+				if isTelegramAggregate(u) {
+					ip = u
+					break
+				}
+			}
 		} else if parsedIP, err := netip.ParseAddr(domainStr); err == nil {
 			ip = parsedIP.Unmap()
 		}
-		// When domainStr is not a Telegram domain and not a literal IP, ip remains
-		// the zero value and DNS is NOT queried. The check below reads port and rejects it.
+		// When domainStr is not a Telegram domain or does not resolve to an
+		// allowable Telegram endpoint, ip remains the zero value and is rejected below.
 	case 4:
 		var b [16]byte
 		if _, err := io.ReadFull(c, b[:]); err != nil {
@@ -133,7 +146,7 @@ func socksHandle(c net.Conn, logger *log.Logger) {
 		return
 	}
 	port := binary.BigEndian.Uint16(pb[:])
-	if !isDomainAllowed && !isTelegramEndpoint(ip) && !isTelegramEndpointV6(ip) {
+	if !isTelegramAggregate(ip) {
 		// The SOCKS listener is a Telegram transport, not a general proxy:
 		// any other destination is rejected regardless of port. Speculative
 		// port-based allowances previously let forged DC203 inits through to
