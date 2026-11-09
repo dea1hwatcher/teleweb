@@ -247,6 +247,7 @@ type Status struct {
 
 type apiRequest struct {
 	Cmd            string  `json:"cmd"`
+	Target         *string `json:"target,omitempty"`
 	Enabled        *bool   `json:"enabled,omitempty"`
 	CFPriority     *bool   `json:"cfPriority,omitempty"`
 	CFBalance      *bool   `json:"cfBalance,omitempty"`
@@ -3216,6 +3217,12 @@ func executeAPICommand(q apiRequest) (any, error) {
 			return map[string]any{"ok": true, "output": string(out)}, nil
 		}
 		return map[string]any{"ok": false, "error": "net-renew is supported on Android with action.sh only"}, nil
+	case "cftest", "cfTest", "test_cf":
+		target := ""
+		if q.Target != nil {
+			target = *q.Target
+		}
+		return runCFTestProbe(target)
 	default:
 		return nil, fmt.Errorf("unknown command: %s", q.Cmd)
 	}
@@ -3338,6 +3345,18 @@ func main() {
 			return
 		case "status":
 			emitOK(status())
+			return
+		case "cftest":
+			target := ""
+			if len(os.Args) > 2 {
+				target = os.Args[2]
+			}
+			res, err := runCFTestProbe(target)
+			if err != nil {
+				emitErr(err)
+			} else {
+				emitOK(res)
+			}
 			return
 		case "boot":
 			// Clean up stale instances from prior boot or upgrade
@@ -4594,6 +4613,8 @@ func getSystemRootCAs() *x509.CertPool {
 			"/system/etc/security/cacerts",
 			"/apex/com.android.conscrypt/cacerts",
 			"/apex/com.google.android.conscrypt/cacerts",
+			"/data/misc/keychain/cacerts-added",
+			"/data/misc/user/0/cacerts-added",
 			"/data/misc/keychain/certs-added",
 			"/etc/security/cacerts",
 		}
@@ -6422,6 +6443,155 @@ func headerToken(value, token string) bool {
 		}
 	}
 	return false
+}
+
+// runCFTestProbe tests TLS connectivity and WebSocket handshake to a Cloudflare front
+// or Cloudflare Worker endpoint, measuring latency and verifying PoP/CF-Ray.
+func runCFTestProbe(rawTarget string) (map[string]any, error) {
+	target := strings.TrimSpace(rawTarget)
+	target = strings.TrimPrefix(target, "https://")
+	target = strings.TrimPrefix(target, "http://")
+	target = strings.TrimRight(target, "/")
+
+	if target == "" {
+		if cw := readCustomCFWorker(); cw != "" {
+			target = cw
+		} else if cd := readCustomCFDomain(); cd != "" {
+			target = cd
+		} else {
+			dyn := getDynamicCFDomains()
+			if len(dyn) > 0 {
+				target = dyn[0]
+			} else {
+				target = "web.telegram.org"
+			}
+		}
+	}
+
+	target = strings.TrimPrefix(target, "https://")
+	target = strings.TrimPrefix(target, "http://")
+	target = strings.TrimRight(target, "/")
+
+	isWorker := strings.Contains(target, "workers.dev") || strings.Contains(target, "worker")
+	var host, path string
+	var honorFrontingSNI bool
+
+	if isWorker {
+		target = normalizeWorkerAddress(target)
+		host = target
+		query := ""
+		if idx := strings.IndexByte(target, '?'); idx != -1 {
+			host = target[:idx]
+			query = target[idx+1:]
+		}
+		customPath := ""
+		if slash := strings.IndexByte(host, '/'); slash != -1 {
+			customPath = host[slash:]
+			host = host[:slash]
+		}
+		basePath := "/apiws"
+		if customPath != "" {
+			basePath = customPath
+		}
+		path = fmt.Sprintf("%s?dst=149.154.167.51&dc=2", basePath)
+		if query != "" {
+			path += "&" + query
+		}
+		honorFrontingSNI = false
+	} else {
+		host = target
+		if slash := strings.IndexByte(host, '/'); slash != -1 {
+			host = host[:slash]
+		}
+		if idx := strings.IndexByte(host, '?'); idx != -1 {
+			host = host[:idx]
+		}
+		if !strings.HasPrefix(host, "kws") && host != "web.telegram.org" {
+			host = "kws2." + host
+		}
+		path = "/apiws"
+		honorFrontingSNI = (host != "web.telegram.org")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+
+	var ips []netip.Addr
+	if doHEnabledCached() {
+		dohCtx, dohCancel := context.WithTimeout(ctx, 2*time.Second)
+		ips, _ = resolveDoHRace(dohCtx, host)
+		dohCancel()
+	}
+	if len(ips) == 0 {
+		dnsCtx, dnsCancel := context.WithTimeout(ctx, 2*time.Second)
+		ips, _ = systemDNSResolver().LookupNetIP(dnsCtx, "ip4", host)
+		dnsCancel()
+	}
+	if len(ips) == 0 {
+		return map[string]any{
+			"ok":         false,
+			"reachable":  false,
+			"target":     target,
+			"host":       host,
+			"latency_ms": 0,
+			"pop":        "",
+			"cf_ray":     "",
+			"error":      fmt.Sprintf("DNS lookup failed for %s", host),
+		}, nil
+	}
+
+	ip := ips[0]
+	dialCtx, dialCancel := context.WithTimeout(ctx, 3500*time.Millisecond)
+	defer dialCancel()
+
+	start := time.Now()
+	raw, err := trackedDial(dialCtx, "tcp4", net.JoinHostPort(ip.String(), "443"), 2*time.Second)
+	if err != nil {
+		latencyMs := time.Since(start).Milliseconds()
+		return map[string]any{
+			"ok":         false,
+			"reachable":  false,
+			"target":     target,
+			"host":       host,
+			"ip":         ip.String(),
+			"latency_ms": latencyMs,
+			"pop":        "",
+			"cf_ray":     "",
+			"error":      fmt.Sprintf("TCP dial to %s:443 failed: %v", ip.String(), err),
+		}, nil
+	}
+	setConnSockOpts(raw)
+
+	ws, err := finishTLSAndUpgrade(dialCtx, raw, host, path, honorFrontingSNI, utls.HelloChrome_Auto)
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		return map[string]any{
+			"ok":         false,
+			"reachable":  false,
+			"target":     target,
+			"host":       host,
+			"ip":         ip.String(),
+			"latency_ms": latencyMs,
+			"pop":        "",
+			"cf_ray":     "",
+			"error":      fmt.Sprintf("TLS/WebSocket handshake failed: %v", err),
+		}, nil
+	}
+	cfPop := ws.cfPoP
+	cfRay := ws.cfRay
+	_ = ws.Close()
+
+	return map[string]any{
+		"ok":         true,
+		"reachable":  true,
+		"target":     target,
+		"host":       host,
+		"ip":         ip.String(),
+		"latency_ms": latencyMs,
+		"pop":        cfPop,
+		"cf_ray":     cfRay,
+		"error":      "",
+	}, nil
 }
 
 func sha1Sum(b []byte) []byte  { h := sha1.Sum(b); return h[:] }

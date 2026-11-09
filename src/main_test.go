@@ -4355,7 +4355,7 @@ func TestPipeWSTunnel_InterceptMinus444_SiblingRemap(t *testing.T) {
 	}
 
 	guessedDC := 2 // Guessed DC2 for DC4 IP
-	init := make([]byte, 64)
+	init := makeObfuscatedInit(t, 2, 0xEEEEEEEE)
 
 	done := make(chan struct{})
 	go func() {
@@ -4516,5 +4516,53 @@ func TestPipeWSTunnel_WorkerSilentStall_ClosesAndStrikes(t *testing.T) {
 	workerStrikesMu.Unlock()
 	if !had || st.count != 1 {
 		t.Fatalf("expected 1 strike recorded for worker %s, got had=%t count=%d", workerHost, had, st.count)
+	}
+}
+
+func TestCFDomainsMirrorURL_Defined(t *testing.T) {
+	if mirrorCFDomainsURL == "" {
+		t.Fatal("mirrorCFDomainsURL must not be empty")
+	}
+	if !strings.HasPrefix(mirrorCFDomainsURL, "https://") {
+		t.Errorf("mirrorCFDomainsURL must be https, got %s", mirrorCFDomainsURL)
+	}
+}
+
+func TestAndroidCACertPaths_Included(t *testing.T) {
+	// Verify getSystemRootCAs() initializes cert pool without panicking
+	pool := getSystemRootCAs()
+	if pool == nil {
+		t.Fatal("getSystemRootCAs returned nil pool")
+	}
+}
+
+func TestCFTestProbe_InvalidTarget(t *testing.T) {
+	res, err := runCFTestProbe("test.invalid.nonexistent.domain")
+	if err != nil {
+		t.Fatalf("runCFTestProbe should return nil error and populated map, got err=%v", err)
+	}
+	reachable, _ := res["reachable"].(bool)
+	if reachable {
+		t.Errorf("expected reachable=false for invalid domain, got true: %v", res)
+	}
+	errMsg, _ := res["error"].(string)
+	if errMsg == "" {
+		t.Errorf("expected non-empty error message in result: %v", res)
+	}
+}
+
+func TestExecuteAPICommand_CFTest(t *testing.T) {
+	target := "127.0.0.1.invalid"
+	res, err := executeAPICommand(apiRequest{Cmd: "cftest", Target: &target})
+	if err != nil {
+		t.Fatalf("executeAPICommand cftest error: %v", err)
+	}
+	resMap, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any result, got %T", res)
+	}
+	reachable, _ := resMap["reachable"].(bool)
+	if reachable {
+		t.Errorf("expected reachable=false for invalid host: %v", resMap)
 	}
 }

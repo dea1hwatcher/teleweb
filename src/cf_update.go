@@ -21,6 +21,7 @@ var (
 const (
 	primaryCFDomainsURL  = "https://raw.githubusercontent.com/Flowseal/tg-ws-proxy/main/.github/cfproxy-domains.txt"
 	fallbackCFDomainsURL = "https://raw.githubusercontent.com/spatiumstas/tg-ws-proxy-go/main-go/.github/cfproxy-domains.txt"
+	mirrorCFDomainsURL   = "https://raw.githubusercontent.com/nikitos4683/nzapret/nztg/.github/cfproxy-domains.txt"
 )
 
 // decodeCFProxyDomain applies the Caesar-cipher de-obfuscation used by tg-ws-proxy:
@@ -154,6 +155,9 @@ func refreshCFDomains(ctx context.Context) error {
 	domains, err := fetchCFDomainsFromURL(ctx, client, primaryCFDomainsURL)
 	if err != nil {
 		domains, err = fetchCFDomainsFromURL(ctx, client, fallbackCFDomainsURL)
+	}
+	if err != nil {
+		domains, err = fetchCFDomainsFromURL(ctx, client, mirrorCFDomainsURL)
 	}
 	if err != nil {
 		return err
