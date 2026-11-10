@@ -447,7 +447,8 @@ func TestWebSocketClientFrameAndServerFrame(t *testing.T) {
 	}
 	// A server-to-client frame is not masked.
 	go func() { _, _ = server.Write([]byte{0x82, byte(len(payload))}); _, _ = server.Write(payload) }()
-	op, got, err := w.readFrame()
+	op, got, bufPtr, err := w.readFrame()
+	defer releaseFrame(bufPtr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +466,8 @@ func TestWebSocketFragmentedServerMessage(t *testing.T) {
 		_, _ = server.Write([]byte{0x02, 0x03, 'a', 'b', 'c'}) // non-final binary
 		_, _ = server.Write([]byte{0x80, 0x03, 'd', 'e', 'f'}) // final continuation
 	}()
-	op, payload, err := w.readFrame()
+	op, payload, bufPtr, err := w.readFrame()
+	defer releaseFrame(bufPtr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5468,5 +5470,153 @@ func TestExportDiagnosticsAPI(t *testing.T) {
 	}
 	if !strings.Contains(logStr, "91.108.***.***") {
 		t.Fatalf("log in exportDiagnostics must contain redacted IP, got: %s", logStr)
+	}
+}
+
+func TestVectorizedMasking(t *testing.T) {
+	lengths := []int{0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 127, 256, 1024, 65536}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	w := &wsConn{conn: client, r: bufio.NewReader(client)}
+
+	for _, n := range lengths {
+		p := make([]byte, n)
+		for i := range p {
+			p[i] = byte((i*37 + 13) & 0xff)
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			done <- w.writeFrame(2, p)
+		}()
+
+		// Read frame from server end
+		br := bufio.NewReader(server)
+		h := make([]byte, 2)
+		if _, err := io.ReadFull(br, h); err != nil {
+			t.Fatalf("len %d: header read: %v", n, err)
+		}
+		var payloadLen int
+		b1 := int(h[1] & 0x7f)
+		if b1 < 126 {
+			payloadLen = b1
+		} else if b1 == 126 {
+			var x [2]byte
+			if _, err := io.ReadFull(br, x[:]); err != nil {
+				t.Fatalf("len %d: ext16: %v", n, err)
+			}
+			payloadLen = int(binary.BigEndian.Uint16(x[:]))
+		} else {
+			var x [8]byte
+			if _, err := io.ReadFull(br, x[:]); err != nil {
+				t.Fatalf("len %d: ext64: %v", n, err)
+			}
+			payloadLen = int(binary.BigEndian.Uint64(x[:]))
+		}
+		if payloadLen != n {
+			t.Fatalf("expected payload len %d, got %d", n, payloadLen)
+		}
+
+		mask := make([]byte, 4)
+		if _, err := io.ReadFull(br, mask); err != nil {
+			t.Fatalf("len %d: mask read: %v", n, err)
+		}
+
+		maskedPayload := make([]byte, n)
+		if _, err := io.ReadFull(br, maskedPayload); err != nil {
+			t.Fatalf("len %d: payload read: %v", n, err)
+		}
+
+		if err := <-done; err != nil {
+			t.Fatalf("len %d: writeFrame error: %v", n, err)
+		}
+
+		// Verify against baseline naive XOR
+		for i := 0; i < n; i++ {
+			expected := p[i] ^ mask[i&3]
+			if maskedPayload[i] != expected {
+				t.Fatalf("len %d at byte %d: got 0x%02x, want 0x%02x", n, i, maskedPayload[i], expected)
+			}
+		}
+	}
+}
+
+func TestLockFreeDCCounts(t *testing.T) {
+	// Snapshot initial
+	initial := snapshotDCCounts()
+	c1Before := initial["1"]
+	c2Before := initial["2"]
+	c203Before := initial["203"]
+
+	var wg sync.WaitGroup
+	const iterations = 500
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				recordDCConnection(1)
+				recordDCConnection(2)
+				recordDCConnection(203)
+			}
+		}()
+	}
+	wg.Wait()
+
+	snap := snapshotDCCounts()
+	if snap["1"] != c1Before+4*iterations {
+		t.Fatalf("DC1 count mismatch: got %d, want %d", snap["1"], c1Before+4*iterations)
+	}
+	if snap["2"] != c2Before+4*iterations {
+		t.Fatalf("DC2 count mismatch: got %d, want %d", snap["2"], c2Before+4*iterations)
+	}
+	if snap["203"] != c203Before+4*iterations {
+		t.Fatalf("DC203 count mismatch: got %d, want %d", snap["203"], c203Before+4*iterations)
+	}
+}
+
+func TestLogRotationLineBoundary(t *testing.T) {
+	tmpDir := t.TempDir()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
+
+	logMu.Lock()
+	if logFile != nil {
+		_ = logFile.Close()
+		logFile = nil
+	}
+	logMu.Unlock()
+	defer func() {
+		logMu.Lock()
+		if logFile != nil {
+			_ = logFile.Close()
+			logFile = nil
+		}
+		logMu.Unlock()
+	}()
+
+	// Write over 260KB of known lines
+	for i := 0; i < 3000; i++ {
+		logf("test line entry %05d for log rotation testing", i)
+	}
+
+	b, err := os.ReadFile(path("tgws.log"))
+	if err != nil {
+		t.Fatalf("read tgws.log: %v", err)
+	}
+	if len(b) > 260*1024 {
+		t.Fatalf("expected log to be trimmed below 260KB, got %d", len(b))
+	}
+
+	// Verify first line in trimmed file starts cleanly with date timestamp YYYY/MM/DD
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) == 0 {
+		t.Fatal("log file is empty")
+	}
+	first := lines[0]
+	if !strings.Contains(first, "test line entry") {
+		t.Fatalf("first line corrupted: %q", first)
 	}
 }

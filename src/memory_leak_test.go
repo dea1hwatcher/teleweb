@@ -552,7 +552,8 @@ func TestPipeWSTunnelRoundTrip(t *testing.T) {
 		}
 
 		serverWS := &wsConn{conn: serverPeer, r: sr}
-		op, payload, err := serverWS.readFrame()
+		op, payload, bufPtr, err := serverWS.readFrame()
+		releaseFrame(bufPtr)
 		if err != nil {
 			serverErr <- err
 			return
@@ -561,7 +562,8 @@ func TestPipeWSTunnelRoundTrip(t *testing.T) {
 			serverErr <- fmt.Errorf("first frame: op=%d len=%d (want 2/69 with init prefix)", op, len(payload))
 			return
 		}
-		op, payload, err = serverWS.readFrame()
+		op, payload, bufPtr, err = serverWS.readFrame()
+		releaseFrame(bufPtr)
 		if err != nil {
 			serverErr <- err
 			return
@@ -580,7 +582,8 @@ func TestPipeWSTunnelRoundTrip(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		op, payload, err = serverWS.readFrame()
+		op, payload, bufPtr, err = serverWS.readFrame()
+		releaseFrame(bufPtr)
 		if err != nil {
 			serverErr <- err
 			return

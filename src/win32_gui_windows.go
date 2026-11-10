@@ -122,7 +122,7 @@ var enumWindowsCallback = syscall.NewCallback(func(hwnd, lParam uintptr) uintptr
 	isTray := (hwnd == trayHwnd)
 	trayMu.Unlock()
 	if wndPid == windows.GetCurrentProcessId() && !isTray {
-		mainHwnd = hwnd
+		setMainHwnd(hwnd)
 		return 0 // stop enumeration
 	}
 	return 1 // continue
