@@ -23,11 +23,8 @@ type poolEntry struct {
 }
 
 const (
-	// Telegram relays drop an idle WS at ~120s and Cloudflare fronts at ~100s.
-	// We retire pooled sockets at 90s so they are closed on our side before
-	// any frontend kills them. Keep-alive pings are deliberately NOT sent:
-	// the resulting PONG lands unread in the socket and the Get() liveness
-	// probe would treat it as out-of-sync data and destroy the entry.
+	// Idle WS lifetime: Telegram drops at ~120s, CF fronts at ~100s.
+	// Retire at 90s (worker at 45s). Pings omitted to avoid unread PONG in liveness probe.
 	wsPoolMaxAge        = 90 * time.Second
 	wsPoolCheckInterval = 15 * time.Second
 )
