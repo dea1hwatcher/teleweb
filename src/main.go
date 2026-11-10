@@ -5,6 +5,7 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -59,6 +60,7 @@ var (
 	connSeq          int64
 	statsMu          sync.Mutex
 	dcCounts         = map[string]int{}
+	dcCountsArr      [6]atomic.Int64 // lock-free counters: indices 0..4 for DC1..5, index 5 for DC203
 	logMu            sync.Mutex
 	logFile          *os.File
 	logWrites        uint64
@@ -74,7 +76,7 @@ var (
 	cfHostCache        sync.Map // route key -> last working Cloudflare-fronted KWS hostname
 	routeCacheMu       sync.Mutex
 	routeCacheDisk     = map[string]persistedRoute{}
-	routeHealthMu      sync.Mutex
+	routeHealthMu      sync.RWMutex
 	routeHealth        = map[string]routeHealthState{} // host -> repeated early remote-close state
 	cfBalanceSeq       uint64
 	cfFrontSeq         uint64
@@ -93,6 +95,32 @@ var (
 		},
 	}
 )
+
+func recordDCConnection(dc int) {
+	if dc >= 1 && dc <= 5 {
+		dcCountsArr[dc-1].Add(1)
+	} else if dc == 203 {
+		dcCountsArr[5].Add(1)
+	}
+}
+
+func snapshotDCCounts() map[string]int {
+	m := make(map[string]int, 6)
+	for i := 0; i < 5; i++ {
+		if c := dcCountsArr[i].Load(); c > 0 {
+			m[strconv.Itoa(i+1)] = int(c)
+		}
+	}
+	if c := dcCountsArr[5].Load(); c > 0 {
+		m["203"] = int(c)
+	}
+	statsMu.Lock()
+	for k, v := range dcCounts {
+		m[k] += v
+	}
+	statsMu.Unlock()
+	return m
+}
 
 type mediaStallState struct {
 	strikes      int
@@ -575,6 +603,9 @@ func logf(format string, a ...any) {
 				b, readErr := os.ReadFile(path("tgws.log"))
 				if readErr == nil && len(b) > 128*1024 {
 					tail := b[len(b)-128*1024:]
+					if idx := bytes.IndexByte(tail, '\n'); idx >= 0 && idx < len(tail)-1 {
+						tail = tail[idx+1:]
+					}
 					_ = logFile.Truncate(0)
 					_, _ = logFile.Seek(0, io.SeekStart)
 					_, _ = logFile.Write(tail)
@@ -3196,12 +3227,6 @@ func buildStatus(apps []App) Status {
 // snapshot. Every path that reports on a running daemon goes through here, so a
 // new counter is added once instead of in each caller.
 func liveMetrics(s *Status) {
-	statsMu.Lock()
-	dc := make(map[string]int, len(dcCounts))
-	for k, v := range dcCounts {
-		dc[k] = v
-	}
-	statsMu.Unlock()
 	memNow, memPeak := processMemoryBytes()
 	up := atomic.LoadInt64(&trafficUpBytes)
 	down := atomic.LoadInt64(&trafficDownBytes)
@@ -3211,7 +3236,7 @@ func liveMetrics(s *Status) {
 	s.WS = atomic.LoadInt64(&wsCount)
 	s.Fail = atomic.LoadInt64(&failCnt)
 	s.LogSuppressed = logSuppressed.Load()
-	s.DC = dc
+	s.DC = snapshotDCCounts()
 	s.MemNowBytes = memNow
 	s.MemPeakBytes = memPeak
 	s.TrafficUpBytes = up
@@ -4255,9 +4280,7 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		logf("unknown DC for %s (conn %d); refusing direct send", orig, id)
 		return
 	}
-	statsMu.Lock()
-	dcCounts[strconv.Itoa(dc)]++
-	statsMu.Unlock()
+	recordDCConnection(dc)
 
 	// HTTP/2 Media Multiplexing route
 	if isMedia && h2MediaEnabledCached() {
@@ -4332,7 +4355,7 @@ func cdn203Dispatch(orig netip.AddrPort, dc int) bool {
 // clients. cdn203Fails and directDialFails previously carried two verbatim
 // copies of this machinery; they are instances of the same thing.
 type failCache struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	m       map[string]time.Time
 	backoff time.Duration
 }
@@ -4342,8 +4365,8 @@ func newFailCache(backoff time.Duration) *failCache {
 }
 
 func (fc *failCache) blockedRecently(key string) bool {
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
 	t, ok := fc.m[key]
 	return ok && time.Now().Before(t)
 }
@@ -4363,8 +4386,8 @@ func (fc *failCache) markReachable(key string) {
 
 // size reports the current entry count (diagnostics and tests).
 func (fc *failCache) size() int {
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
 	return len(fc.m)
 }
 
@@ -4466,9 +4489,7 @@ func orderCFEdgeIPs(ips []netip.Addr) []netip.Addr {
 const directProofBytes = 32 * 1024
 
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
-	statsMu.Lock()
-	dcCounts["203"]++
-	statsMu.Unlock()
+	recordDCConnection(203)
 
 	// Level 1: Personal Cloudflare Worker (if configured)
 	worker := customCFWorkerCached()
@@ -4919,12 +4940,13 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 		var lastWriteDeadline time.Time
 		for {
 			_ = ws.conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
-			op, payload, readErr := ws.readFrame()
+			op, payload, bufPtr, readErr := ws.readFrame()
 			if readErr != nil {
 				if !strings.Contains(readErr.Error(), "use of closed network connection") {
 					noteEarlyRemoteClose(routeKey(dc, isMedia), ws.host, readErr, time.Since(startedAt), atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 					logf("conn #%d DC%d WSS->client error: %T: %v (up=%d down=%d)", id, dc, readErr, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 				}
+				releaseFrame(bufPtr)
 				break
 			}
 			lastActivity.Store(time.Now().UnixNano())
@@ -4942,13 +4964,13 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 									logf("conn #%d %s: remapped to sibling DC%d (was DC%d) after -444", id, targetIP, alt, dc)
 								}
 							}
-							releaseFrame(payload)
+							releaseFrame(bufPtr)
 							closeBoth()
 							return
 						}
 						if code == -404 {
 							logf("conn #%d DC%d: upstream returned -404 (KEY_NOT_FOUND); suppressing from client to preserve session key", id, dc)
-							releaseFrame(payload)
+							releaseFrame(bufPtr)
 							closeBoth()
 							return
 						}
@@ -4969,26 +4991,26 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 						lastWriteDeadline = now
 					}
 					if readErr = writeFull(c, payload); readErr != nil {
-						releaseFrame(payload)
+						releaseFrame(bufPtr)
 						logf("conn #%d DC%d write WSS->client finished: %v (up=%d down=%d)", id, dc, readErr, atomic.LoadInt64(&upBytes), atomic.LoadInt64(&downBytes))
 						closeBoth()
 						return
 					}
 					atomic.AddInt64(&downBytes, int64(len(payload)))
 					atomic.AddInt64(&trafficDownBytes, int64(len(payload)))
-					releaseFrame(payload)
 				}
+				releaseFrame(bufPtr)
 			case 9:
 				_ = ws.writeFrame(10, payload)
-				releaseFrame(payload)
+				releaseFrame(bufPtr)
 			case 8:
-				releaseFrame(payload)
+				releaseFrame(bufPtr)
 				closeBoth()
 				return
 			case 10:
-				releaseFrame(payload)
+				releaseFrame(bufPtr)
 			default:
-				releaseFrame(payload)
+				releaseFrame(bufPtr)
 				logf("DC%d unknown WebSocket opcode: %d", dc, op)
 			}
 		}
@@ -5620,8 +5642,8 @@ func routeCoolingDown(host string) bool {
 	if host == "" {
 		return false
 	}
-	routeHealthMu.Lock()
-	defer routeHealthMu.Unlock()
+	routeHealthMu.RLock()
+	defer routeHealthMu.RUnlock()
 	state, ok := routeHealth[host]
 	return ok && time.Now().Before(state.until)
 }
@@ -5768,8 +5790,8 @@ func nearestRetryFor(hosts []string) (time.Duration, bool) {
 		return 0, false
 	}
 	now := time.Now()
-	routeHealthMu.Lock()
-	defer routeHealthMu.Unlock()
+	routeHealthMu.RLock()
+	defer routeHealthMu.RUnlock()
 	nearest := time.Duration(0)
 	for _, host := range hosts {
 		state, ok := routeHealth[host]
@@ -6118,14 +6140,16 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 	for active > 0 || nextIdx < len(candidates) {
 		select {
 		case <-raceCtx.Done():
-			go func(rem int) {
-				for i := 0; i < rem; i++ {
-					r := <-resCh
-					if r.ws != nil {
-						_ = r.ws.Close()
+			if active > 0 {
+				go func(rem int) {
+					for i := 0; i < rem; i++ {
+						r := <-resCh
+						if r.ws != nil {
+							_ = r.ws.Close()
+						}
 					}
-				}
-			}(active)
+				}(active)
+			}
 			return nil, "", raceCtx.Err()
 
 		case <-timer.C:
@@ -6140,14 +6164,16 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 			active--
 			if res.err == nil && res.ws != nil {
 				cancelAll()
-				go func(rem int) {
-					for i := 0; i < rem; i++ {
-						r := <-resCh
-						if r.ws != nil {
-							_ = r.ws.Close()
+				if active > 0 {
+					go func(rem int) {
+						for i := 0; i < rem; i++ {
+							r := <-resCh
+							if r.ws != nil {
+								_ = r.ws.Close()
+							}
 						}
-					}
-				}(active)
+					}(active)
+				}
 				return res.ws, res.cand.name, nil
 			}
 			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: %v", res.cand.name, res.err))
@@ -6259,7 +6285,9 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 		// 2. DC1 special preferred host: kws1.pclead.co.uk
 		if dc == 1 && !cfBalance {
 			const preferredDC1Host = "kws1.pclead.co.uk"
-			if !routeCoolingDown(preferredDC1Host) {
+			pop, _ := domainLastPoP.Load("pclead.co.uk")
+			popStr, _ := pop.(string)
+			if !isRussianPoP(popStr) && !routeCoolingDown(preferredDC1Host) {
 				candDC1 := dialCandidate{
 					name: fmt.Sprintf("cf-preferred (%s)", preferredDC1Host),
 					dial: func(c context.Context) (*wsConn, error) {
@@ -7379,7 +7407,16 @@ func (w *wsConn) writeFrame(op byte, p []byte) error {
 		payload = make([]byte, n)
 	}
 
-	for i := range p {
+	var m8 [8]byte
+	m8[0], m8[1], m8[2], m8[3] = mask[0], mask[1], mask[2], mask[3]
+	m8[4], m8[5], m8[6], m8[7] = mask[0], mask[1], mask[2], mask[3]
+	m64 := binary.NativeEndian.Uint64(m8[:])
+	i := 0
+	for ; i+8 <= n; i += 8 {
+		w64 := binary.NativeEndian.Uint64(p[i:])
+		binary.NativeEndian.PutUint64(payload[i:], w64^m64)
+	}
+	for ; i < n; i++ {
 		payload[i] = p[i] ^ mask[i&3]
 	}
 
@@ -7414,44 +7451,43 @@ func writeFull(w io.Writer, p []byte) error {
 	}
 	return nil
 }
-func releaseFrame(p []byte) {
-	if cap(p) == 64*1024 {
-		p = p[:64*1024]
-		frameBufPool.Put(&p)
+func releaseFrame(bufPtr *[]byte) {
+	if bufPtr != nil {
+		frameBufPool.Put(bufPtr)
 	}
 }
 
-func (w *wsConn) readFrame() (byte, []byte, error) {
+func (w *wsConn) readFrame() (byte, []byte, *[]byte, error) {
 	for {
 		var h [2]byte
 		if _, err := io.ReadFull(w.r, h[:]); err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		fin, op, masked := h[0]&0x80 != 0, h[0]&0x0f, h[1]&0x80 != 0
 		n := uint64(h[1] & 0x7f)
 		if n == 126 {
 			var x [2]byte
 			if _, err := io.ReadFull(w.r, x[:]); err != nil {
-				return 0, nil, err
+				return 0, nil, nil, err
 			}
 			n = uint64(binary.BigEndian.Uint16(x[:]))
 		} else if n == 127 {
 			var x [8]byte
 			if _, err := io.ReadFull(w.r, x[:]); err != nil {
-				return 0, nil, err
+				return 0, nil, nil, err
 			}
 			n = binary.BigEndian.Uint64(x[:])
 		}
 		if n > maxWSFrame {
-			return 0, nil, fmt.Errorf("WebSocket frame exceeds %d bytes", maxWSFrame)
+			return 0, nil, nil, fmt.Errorf("WebSocket frame exceeds %d bytes", maxWSFrame)
 		}
 		if op >= 8 && (!fin || n > 125) {
-			return 0, nil, errors.New("invalid WebSocket control frame")
+			return 0, nil, nil, errors.New("invalid WebSocket control frame")
 		}
 		var mask [4]byte
 		if masked {
 			if _, err := io.ReadFull(w.r, mask[:]); err != nil {
-				return 0, nil, err
+				return 0, nil, nil, err
 			}
 		}
 		var p []byte
@@ -7466,7 +7502,7 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 			if bufPtr != nil {
 				frameBufPool.Put(bufPtr)
 			}
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		if masked {
 			for i := range p {
@@ -7475,7 +7511,7 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 		}
 		// Control frames may be interleaved with fragmented data messages.
 		if op >= 8 {
-			return op, p, nil
+			return op, p, bufPtr, nil
 		}
 		switch op {
 		case 1, 2:
@@ -7483,10 +7519,10 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 				if bufPtr != nil {
 					frameBufPool.Put(bufPtr)
 				}
-				return 0, nil, errors.New("new data frame before fragmented message completed")
+				return 0, nil, nil, errors.New("new data frame before fragmented message completed")
 			}
 			if fin {
-				return op, p, nil
+				return op, p, bufPtr, nil
 			}
 			w.fragOpcode, w.fragData = op, append([]byte(nil), p...)
 			if bufPtr != nil {
@@ -7497,13 +7533,13 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 				if bufPtr != nil {
 					frameBufPool.Put(bufPtr)
 				}
-				return 0, nil, errors.New("unexpected continuation frame")
+				return 0, nil, nil, errors.New("unexpected continuation frame")
 			}
 			if len(w.fragData)+len(p) > maxWSFrame {
 				if bufPtr != nil {
 					frameBufPool.Put(bufPtr)
 				}
-				return 0, nil, errors.New("fragmented WebSocket message too large")
+				return 0, nil, nil, errors.New("fragmented WebSocket message too large")
 			}
 			w.fragData = append(w.fragData, p...)
 			if bufPtr != nil {
@@ -7512,13 +7548,13 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 			if fin {
 				outOp, out := w.fragOpcode, w.fragData
 				w.fragOpcode, w.fragData = 0, nil
-				return outOp, out, nil
+				return outOp, out, nil, nil
 			}
 		default:
 			if bufPtr != nil {
 				frameBufPool.Put(bufPtr)
 			}
-			return 0, nil, fmt.Errorf("unsupported WebSocket opcode %d", op)
+			return 0, nil, nil, fmt.Errorf("unsupported WebSocket opcode %d", op)
 		}
 	}
 }
