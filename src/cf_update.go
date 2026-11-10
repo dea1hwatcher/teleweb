@@ -137,6 +137,9 @@ func fetchCFDomainsFromURL(ctx context.Context, client *http.Client, targetURL s
 func refreshCFDomains(ctx context.Context) error {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if conn, used, err := dialViaOutboundProxy(ctx, network, addr, 5*time.Second); used {
+				return conn, err
+			}
 			d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 5 * time.Second}
 			return d.DialContext(ctx, network, addr)
 		},
