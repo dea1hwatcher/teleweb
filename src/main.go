@@ -1823,7 +1823,6 @@ var telegramSubnets = []struct {
 	{"91.105.192.0/23", 2},
 	{"172.121.110.0/24", 2},
 	{"142.252.58.0/24", 2},
-	{"194.221.250.50/32", 2},
 }
 
 var telegramV4 = func() []string {
@@ -2056,6 +2055,42 @@ func cleanupTetherMSS(bin string) {
 	for i := 0; i < 4; i++ {
 		if runCmd(bin, del...) != nil {
 			break
+		}
+	}
+}
+
+// setupIPv6FilterBlock rejects direct Telegram IPv6 traffic with a TCP reset when the
+// kernel lacks IPv6 NAT support. This forces clients to immediately fall back to IPv4
+// (intercepted by WSS) rather than hanging on ISP/TSPU DPI timeouts or leaking direct.
+func setupIPv6FilterBlock(bin string, cidrs []string) {
+	if bin == "" {
+		return
+	}
+	for _, cidr := range cidrs {
+		if runCmd(bin, "-t", "filter", "-C", "OUTPUT", "-p", "tcp", "-d", cidr, "-j", "REJECT", "--reject-with", "tcp-reset") != nil {
+			if runCmd(bin, "-t", "filter", "-I", "OUTPUT", "1", "-p", "tcp", "-d", cidr, "-j", "REJECT", "--reject-with", "tcp-reset") != nil {
+				if runCmd(bin, "-t", "filter", "-C", "OUTPUT", "-p", "tcp", "-d", cidr, "-j", "DROP") != nil {
+					_ = runCmd(bin, "-t", "filter", "-I", "OUTPUT", "1", "-p", "tcp", "-d", cidr, "-j", "DROP")
+				}
+			}
+		}
+	}
+}
+
+func cleanupIPv6FilterBlock(bin string, cidrs []string) {
+	if bin == "" {
+		return
+	}
+	for _, cidr := range cidrs {
+		for i := 0; i < 4; i++ {
+			if runCmd(bin, "-t", "filter", "-D", "OUTPUT", "-p", "tcp", "-d", cidr, "-j", "REJECT", "--reject-with", "tcp-reset") != nil {
+				break
+			}
+		}
+		for i := 0; i < 4; i++ {
+			if runCmd(bin, "-t", "filter", "-D", "OUTPUT", "-p", "tcp", "-d", cidr, "-j", "DROP") != nil {
+				break
+			}
 		}
 	}
 }
@@ -2415,16 +2450,21 @@ func setupRules() error {
 	}
 	if ip6tables := findBin("ip6tables"); ip6tables != "" {
 		if err := iptSetup(ip6tables, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
-			// Not fatal: some kernels ship without usable ip6tables; IPv6
+			// Not fatal: some kernels ship without usable ip6tables NAT; IPv6
 			// Telegram traffic (2001:b28::/32, 2a0a:f280::/32) then bypasses the WSS
 			// transport undiagnosed. rulesHealthy deliberately ignores the
 			// IPv6 family so the watchdog does not flap on such devices,
-			// so surface the failure here and flag it for the rate-limited
-			// retry instead of leaving it broken for the daemon's lifetime.
+			// so block direct IPv6 to force an immediate fallback to IPv4 WSS.
 			ip6RulesInstalled.Store(false)
 			ip6RulesFailed.Store(true)
-			logf("redirect: IPv6 rules failed: %v — Telegram IPv6 will bypass WSS until a retry succeeds", err)
+			setupIPv6FilterBlock(ip6tables, telegramV6)
+			if strings.Contains(err.Error(), "Table does not exist") || strings.Contains(err.Error(), "can't initialize") {
+				logf("redirect: kernel lacks IPv6 NAT table; blocking direct Telegram IPv6 to force instant IPv4 fallback")
+			} else {
+				logf("redirect: IPv6 rules failed: %v — blocked direct Telegram IPv6 to force instant IPv4 fallback", err)
+			}
 		} else {
+			cleanupIPv6FilterBlock(ip6tables, telegramV6)
 			ip6RulesInstalled.Store(true)
 			ip6RulesFailed.Store(false)
 		}
@@ -2456,6 +2496,7 @@ func cleanupRules() {
 	}
 	ip6RulesInstalled.Store(false)
 	ip6RulesFailed.Store(false)
+	cleanupIPv6FilterBlock(findBin("ip6tables"), telegramV6)
 	_, uids := installedApps()
 	iptCleanup(findBin("iptables"), uids, "TELEWEB")
 	// Remove the previous release's IPv6 chain as well: setupRules installs
@@ -2979,9 +3020,13 @@ func retryFailedIPv6Rules() {
 	_, uids := installedApps()
 	if err := iptSetup(bin, uids, telegramV6, "TELEWEB", "IPv6"); err != nil {
 		ip6RulesInstalled.Store(false)
-		logf("redirect: IPv6 rules retry failed: %v", err)
+		setupIPv6FilterBlock(bin, telegramV6)
+		if !strings.Contains(err.Error(), "Table does not exist") && !strings.Contains(err.Error(), "can't initialize") {
+			logf("redirect: IPv6 rules retry failed: %v", err)
+		}
 		return
 	}
+	cleanupIPv6FilterBlock(bin, telegramV6)
 	setupCallsBypass(bin)
 	setupTetherMSS(bin)
 	ip6RulesInstalled.Store(true)
@@ -4252,6 +4297,14 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 			// 91.105.192.0/23 aggregate maps to DC2 in dcFor, which would
 			// feed non-MTProto garbage into the WSS path).
 			handleCDN203(c, orig, init, id)
+			return
+		}
+		// Validate whether init is recognizable MTProto transport. If decryptMTProtoInit
+		// fails, newMTProtoPacketFramer will fail inside pipeTCPToWSCount anyway; refusing
+		// here avoids dialing a useless WSS connection to Cloudflare.
+		if _, _, _, protoErr := decryptMTProtoInit(init); protoErr != nil {
+			atomic.AddInt64(&failCnt, 1)
+			logf("conn #%d %s: non-MTProto stream (%v); refusing WSS tunnel", id, orig, protoErr)
 			return
 		}
 		if testDC, ok := knownTestDCMap[orig.Addr().String()]; ok {
@@ -6859,6 +6912,49 @@ func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, h
 	return ws, nil
 }
 
+// cleanHTTPErrorBody parses an error response body from a failed HTTP/WebSocket upgrade,
+// stripping raw HTML markup, extracting titles/codes, and single-lining output to protect
+// log formatting from multi-line Cloudflare HTML dumps.
+func cleanHTTPErrorBody(body []byte) string {
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		return ""
+	}
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<div") {
+		if start := strings.Index(lower, "<title>"); start != -1 {
+			start += len("<title>")
+			if end := strings.Index(lower[start:], "</title>"); end != -1 {
+				title := strings.TrimSpace(msg[start : start+end])
+				if title != "" {
+					return sanitizeLogLine(title, 120)
+				}
+			}
+		}
+		if idx := strings.Index(lower, "error 1"); idx != -1 && idx+10 <= len(msg) {
+			return sanitizeLogLine(msg[idx:idx+10], 60)
+		}
+		return "Cloudflare Error Page"
+	}
+	return sanitizeLogLine(msg, 120)
+}
+
+func sanitizeLogLine(s string, maxLen int) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\r' || r == '\n' || r == '\t' {
+			b.WriteByte(' ')
+		} else if (r >= 32 && r < 127) || r > 127 {
+			b.WriteRune(r)
+		}
+	}
+	res := strings.Join(strings.Fields(b.String()), " ")
+	if maxLen > 0 && len(res) > maxLen {
+		return res[:maxLen] + "..."
+	}
+	return res
+}
+
 func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, error) {
 	if path == "" {
 		path = "/apiws"
@@ -6880,7 +6976,7 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		_ = resp.Body.Close()
-		msg := strings.TrimSpace(string(body))
+		msg := cleanHTTPErrorBody(body)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 			var retryAfter time.Duration
 			if ra := resp.Header.Get("Retry-After"); ra != "" {
@@ -6890,7 +6986,10 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 			}
 			return nil, &RateLimitError{StatusCode: resp.StatusCode, RetryAfter: retryAfter, Message: msg}
 		}
-		return nil, fmt.Errorf("HTTP %s: %s", resp.Status, msg)
+		if msg != "" {
+			return nil, fmt.Errorf("HTTP %s: %s", resp.Status, msg)
+		}
+		return nil, fmt.Errorf("HTTP %s", resp.Status)
 	}
 	want := base64.StdEncoding.EncodeToString(sha1Sum([]byte(key + wsGUID)))
 	if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("Sec-WebSocket-Accept")), want) {
