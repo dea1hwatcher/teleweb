@@ -822,7 +822,7 @@ func renderSettingsCard(gtx layout.Context, th *material.Theme, title, subtitle 
 }
 
 // ============================================================================
-// TAB 1: СОСТОЯНИЕ (Status & Telemetry)
+// TAB 1: Status & Telemetry
 // ============================================================================
 
 func renderStatusPage(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
@@ -1220,7 +1220,7 @@ func renderServiceInfoCard(st *guiState, gtx layout.Context, th *material.Theme,
 }
 
 // ============================================================================
-// TAB 2: МАРШРУТИЗАЦИЯ (Routing / Settings)
+// TAB 2: Routing & Settings
 // ============================================================================
 
 func renderRoutingPage(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
@@ -1463,7 +1463,7 @@ func renderPoolOption(gtx layout.Context, th *material.Theme, btn *widget.Clicka
 }
 
 // ============================================================================
-// TAB 3: ЖУРНАЛ (Logs)
+// TAB 3: Logs
 // ============================================================================
 
 func renderLogsPage(st *guiState, gtx layout.Context, th *material.Theme) layout.Dimensions {
