@@ -113,8 +113,95 @@ reset_stale_boot_state() {
   fi
 }
 
+# Locate SuSFS (KernelSU / APatch / Magisk) kernel integration CLI tool
+find_susfs_bin() {
+  local b
+  for b in /data/adb/ksu/bin/ksu_susfs \
+           /data/adb/ap/bin/ksu_susfs \
+           /data/adb/ap/bin/ap_susfs \
+           /data/adb/bin/ksu_susfs \
+           /system/bin/ksu_susfs; do
+    if [ -x "$b" ]; then
+      echo "$b"
+      return 0
+    fi
+  done
+  if command -v ksu_susfs >/dev/null 2>&1; then
+    command -v ksu_susfs
+    return 0
+  fi
+  return 1
+}
+
+# Check if stealth / root-hiding mode is active
+is_stealth_enabled() {
+  [ -f "$TELEWEB_DIR/stealth" ] && return 0
+  [ -f "$TELEWEB_DIR/no_stealth" ] && return 1
+  # Auto-enable when SuSFS kernel hiding subsystem is detected
+  if [ -n "$(find_susfs_bin)" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# Reset module.prop description to static clean default
+reset_description_to_default() {
+  local prop=""
+  if [ -d "/data/adb/modules/teleweb" ]; then
+    prop="/data/adb/modules/teleweb/module.prop"
+  elif [ -n "$MODDIR" ] && [ -d "$MODDIR" ]; then
+    prop="$MODDIR/module.prop"
+  fi
+  [ -f "$prop" ] && [ -w "$prop" ] || return 0
+
+  local d="Прозрачный WSS-транспорт для Telegram (DC1-DC5)"
+  local desc_current
+  desc_current=$(grep "^description=" "$prop" 2>/dev/null)
+  if [ "$desc_current" = "description=$d" ]; then
+    return 0
+  fi
+
+  local tmp="$TELEWEB_DIR/module.prop.$$"
+  if awk -v d="$d" 'BEGIN { done = 0 } /^description=/ { print "description=" d; done = 1; next } { print }
+    END { if (!done) print "description=" d }' "$prop" > "$tmp" 2>/dev/null; then
+    chmod 0644 "$tmp" 2>/dev/null
+    mv -f "$tmp" "$prop" 2>/dev/null
+  fi
+  rm -f "$tmp" 2>/dev/null
+}
+
+# Apply SuSFS kernel-level hiding and SELinux context hardening
+apply_susfs_hiding() {
+  local mod_path="${1:-$MODDIR}"
+  [ -z "$mod_path" ] && mod_path="/data/adb/modules/teleweb"
+  local susfs_bin
+  susfs_bin="$(find_susfs_bin)"
+
+  # Apply standard system_file SELinux context to eliminate suspicious labels (e.g. magisk_file)
+  chcon -R u:object_r:system_file:s0 "$TELEWEB_DIR" 2>/dev/null || true
+  if [ -d "$mod_path" ]; then
+    chcon -R u:object_r:system_file:s0 "$mod_path" 2>/dev/null || true
+  fi
+
+  [ -n "$susfs_bin" ] || return 0
+
+  # Register paths in SuSFS kernel driver to conceal them from non-root applications
+  for p in "$TELEWEB_DIR" "$mod_path" /data/adb/modules/teleweb /data/adb/modules_update/teleweb; do
+    if [ -e "$p" ]; then
+      "$susfs_bin" add_sus_path "$p" >/dev/null 2>&1 || true
+      "$susfs_bin" add_sus_mount "$p" >/dev/null 2>&1 || true
+      "$susfs_bin" add_try_umount "$p" 1 >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 # Atomically update description in module.prop
 update_description() { # running | active | error | failed | stopped | disabled
+  if is_stealth_enabled; then
+    reset_description_to_default
+    return 0
+  fi
+
   local prop=""
   if [ -d "/data/adb/modules/teleweb" ]; then
     prop="/data/adb/modules/teleweb/module.prop"
