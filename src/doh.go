@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -138,9 +139,56 @@ func storeDoHCache(host string, entry dohCacheEntry) {
 	})
 }
 
+var (
+	dohOutageUntil atomic.Int64
+	dohLastProbe   atomic.Int64
+)
+
+const (
+	dohOutageCooldownDuration = 30 * time.Second
+	dohOutageProbeInterval    = 5 * time.Second
+)
+
+var errDoHOutageCooldown = errors.New("DoH is cooling down after total outage")
+
+func isDoHInCooldown() bool {
+	now := time.Now().UnixNano()
+	until := dohOutageUntil.Load()
+	if now >= until {
+		return false
+	}
+	// Allow a single background probe every 5 seconds to test recovery
+	last := dohLastProbe.Load()
+	if now-last >= int64(dohOutageProbeInterval) {
+		if dohLastProbe.CompareAndSwap(last, now) {
+			return false // probe allowed
+		}
+	}
+	return true
+}
+
+func markDoHOutage() {
+	now := time.Now().UnixNano()
+	dohOutageUntil.Store(now + int64(dohOutageCooldownDuration))
+	dohLastProbe.Store(now)
+}
+
+func markDoHSuccess() {
+	dohOutageUntil.Store(0)
+}
+
+func resetDoHOutage() {
+	dohOutageUntil.Store(0)
+	dohLastProbe.Store(0)
+}
+
 func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
 	if !readDoHEnabled() {
 		return nil, errors.New("DoH is disabled")
+	}
+
+	if isDoHInCooldown() {
+		return nil, errDoHOutageCooldown
 	}
 
 	host = strings.TrimSpace(strings.ToLower(host))
@@ -236,6 +284,7 @@ func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
 	select {
 	case res, ok := <-results:
 		if ok && len(res.ips) > 0 {
+			markDoHSuccess()
 			ttlSec := res.ttl
 			if ttlSec < 60 {
 				ttlSec = 60
@@ -253,5 +302,6 @@ func resolveDoHRace(ctx context.Context, host string) ([]netip.Addr, error) {
 		return nil, ctx.Err()
 	}
 
+	markDoHOutage()
 	return nil, fmt.Errorf("all DoH endpoints failed for %s", host)
 }
