@@ -30,12 +30,8 @@ import (
 )
 
 // ------------------------------ WinDivert FFI ------------------------------
-//
-// The library is called through LazyDLL so the binary stays pure Go (no cgo)
-// and cross-compiles from any host. The DLL is looked up next to tgws.exe
-// first; a single-file build falls back to the copy embedded at build time,
-// extracted into the state directory. WinDivert64.sys / WinDivert32.sys must
-// sit next to the DLL — WinDivert loads them from its own directory.
+// WinDivert bindings via LazyDLL (pure Go, no cgo). DLL and .sys driver
+// are loaded from exe dir or extracted from embedded assets to state dir.
 
 var (
 	wdDLL     *syscall.LazyDLL
@@ -590,10 +586,7 @@ func ipv6TCPHeaderOffset(pkt []byte) int {
 	return -1
 }
 
-// v6ToLoopback rewrites a client -> Telegram IPv6 packet so the daemon's
-// listener accepts it: the packet is addressed to [::1]:defaultPort and appears
-// to come from [::1]:natPort, which is how the accepted socket later maps back
-// to the Telegram endpoint. It mirrors the rewrite the IPv4 loop applies.
+// v6ToLoopback rewrites outbound IPv6 packet to [::1]:defaultPort from [::1]:natPort.
 func v6ToLoopback(p []byte, meta tcpMetaV6, natPort uint16) {
 	loop := netip.IPv6Loopback().As16()
 	copy(p[8:24], loop[:])
@@ -602,8 +595,7 @@ func v6ToLoopback(p []byte, meta tcpMetaV6, natPort uint16) {
 	binary.BigEndian.PutUint16(p[meta.tcpOff+2:], defaultPort)
 }
 
-// v6FromLoopback restores the client's view of a reply: the source becomes the
-// Telegram endpoint again and the destination the client that opened the flow.
+// v6FromLoopback restores reply headers: source = Telegram endpoint, destination = client.
 func v6FromLoopback(p []byte, meta tcpMetaV6, orig netip.AddrPort, client netip.Addr, clientPort uint16) {
 	src := orig.Addr().As16()
 	dst := client.As16()
