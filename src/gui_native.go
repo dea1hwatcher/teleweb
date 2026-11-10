@@ -31,7 +31,6 @@ var (
 	colNavPaneActive    = color.NRGBA{R: 0x33, G: 0x36, B: 0x3D, A: 0xFF} // Active nav item fill (#33363D)
 	colNavPaneHover     = color.NRGBA{R: 0x27, G: 0x2A, B: 0x30, A: 0xFF} // Hover nav item fill (#272A30)
 	colCardBg           = color.NRGBA{R: 0x2B, G: 0x2B, B: 0x2B, A: 0xFF} // CardBackgroundFillColorDefault (#2B2B2B)
-	colCardSecondary    = color.NRGBA{R: 0x32, G: 0x32, B: 0x32, A: 0xFF} // CardBackgroundFillColorSecondary (#323232)
 	colCardStroke       = color.NRGBA{R: 0x38, G: 0x38, B: 0x38, A: 0xFF} // CardStrokeColorDefault (#383838)
 	colControlBg        = color.NRGBA{R: 0x2E, G: 0x2E, B: 0x2E, A: 0xFF} // ControlFillColorDefault (#2E2E2E)
 	colControlBgHover   = color.NRGBA{R: 0x38, G: 0x38, B: 0x38, A: 0xFF} // ControlFillColorSecondary
@@ -46,7 +45,6 @@ var (
 	colAccentDark      = color.NRGBA{R: 0x41, G: 0xB1, B: 0xE1, A: 0xFF} // #41B1E1
 	colOnAccent        = color.NRGBA{R: 0x00, G: 0x27, B: 0x3F, A: 0xFF} // Contrast navy on accent (#00273F)
 	colAccentContainer = color.NRGBA{R: 0x00, G: 0x3C, B: 0x5C, A: 0xFF} // #003C5C
-	colOnAccentCont    = color.NRGBA{R: 0xC6, G: 0xE7, B: 0xFF, A: 0xFF} // #C6E7FF
 
 	// Text Tokens
 	colTextPrimary   = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF} // TextFillColorPrimary (#FFFFFF)

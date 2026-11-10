@@ -262,6 +262,51 @@ func TestMemoryLeak_H2Clients_PoolBound(t *testing.T) {
 	t.Logf("h2Clients pool count after 50 distinct requests: %d (bound=8)", count)
 }
 
+// TestMemoryLeak_H2Clients_LRUEviction verifies that the least recently used host
+// is evicted when the pool reaches its capacity of 8.
+func TestMemoryLeak_H2Clients_LRUEviction(t *testing.T) {
+	h2ClientsMu.Lock()
+	for k, c := range h2Clients {
+		if tr, ok := c.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+		delete(h2Clients, k)
+		delete(h2LastUsed, k)
+	}
+	h2ClientsMu.Unlock()
+
+	// Insert 8 hosts sequentially: host-0 through host-7
+	for i := 0; i < 8; i++ {
+		host := fmt.Sprintf("lru-host-%d.cf.com", i)
+		_ = getH2Client(host)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Touch host-0 again to make it the most recently used
+	_ = getH2Client("lru-host-0.cf.com")
+
+	// Insert a 9th host
+	_ = getH2Client("lru-host-new.cf.com")
+
+	h2ClientsMu.RLock()
+	defer h2ClientsMu.RUnlock()
+
+	// host-0 should still be present because it was refreshed
+	if _, ok := h2Clients["lru-host-0.cf.com"]; !ok {
+		t.Errorf("expected lru-host-0.cf.com to be retained after refresh, but it was evicted")
+	}
+
+	// host-1 should have been evicted because it was the oldest untouched host
+	if _, ok := h2Clients["lru-host-1.cf.com"]; ok {
+		t.Errorf("expected lru-host-1.cf.com to be evicted by LRU policy, but it is still present")
+	}
+
+	// New host must be present
+	if _, ok := h2Clients["lru-host-new.cf.com"]; !ok {
+		t.Errorf("expected lru-host-new.cf.com to be present in pool")
+	}
+}
+
 // TestMemoryLeak_BoundedMaps_ProtectAndLearnedDCs ensures warnProtect and learnedDCs
 // maintain hard upper bounds on mobile devices.
 func TestMemoryLeak_BoundedMaps_ProtectAndLearnedDCs(t *testing.T) {
