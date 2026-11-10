@@ -35,6 +35,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -92,6 +93,104 @@ var (
 		},
 	}
 )
+
+type mediaStallState struct {
+	strikes      int
+	lastStallAt  time.Time
+	blockedUntil time.Time
+}
+
+type mediaCircuitBreaker struct {
+	mu     sync.Mutex
+	states map[int]mediaStallState
+}
+
+const (
+	mediaStallTimeout       = 15 * time.Second
+	mediaMinPendingUp       = int64(1024)
+	mediaMinMeaningfulDown  = int64(4096)
+	mediaRetryBlockDuration = 60 * time.Second
+	mediaStrikeWindow       = 5 * time.Minute
+	mediaLongBlockDuration  = 10 * time.Minute
+)
+
+var globalMediaCircuitBreaker = newMediaCircuitBreaker()
+
+func newMediaCircuitBreaker() *mediaCircuitBreaker {
+	return &mediaCircuitBreaker{
+		states: make(map[int]mediaStallState),
+	}
+}
+
+func (m *mediaCircuitBreaker) IsBlocked(dc int) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.states[dc]
+	if !ok {
+		return false
+	}
+	now := time.Now()
+	if now.Before(state.blockedUntil) {
+		return true
+	}
+	if now.Sub(state.lastStallAt) > mediaStrikeWindow {
+		delete(m.states, dc)
+	}
+	return false
+}
+
+func (m *mediaCircuitBreaker) RecordStall(dc int) (int, time.Duration) {
+	if m == nil {
+		return 1, mediaRetryBlockDuration
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	prev, ok := m.states[dc]
+	var strikes int
+	if ok && now.Sub(prev.lastStallAt) <= mediaStrikeWindow {
+		strikes = prev.strikes + 1
+	} else {
+		strikes = 1
+	}
+	var blockedFor time.Duration
+	if strikes >= 2 {
+		blockedFor = mediaLongBlockDuration
+	} else {
+		blockedFor = mediaRetryBlockDuration
+	}
+	m.states[dc] = mediaStallState{
+		strikes:      strikes,
+		lastStallAt:  now,
+		blockedUntil: now.Add(blockedFor),
+	}
+	return strikes, blockedFor
+}
+
+func (m *mediaCircuitBreaker) RecordResponsive(dc int) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state, ok := m.states[dc]; ok {
+		if time.Now().After(state.blockedUntil) {
+			delete(m.states, dc)
+		}
+	}
+}
+
+func (m *mediaCircuitBreaker) Reset() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.states = make(map[int]mediaStallState)
+}
 
 type persistedRoute struct {
 	Host      string    `json:"host,omitempty"`
@@ -3325,6 +3424,19 @@ func executeAPICommand(q apiRequest) (any, error) {
 			_ = os.Truncate(path(name), 0)
 		}
 		return map[string]any{"cleared": true}, nil
+	case "exportDiagnostics", "export_diagnostics":
+		diag := map[string]any{
+			"status":   status(),
+			"version":  runtimeVersion(),
+			"platform": runtime.GOOS + "/" + runtime.GOARCH,
+			"uptime":   time.Since(startAt).Round(time.Second).String(),
+		}
+		logContent, _ := os.ReadFile(path("tgws.log"))
+		if len(logContent) > 64*1024 {
+			logContent = logContent[len(logContent)-64*1024:]
+		}
+		diag["log"] = redactSensitive(string(logContent))
+		return diag, nil
 	case "netRenew", "net_renew":
 		modDir := os.Getenv("TELEWEB_MOD")
 		if modDir == "" {
@@ -3548,7 +3660,13 @@ func main() {
 			serve()
 			return
 		case "check", "--check":
-			runChecks()
+			redact := false
+			for _, arg := range os.Args[2:] {
+				if arg == "--redact" || arg == "-r" {
+					redact = true
+				}
+			}
+			runChecks(redact)
 			return
 		case "run":
 			cmdRun()
@@ -4656,12 +4774,22 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 	var lastDown atomic.Int64
 	var stallReported atomic.Bool
 
+	var mediaPendingSince atomic.Int64
+	var mediaPendingUp atomic.Int64
+	var mediaPendingDown atomic.Int64
+
 	startNano := time.Now().UnixNano()
 	lastDown.Store(startNano)
 
 	noteUp := func(n int) {
 		now := time.Now().UnixNano()
 		lastUp.Store(now)
+		if isMedia {
+			if mediaPendingSince.Load() == 0 {
+				mediaPendingSince.Store(now)
+			}
+			mediaPendingUp.Add(int64(n))
+		}
 		if upSinceDown.Add(int64(n)) == int64(n) {
 			upWrites.Store(0)
 		}
@@ -4741,6 +4869,38 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 		}()
 	}
 
+	if isMedia {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopIdle:
+					return
+				case <-ticker.C:
+					since := mediaPendingSince.Load()
+					if since > 0 &&
+						mediaPendingUp.Load() >= mediaMinPendingUp &&
+						mediaPendingDown.Load() < mediaMinMeaningfulDown &&
+						time.Since(time.Unix(0, since)) >= mediaStallTimeout {
+						host := ""
+						if ws != nil {
+							host = ws.host
+						}
+						logf("conn #%d DC%d media relay stalled on %s (>15s with %d B sent, <4KB received); cutting stalled relay",
+							id, dc, host, mediaPendingUp.Load())
+						strikes, blockedFor := globalMediaCircuitBreaker.RecordStall(dc)
+						if host != "" {
+							parkFront(host, blockedFor, fmt.Sprintf("media relay stall strike %d", strikes), nil)
+						}
+						closeBoth()
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -4794,6 +4954,15 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 						}
 					}
 					noteDown()
+					if isMedia {
+						down := mediaPendingDown.Add(int64(len(payload)))
+						if down >= mediaMinMeaningfulDown {
+							mediaPendingSince.Store(0)
+							mediaPendingUp.Store(0)
+							mediaPendingDown.Store(0)
+							globalMediaCircuitBreaker.RecordResponsive(dc)
+						}
+					}
 					now := time.Now()
 					if now.Sub(lastWriteDeadline) > 5*time.Second {
 						_ = c.SetWriteDeadline(now.Add(30 * time.Second))
@@ -5559,12 +5728,36 @@ func noteFrontUnreachable(host string, err error) {
 	parkFront(host, frontTimeoutPark, "front unreachable", err)
 }
 
+func isLocalNetworkDownError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var sysErr syscall.Errno
+	if errors.As(err, &sysErr) {
+		switch sysErr {
+		case syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ENETDOWN:
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "no route to host") ||
+		strings.Contains(msg, "network is down")
+}
+
 // shouldPenalizeRoute reports whether a dial failure may be written to the
 // shared route-health table. It must not be when the failure is our own
 // bookkeeping: a race that ran out of budget or was cancelled by a winning
 // sibling says nothing about the route, and the pool dials speculatively.
-func shouldPenalizeRoute(ctx context.Context) bool {
-	return ctx.Err() == nil && !isBackgroundDial(ctx)
+// Local physical network interface outages (e.g. WiFi drops) must not penalize routes.
+func shouldPenalizeRoute(ctx context.Context, err ...error) bool {
+	if ctx.Err() != nil || isBackgroundDial(ctx) {
+		return false
+	}
+	if len(err) > 0 && err[0] != nil && isLocalNetworkDownError(err[0]) {
+		return false
+	}
+	return true
 }
 
 // nearestRetryFor reports the shortest remaining park time across hosts. It
@@ -6173,7 +6366,7 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 				return finishTelegramWSPath(attemptCtx, raw, targetHost, wsUpgradePath)
 			},
 		}
-		if !cfPriority {
+		if !cfPriority && !(isMedia && globalMediaCircuitBreaker.IsBlocked(dc)) {
 			candidates = append(candidates, candDirect)
 		} else {
 			deferCandidates = append(deferCandidates, candDirect)
@@ -6437,7 +6630,7 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 				}
 				return ws, nil
 			}
-			if shouldPenalizeRoute(ctx) {
+			if shouldPenalizeRoute(ctx, e) {
 				noteRouteHTTPFailure(host, e)
 			}
 			_ = raw.Close()
@@ -6450,7 +6643,7 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 		} else {
 			if isTimeout(e) || isTimeoutText(e.Error()) {
 				cfEdgeIPMarkFail(ipStr)
-				if shouldPenalizeRoute(ctx) {
+				if shouldPenalizeRoute(ctx, e) {
 					noteRouteHTTPFailure(host, e)
 				}
 			}
@@ -6807,7 +7000,7 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		}
 		var rle *RateLimitError
 		if errors.As(e, &rle) {
-			if shouldPenalizeRoute(ctx) {
+			if shouldPenalizeRoute(ctx, e) {
 				markWorkerCooldownDC(host, dc, rle.RetryAfter)
 			}
 			return nil, e
@@ -6984,7 +7177,33 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 	}, nil
 }
 
-func runCheckDiagnostic() bool {
+var (
+	reIPv4 = regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b`)
+	reIPv6 = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b`)
+)
+
+func redactSensitive(s string) string {
+	s = reIPv4.ReplaceAllStringFunc(s, func(ip string) string {
+		if ip == "127.0.0.1" || ip == "0.0.0.0" {
+			return ip
+		}
+		parts := strings.Split(ip, ".")
+		if len(parts) == 4 {
+			return parts[0] + "." + parts[1] + ".***.***"
+		}
+		return "[ip-redacted]"
+	})
+	s = reIPv6.ReplaceAllStringFunc(s, func(ip string) string {
+		if ip == "::1" || ip == "::" {
+			return ip
+		}
+		return "[ipv6-redacted]"
+	})
+	return s
+}
+
+func runCheckDiagnostic(redact ...bool) bool {
+	isRedact := len(redact) > 0 && redact[0]
 	fmt.Println("======================================================================")
 	fmt.Println("  TeleWEB Active Connectivity & Route Diagnostic")
 	fmt.Println("======================================================================")
@@ -7002,7 +7221,11 @@ func runCheckDiagnostic() bool {
 		cancel()
 		dur := time.Since(start).Round(time.Millisecond)
 		if err == nil && len(ips) > 0 {
-			fmt.Printf("  %-38s ... [OK ]  %v (%s)\n", ep, dur, ips[0])
+			ipDisp := ips[0].String()
+			if isRedact {
+				ipDisp = redactSensitive(ipDisp)
+			}
+			fmt.Printf("  %-38s ... [OK ]  %v (%s)\n", ep, dur, ipDisp)
 			dohCheckPassed++
 		} else {
 			fmt.Printf("  %-38s ... [FAIL] %v (%v)\n", ep, dur, err)
@@ -7089,12 +7312,16 @@ func runCheckDiagnostic() bool {
 		conn, err := trackedDial(ctx, "tcp4", dcTest.addr, 1200*time.Millisecond)
 		cancel()
 		dur := time.Since(start).Round(time.Millisecond)
+		displayName := dcTest.name
+		if isRedact {
+			displayName = redactSensitive(displayName)
+		}
 		if err == nil && conn != nil {
 			_ = conn.Close()
-			fmt.Printf("  %-38s ... [OK ]  %v (direct reachable)\n", dcTest.name, dur)
+			fmt.Printf("  %-38s ... [OK ]  %v (direct reachable)\n", displayName, dur)
 			anyOK = true
 		} else {
-			fmt.Printf("  %-38s ... [FAIL] %v (filtered by ISP)\n", dcTest.name, dur)
+			fmt.Printf("  %-38s ... [FAIL] %v (filtered by ISP)\n", displayName, dur)
 		}
 	}
 
@@ -7296,19 +7523,24 @@ func (w *wsConn) readFrame() (byte, []byte, error) {
 	}
 }
 
-func runChecks() {
+func runChecks(redact ...bool) {
+	isRedact := len(redact) > 0 && redact[0]
 	fmt.Println("TeleWEB engine checks")
 	for ip, want := range map[string]int{"149.154.175.54": 1, "149.154.167.51": 2, "149.154.175.211": 1, "149.154.167.223": 2, "91.108.56.100": 5} {
 		a := netip.MustParseAddr(ip)
 		got := dcFor(a)
-		fmt.Printf("DC mapping %-18s got=%d expected=%d\n", ip, got, want)
+		ipDisp := ip
+		if isRedact {
+			ipDisp = redactSensitive(ip)
+		}
+		fmt.Printf("DC mapping %-18s got=%d expected=%d\n", ipDisp, got, want)
 		if got != want {
 			os.Exit(1)
 		}
 	}
 	fmt.Println("DC mapping smoke test passed")
 	fmt.Println()
-	if !runCheckDiagnostic() {
+	if !runCheckDiagnostic(isRedact) {
 		os.Exit(1)
 	}
 }
