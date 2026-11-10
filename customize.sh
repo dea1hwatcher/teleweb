@@ -94,6 +94,8 @@ for susfs_bin in /data/adb/ksu/bin/ksu_susfs /data/adb/ap/bin/ksu_susfs /data/ad
     "$susfs_bin" add_sus_path "$MODPATH" >/dev/null 2>&1 || true
     "$susfs_bin" add_sus_mount "$MODPATH" >/dev/null 2>&1 || true
     "$susfs_bin" add_try_umount "$MODPATH" 1 >/dev/null 2>&1 || true
+    "$susfs_bin" add_sus_kstat /data/adb/teleweb >/dev/null 2>&1 || true
+    "$susfs_bin" add_sus_kstat "$MODPATH" >/dev/null 2>&1 || true
     break
   fi
 done
