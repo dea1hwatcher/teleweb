@@ -191,6 +191,7 @@ apply_susfs_hiding() {
       "$susfs_bin" add_sus_path "$p" >/dev/null 2>&1 || true
       "$susfs_bin" add_sus_mount "$p" >/dev/null 2>&1 || true
       "$susfs_bin" add_try_umount "$p" 1 >/dev/null 2>&1 || true
+      "$susfs_bin" add_sus_kstat "$p" >/dev/null 2>&1 || true
     fi
   done
 }
