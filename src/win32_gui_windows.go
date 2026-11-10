@@ -37,7 +37,6 @@ var (
 	procSetFgWindow              = user32.NewProc("SetForegroundWindow")
 	procLoadIcon                 = user32.NewProc("LoadIconW")
 	procCreateIconFromResourceEx = user32.NewProc("CreateIconFromResourceEx")
-	procDestroyIcon              = user32.NewProc("DestroyIcon")
 	procDefWindowProc            = user32.NewProc("DefWindowProcW")
 	procRegisterClassEx          = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx           = user32.NewProc("CreateWindowExW")
