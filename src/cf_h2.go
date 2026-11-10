@@ -20,6 +20,7 @@ import (
 var (
 	h2ClientsMu sync.RWMutex
 	h2Clients   = make(map[string]*http.Client)
+	h2LastUsed  = make(map[string]time.Time)
 	h2FailsMu   sync.RWMutex
 	h2Fails     = make(map[string]time.Time)
 	h2SuccessMu sync.RWMutex
@@ -30,27 +31,30 @@ func readH2MediaEnabled() bool         { return readFlag("h2_media_enabled", fal
 func writeH2MediaEnabled(v bool) error { return writeFlag("h2_media_enabled", v) }
 
 func getH2Client(host string) *http.Client {
-	h2ClientsMu.RLock()
-	if c, ok := h2Clients[host]; ok {
-		h2ClientsMu.RUnlock()
-		return c
-	}
-	h2ClientsMu.RUnlock()
-
 	h2ClientsMu.Lock()
 	defer h2ClientsMu.Unlock()
 	if c, ok := h2Clients[host]; ok {
+		h2LastUsed[host] = time.Now()
 		return c
 	}
 
-	// Bound cache to 8 hosts to avoid socket/memory leaks
+	// Bound cache to 8 hosts to avoid socket/memory leaks (deterministic LRU)
 	if len(h2Clients) >= 8 {
-		for h, clt := range h2Clients {
-			if tr, ok := clt.Transport.(*http.Transport); ok {
+		var oldestHost string
+		var oldestTime time.Time
+		for h := range h2Clients {
+			t := h2LastUsed[h]
+			if oldestHost == "" || t.Before(oldestTime) {
+				oldestHost = h
+				oldestTime = t
+			}
+		}
+		if oldestHost != "" {
+			if tr, ok := h2Clients[oldestHost].Transport.(*http.Transport); ok {
 				tr.CloseIdleConnections()
 			}
-			delete(h2Clients, h)
-			break
+			delete(h2Clients, oldestHost)
+			delete(h2LastUsed, oldestHost)
 		}
 	}
 
@@ -79,6 +83,7 @@ func getH2Client(host string) *http.Client {
 		Timeout:   65 * time.Second,
 	}
 	h2Clients[host] = c
+	h2LastUsed[host] = time.Now()
 	return c
 }
 
@@ -378,15 +383,19 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 	// reassembled in dispatch order before touching the shared CTR stream.
 	replyCh := make(chan h2Reply, 16)
 	go func() {
+		var lastWriteDeadline time.Time
 		seq := newH2ReplySequencer(func(body []byte) error {
 			encoded := encodeH2Reply(body, framer.proto)
 			encrypted := make([]byte, len(encoded))
 			cltEnc.XORKeyStream(encrypted, encoded)
-			_ = c.SetWriteDeadline(time.Now().Add(15 * time.Second))
+			now := time.Now()
+			if now.Sub(lastWriteDeadline) > 5*time.Second {
+				_ = c.SetWriteDeadline(now.Add(30 * time.Second))
+				lastWriteDeadline = now
+			}
 			if err := writeFull(c, encrypted); err != nil {
 				return err
 			}
-			_ = c.SetWriteDeadline(time.Time{})
 			// Count the full encoded frame (length prefix + body) so the
 			// H2 path's download statistics match the WSS path, which
 			// accounts whole frames.

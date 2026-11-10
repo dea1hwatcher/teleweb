@@ -5282,10 +5282,10 @@ func (f *mtprotoPacketFramer) nextPacketSize() (int, bool, error) {
 // the connection.
 func (f *mtprotoPacketFramer) shrinkBuffers() {
 	if len(f.raw) == 0 {
-		if cap(f.raw) > 128*1024 {
-			f.raw = nil
-		} else if f.rawStorage != nil && cap(f.raw) < 32*1024 {
+		if f.rawStorage != nil {
 			f.raw = f.rawStorage[:0]
+		} else if cap(f.raw) > 128*1024 {
+			f.raw = nil
 		} else if f.raw != nil {
 			f.raw = f.raw[:0]
 		}
@@ -5296,10 +5296,10 @@ func (f *mtprotoPacketFramer) shrinkBuffers() {
 	}
 
 	if len(f.plain) == 0 {
-		if cap(f.plain) > 128*1024 {
-			f.plain = nil
-		} else if f.plainStorage != nil && cap(f.plain) < 32*1024 {
+		if f.plainStorage != nil {
 			f.plain = f.plainStorage[:0]
+		} else if cap(f.plain) > 128*1024 {
+			f.plain = nil
 		} else if f.plain != nil {
 			f.plain = f.plain[:0]
 		}
