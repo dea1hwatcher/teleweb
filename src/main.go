@@ -323,9 +323,34 @@ func currentStatusDesc() string {
 	return "status: active ✅ | " + mode + " · DC1-DC5"
 }
 
+func isStealthMode() bool {
+	if _, err := os.Stat(filepath.Join(baseDir, "stealth")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(baseDir, "no_stealth")); err == nil {
+		return false
+	}
+	for _, p := range []string{
+		"/data/adb/ksu/bin/ksu_susfs",
+		"/data/adb/ap/bin/ksu_susfs",
+		"/data/adb/ap/bin/ap_susfs",
+		"/data/adb/bin/ksu_susfs",
+		"/system/bin/ksu_susfs",
+	} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 func updateModuleDescription(statusText string) {
 	descMu.Lock()
 	defer descMu.Unlock()
+
+	if isStealthMode() && statusText != defaultDescBase {
+		return
+	}
 
 	propPath := getModulePropPath()
 	if propPath == "" {

@@ -1866,6 +1866,60 @@ func TestUpdateModuleDescription(t *testing.T) {
 	}
 }
 
+func TestStealthModeModuleDescription(t *testing.T) {
+	tmpDir := t.TempDir()
+	propFile := filepath.Join(tmpDir, "module.prop")
+	initialContent := "id=teleweb\nname=TeleWEB\nversion=0.1.0\ndescription=" + defaultDescBase + "\n"
+	if err := os.WriteFile(propFile, []byte(initialContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldBaseDir := baseDir
+	baseDir = tmpDir
+	defer func() { baseDir = oldBaseDir }()
+
+	t.Setenv("TELEWEB_MOD", tmpDir)
+
+	// Create stealth flag
+	if err := os.WriteFile(filepath.Join(tmpDir, "stealth"), []byte("1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !isStealthMode() {
+		t.Fatalf("expected isStealthMode() to be true")
+	}
+
+	// In stealth mode, status text update should be ignored
+	updateModuleDescription("status: active ✅ | WSS · DC1-DC5")
+	content, err := os.ReadFile(propFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "description="+defaultDescBase) {
+		t.Fatalf("module.prop should not be modified in stealth mode, got: %s", string(content))
+	}
+
+	// Disable stealth via no_stealth flag
+	_ = os.Remove(filepath.Join(tmpDir, "stealth"))
+	if err := os.WriteFile(filepath.Join(tmpDir, "no_stealth"), []byte("1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if isStealthMode() {
+		t.Fatalf("expected isStealthMode() to be false with no_stealth flag")
+	}
+
+	// Now it should update normally
+	updateModuleDescription("status: active ✅ | WSS · DC1-DC5")
+	content, err = os.ReadFile(propFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "description=status: active ✅") {
+		t.Fatalf("expected updated description when stealth is off, got: %s", string(content))
+	}
+}
+
 func TestWsPool_Lifecycle(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("TELEWEB_DIR", tmpDir)

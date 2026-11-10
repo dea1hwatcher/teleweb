@@ -84,6 +84,20 @@ chown -R 0:0 /data/adb/teleweb 2>/dev/null
 chmod 0700 /data/adb/teleweb 2>/dev/null
 [ -f /data/adb/teleweb/config.json ] && chmod 0600 /data/adb/teleweb/config.json 2>/dev/null
 
+# Apply SELinux context hardening and SuSFS path protection if supported
+chcon -R u:object_r:system_file:s0 /data/adb/teleweb 2>/dev/null || true
+chcon -R u:object_r:system_file:s0 "$MODPATH" 2>/dev/null || true
+for susfs_bin in /data/adb/ksu/bin/ksu_susfs /data/adb/ap/bin/ksu_susfs /data/adb/ap/bin/ap_susfs /data/adb/bin/ksu_susfs; do
+  if [ -x "$susfs_bin" ]; then
+    ui_print "- Обнаружен SuSFS: регистрация путей сокрытия в ядре..."
+    "$susfs_bin" add_sus_path /data/adb/teleweb >/dev/null 2>&1 || true
+    "$susfs_bin" add_sus_path "$MODPATH" >/dev/null 2>&1 || true
+    "$susfs_bin" add_sus_mount "$MODPATH" >/dev/null 2>&1 || true
+    "$susfs_bin" add_try_umount "$MODPATH" 1 >/dev/null 2>&1 || true
+    break
+  fi
+done
+
 # Stop previous daemon before upgrading
 export TELEWEB_DIR=/data/adb/teleweb
 if [ -x "/data/adb/modules/teleweb/bin/tgws" ]; then

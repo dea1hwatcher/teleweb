@@ -44,6 +44,9 @@ if ! acquire_supervisor_lock; then
 fi
 trap 'release_supervisor_lock' EXIT INT TERM
 
+# Apply SuSFS kernel hiding and SELinux context hardening
+apply_susfs_hiding "$MODDIR"
+
 # 3. Wait for Android boot completion and Package Manager availability
 wait_for_boot
 
@@ -66,6 +69,7 @@ else
   update_description error
   notify_user "TeleWEB" "Ошибка запуска службы! Проверьте логи."
 fi
+apply_susfs_hiding "$MODDIR"
 
 # 5. Supervisor loop with battery-saving backoff upon recurring failures
 FAILS=0

@@ -117,6 +117,20 @@ case "$CMD" in
     logcat -b all -d -t 1500 2>/dev/null | grep -iE 'tgws|teleweb|lmkd|lowmemorykiller|killing.*process|killed process|out of memory|oom-kill' | tail -n 100 || true
     exit 0
     ;;
+  stealth|hide)
+    if is_stealth_enabled; then
+      rm -f "$TELEWEB_DIR/stealth"
+      touch "$TELEWEB_DIR/no_stealth"
+      echo "Режим скрытия (Stealth) принудительно отключён ❌"
+    else
+      rm -f "$TELEWEB_DIR/no_stealth"
+      touch "$TELEWEB_DIR/stealth"
+      reset_description_to_default
+      apply_susfs_hiding "$MODDIR"
+      echo "Режим скрытия (Stealth / SuSFS) активирован 🛡️"
+    fi
+    exit 0
+    ;;
   status|*)
     ;;
 esac
@@ -141,12 +155,22 @@ if [ "$RUNNING" = "1" ]; then
   echo " Супервизор PID:   ${SPID:-нет}"
   echo " Режим перехвата:  Прозрачный (iptables)"
   echo " Дата-центры:      DC1 - DC5 (WSS)"
+  if is_stealth_enabled; then
+    echo " Скрытие (Stealth): [ ВКЛЮЧЕНО 🛡️ (SuSFS) ]"
+  else
+    echo " Скрытие (Stealth): [ ВЫКЛЮЧЕНО ]"
+  fi
   echo "------------------------------------------"
   echo " Трафик Telegram перехватывается автоматически."
   echo " Дополнительных настроек в приложении не требуется."
 else
   echo " Статус службы:    [ ОСТАНОВЛЕНА ❌ ]"
   echo " Супервизор PID:   ${SPID:-нет}"
+  if is_stealth_enabled; then
+    echo " Скрытие (Stealth): [ ВКЛЮЧЕНО 🛡️ (SuSFS) ]"
+  else
+    echo " Скрытие (Stealth): [ ВЫКЛЮЧЕНО ]"
+  fi
   echo "------------------------------------------"
   echo " Запуск службы: su -c sh $MODDIR/action.sh start"
 fi
@@ -157,4 +181,5 @@ echo "  sh $MODDIR/action.sh restart  - Перезапустить службу"
 echo "  sh $MODDIR/action.sh ping     - Проверить пинг до Cloudflare/DoH"
 echo "  sh $MODDIR/action.sh logs     - Показать подробные системные логи"
 echo "  sh $MODDIR/action.sh webui    - Открыть интерфейс WebUI"
+echo "  sh $MODDIR/action.sh stealth  - Переключить режим скрытия (Stealth / SuSFS)"
 echo "=========================================="
