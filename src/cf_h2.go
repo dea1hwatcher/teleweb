@@ -162,10 +162,12 @@ func createClientEncryptor(initial []byte) (cipher.Stream, error) {
 
 // h2Reply carries one HTTP/2 response to the ordered writer. A nil data field
 // means the request failed: the sequence slot is consumed without writing so
-// later replies are not blocked behind it.
+// later replies are not blocked behind it. isProbe flags speculative receive-slot
+// polling requests whose nil response must not tear down the session.
 type h2Reply struct {
-	seq  uint64
-	data []byte
+	seq     uint64
+	data    []byte
+	isProbe bool
 }
 
 // h2ReplySequencer reassembles HTTP/2 responses in dispatch order. MTProto's
@@ -267,6 +269,10 @@ var h2PostFn = h2PostPacket
 // lifetime of the request; when the bridge is cancelled while waiting for a
 // slot the packet is not dispatched and the caller should stop dispatching.
 func dispatchH2Post(h2InFlight chan struct{}, bridgeCtx context.Context, client *http.Client, apiURL, host string, replyCh chan<- h2Reply, seq uint64, body []byte) bool {
+	return dispatchH2PostInternal(h2InFlight, bridgeCtx, client, apiURL, host, replyCh, seq, body, false)
+}
+
+func dispatchH2PostInternal(h2InFlight chan struct{}, bridgeCtx context.Context, client *http.Client, apiURL, host string, replyCh chan<- h2Reply, seq uint64, body []byte, isProbe bool) bool {
 	select {
 	case h2InFlight <- struct{}{}:
 	case <-bridgeCtx.Done():
@@ -279,7 +285,7 @@ func dispatchH2Post(h2InFlight chan struct{}, bridgeCtx context.Context, client 
 		defer postCancel()
 		data := h2PostFn(postCtx, client, apiURL, host, bodyCopy)
 		select {
-		case replyCh <- h2Reply{seq: seq, data: data}:
+		case replyCh <- h2Reply{seq: seq, data: data, isProbe: isProbe}:
 		case <-bridgeCtx.Done():
 		}
 	}()
@@ -406,8 +412,8 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		for {
 			select {
 			case r := <-replyCh:
-				if r.data == nil {
-					// A lost POST must not silently consume a sequence slot:
+				if r.data == nil && !r.isProbe {
+					// A lost client POST must not silently consume a sequence slot:
 					// the server has already advanced its CTR stream, so every
 					// later reply would decrypt into garbage. Tear the session
 					// down instead — the MTProto client reconnects on its own.
@@ -437,7 +443,52 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 	// slot instead of being dropped.
 	h2InFlight := make(chan struct{}, 16)
 
-	postSeq := uint64(0)
+	var (
+		postSeq       atomic.Uint64
+		replayMu      sync.Mutex
+		replayBody    []byte
+		replayCreated time.Time
+		replayTries   int
+	)
+
+	// Background receive-slot poller: HTTP/2 POST is half-duplex. When downloading
+	// media, Telegram may acknowledge an upload or return a partial chunk while
+	// subsequent chunks stay queued on the server. If the client is idle waiting
+	// for the download, reposting the last small RPC request (up to 3 times within 30s)
+	// opens a receive slot. Telegram deduplicates msg_id and returns queued data.
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case <-ticker.C:
+				if len(h2InFlight) > 0 {
+					continue
+				}
+				if time.Since(time.Unix(0, lastActivity.Load())) < 2*time.Second {
+					continue
+				}
+				replayMu.Lock()
+				if len(replayBody) == 0 || replayTries >= 3 || time.Since(replayCreated) > 30*time.Second {
+					replayMu.Unlock()
+					continue
+				}
+				bodyCopy := append([]byte(nil), replayBody...)
+				replayTries++
+				tries := replayTries
+				replayMu.Unlock()
+
+				seq := postSeq.Add(1) - 1
+				logf("H2 media bridge: no reply progress; dispatching receive slot probe seq=%d (attempt %d/3)", seq, tries)
+				if !dispatchH2PostInternal(h2InFlight, bridgeCtx, client, apiURL, selectedHost, replyCh, seq, bodyCopy, true) {
+					return
+				}
+			}
+		}
+	}()
+
 	// Read loop from client
 	bufPtr := ioBufPool.Get().(*[]byte)
 	defer ioBufPool.Put(bufPtr)
@@ -470,10 +521,22 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 					continue
 				}
 
+				// Remember small, encrypted client requests (<= 64KB, auth_key_id != 0)
+				// as receive-slot replay candidates.
+				if len(rawMTProto) >= 8 && len(rawMTProto) <= 64*1024 {
+					var zero8 [8]byte
+					if !bytes.Equal(rawMTProto[:8], zero8[:]) {
+						replayMu.Lock()
+						replayBody = append([]byte(nil), rawMTProto...)
+						replayCreated = time.Now()
+						replayTries = 0
+						replayMu.Unlock()
+					}
+				}
+
 				// Asynchronous HTTP/2 POST stream; every dispatched packet owns
 				// one sequence slot, even when its request ultimately fails.
-				seq := postSeq
-				postSeq++
+				seq := postSeq.Add(1) - 1
 				if !dispatchH2Post(h2InFlight, bridgeCtx, client, apiURL, selectedHost, replyCh, seq, rawMTProto) {
 					return true
 				}

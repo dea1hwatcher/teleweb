@@ -78,6 +78,9 @@ func getDoHClient() *http.Client {
 	dohClientOnce.Do(func() {
 		tr := &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if conn, used, err := dialViaOutboundProxy(ctx, network, addr, 3*time.Second); used {
+					return conn, err
+				}
 				d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 3 * time.Second}
 				conn, err := d.DialContext(ctx, network, addr)
 				if err == nil {
