@@ -13,14 +13,8 @@ import (
 	"time"
 )
 
-// selfDialPorts tracks local ports of connections opened by the daemon itself
-// towards Telegram. On Windows the WinDivert redirector must not re-capture
-// those flows, otherwise every WSS dial would loop back into our own listener.
-//
-// Entries are kept for a grace period after the socket closes: a blocked
-// destination makes the kernel retransmit the SYN for tens of seconds, and a
-// retransmit landing after unregistration would be intercepted as client
-// traffic, creating a self-connecting cascade.
+// selfDialPorts tracks ports opened by the daemon towards Telegram so WinDivert
+// avoids capturing self-dials. Ports are kept for grace period to absorb late SYN retransmits.
 var (
 	selfDialMu    sync.RWMutex
 	selfDialPorts = map[uint16]time.Time{}

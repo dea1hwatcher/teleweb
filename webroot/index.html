@@ -2865,7 +2865,7 @@ function closeThemeSheet() {
   if (typeof scheduleSync === 'function') scheduleSync();
 }
 
-/* ── Bottom sheet: смахивание вниз за drag handle и по телу шторки ──────── */
+/* ── Bottom sheet: drag handle & sheet body swipe down ──────── */
 function sheetScrimFollow(sheet, dy) {
   const sc = $('theme-scrim');
   if (!sc) return;
@@ -3060,7 +3060,7 @@ function haptic(ms = 10) {
 function formatBytes(val) {
   const n = Math.max(0, Number(val) || 0);
   // Strip trailing zeros only after a decimal point: /\.?0+$/ on "100" would
-  // eat significant zeros and render 100 МБ as "1 МБ".
+  // eat significant zeros and render 100 MB as "1 MB".
   const trim = (s) => s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
   if (n >= 1e9) return trim((n / 1e9).toFixed(n >= 10e9 ? 1 : 2)) + " ГБ";
   if (n >= 1e6) return trim((n / 1e6).toFixed(n >= 100e6 ? 0 : n >= 10e6 ? 1 : 2)) + " МБ";
