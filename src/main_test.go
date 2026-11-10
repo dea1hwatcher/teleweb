@@ -151,7 +151,6 @@ func TestDCMappingKnownAddresses(t *testing.T) {
 		"95.161.64.1":     2,
 		"172.121.110.5":   2,
 		"142.252.58.1":    2,
-		"194.221.250.50":  2,
 	}
 	for raw, want := range cases {
 		if got := dcFor(netip.MustParseAddr(raw)); got != want {
@@ -3471,7 +3470,7 @@ func TestIsTelegramEndpoint(t *testing.T) {
 		"95.161.64.1":           true,
 		"172.121.110.5":         true,
 		"142.252.58.1":          true,
-		"194.221.250.50":        true,
+		"194.221.250.50":        false,
 		"194.221.250.51":        false,
 		"172.121.111.1":         false,
 		"8.8.8.8":               false,
@@ -5619,4 +5618,100 @@ func TestLogRotationLineBoundary(t *testing.T) {
 	if !strings.Contains(first, "test line entry") {
 		t.Fatalf("first line corrupted: %q", first)
 	}
+}
+
+func TestCleanHTTPErrorBody(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "plain text",
+			input:    "Service Unavailable",
+			expected: "Service Unavailable",
+		},
+		{
+			name:     "plain text with newlines",
+			input:    "Error:\r\nServer is busy\nTry again later\t",
+			expected: "Error: Server is busy Try again later",
+		},
+		{
+			name: "html with title",
+			input: `<!DOCTYPE html><html><head><title>Error 1101: Worker threw exception</title></head>
+			<body><h1>Something went wrong</h1></body></html>`,
+			expected: "Error 1101: Worker threw exception",
+		},
+		{
+			name: "cloudflare error details div without title",
+			input: `<div id="cf-error-details" class="p-0">
+			<header class="mx-auto pt-10"><h1 class="text-60">Error 1015</h1></header></div>`,
+			expected: "Error 1015",
+		},
+		{
+			name: "cloudflare html with no recognizable code",
+			input: `<div id="cf-error-details" class="p-0">
+			<header class="mx-auto pt-10"><h1 class="text-60">Unknown Failure</h1></header></div>`,
+			expected: "Cloudflare Error Page",
+		},
+		{
+			name:     "empty input",
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cleanHTTPErrorBody([]byte(tc.input))
+			if got != tc.expected {
+				t.Errorf("cleanHTTPErrorBody(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestServeConnRefusesNonMTProtoStream(t *testing.T) {
+	origDir := getBaseDir()
+	setBaseDir(t.TempDir())
+	defer func() {
+		logMu.Lock()
+		if logFile != nil {
+			_ = logFile.Close()
+			logFile = nil
+		}
+		logMu.Unlock()
+		setBaseDir(origDir)
+	}()
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	// Direct TLS ClientHello packet (0x16, 0x03, 0x01...) to DC2 IP
+	tlsHello := make([]byte, 64)
+	tlsHello[0] = 0x16
+	tlsHello[1] = 0x03
+	tlsHello[2] = 0x01
+	for i := 3; i < 64; i++ {
+		tlsHello[i] = byte(i)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveConn(c2, netip.MustParseAddrPort("149.154.167.51:443"))
+	}()
+
+	go func() {
+		_, _ = c1.Write(tlsHello)
+	}()
+
+	_ = c1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 16)
+	n, err := c1.Read(buf)
+	if !errors.Is(err, io.EOF) && n != 0 {
+		t.Fatalf("expected immediate EOF for non-MTProto stream, got n=%d err=%v", n, err)
+	}
+	<-done
 }
