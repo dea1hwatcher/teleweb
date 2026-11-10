@@ -3296,6 +3296,36 @@ func TestDirectDialNegativeCache(t *testing.T) {
 	}
 }
 
+func TestOrderCFEdgeIPs(t *testing.T) {
+	ip1 := netip.MustParseAddr("104.21.1.1")
+	ip2 := netip.MustParseAddr("104.21.1.2")
+	ip3 := netip.MustParseAddr("104.21.1.3")
+
+	cfEdgeIPMarkReachable(ip1.String())
+	cfEdgeIPMarkReachable(ip2.String())
+	cfEdgeIPMarkReachable(ip3.String())
+
+	// 1. Initially all healthy, rotation should distribute starting IPs
+	res1 := orderCFEdgeIPs([]netip.Addr{ip1, ip2, ip3})
+	res2 := orderCFEdgeIPs([]netip.Addr{ip1, ip2, ip3})
+	if len(res1) != 3 || len(res2) != 3 {
+		t.Fatalf("expected 3 IPs, got %d and %d", len(res1), len(res2))
+	}
+
+	// 2. Mark ip1 as failed: it must be ordered last behind healthy IPs
+	cfEdgeIPMarkFail(ip1.String())
+	ordered := orderCFEdgeIPs([]netip.Addr{ip1, ip2, ip3})
+	if ordered[2] != ip1 {
+		t.Fatalf("expected failed %s to be last, got order: %v", ip1, ordered)
+	}
+	if ordered[0] == ip1 || ordered[1] == ip1 {
+		t.Fatalf("failed IP %s appeared in healthy prefix: %v", ip1, ordered)
+	}
+
+	// Clean up
+	cfEdgeIPMarkReachable(ip1.String())
+}
+
 func TestIsTelegramTarget(t *testing.T) {
 	cases := []struct {
 		addr string
@@ -3547,6 +3577,59 @@ func TestH2DispatchSemaphoreBounds(t *testing.T) {
 	// No request may still hold a slot.
 	if n := cur.Load(); n != 0 {
 		t.Fatalf("%d requests still in flight after completion", n)
+	}
+}
+
+// TestH2ReceiveSlotProbe verifies that speculative receive-slot probe replies
+// with nil data do not abort the session and allow subsequent sequences to flow.
+func TestH2ReceiveSlotProbe(t *testing.T) {
+	origPostFn := h2PostFn
+	defer func() { h2PostFn = origPostFn }()
+
+	h2PostFn = func(ctx context.Context, client *http.Client, apiURL, host string, body []byte) []byte {
+		if bytes.Equal(body, []byte("empty-probe")) {
+			return nil // Simulate no data queued on Telegram server
+		}
+		return []byte("data-chunk")
+	}
+
+	h2InFlight := make(chan struct{}, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	replyCh := make(chan h2Reply, 16)
+
+	// Dispatch seq 0 (probe returning nil)
+	if !dispatchH2PostInternal(h2InFlight, ctx, nil, "http://test", "test-host", replyCh, 0, []byte("empty-probe"), true) {
+		t.Fatal("failed to dispatch probe")
+	}
+
+	// Dispatch seq 1 (normal request returning data)
+	if !dispatchH2Post(h2InFlight, ctx, nil, "http://test", "test-host", replyCh, 1, []byte("client-req")) {
+		t.Fatal("failed to dispatch client-req")
+	}
+
+	var written [][]byte
+	seq := newH2ReplySequencer(func(body []byte) error {
+		written = append(written, body)
+		return nil
+	})
+
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-replyCh:
+			if r.data == nil && !r.isProbe {
+				t.Fatalf("unexpected non-probe nil reply on seq=%d", r.seq)
+			}
+			if err := seq.push(r.seq, r.data); err != nil {
+				t.Fatalf("sequencer push failed: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for replies")
+		}
+	}
+
+	if len(written) != 1 || !bytes.Equal(written[0], []byte("data-chunk")) {
+		t.Fatalf("expected 1 written payload 'data-chunk', got %d: %v", len(written), written)
 	}
 }
 
