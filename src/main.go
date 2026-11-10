@@ -3547,7 +3547,7 @@ func main() {
 		case "serve":
 			serve()
 			return
-		case "check":
+		case "check", "--check":
 			runChecks()
 			return
 		case "run":
@@ -4303,6 +4303,43 @@ func directDialBlockedRecently(ipStr string) bool { return directDialFails.block
 func directDialMarkFail(ipStr string) { directDialFails.markFail(ipStr) }
 
 func directDialMarkReachable(ipStr string) { directDialFails.markReachable(ipStr) }
+
+// cfEdgeIPFails covers Cloudflare edge Anycast IPs whose dial recently failed.
+var (
+	cfEdgeIPFails = newFailCache(90 * time.Second)
+	cfIPRotation  atomic.Uint64
+)
+
+func cfEdgeIPBlockedRecently(ipStr string) bool { return cfEdgeIPFails.blockedRecently(ipStr) }
+func cfEdgeIPMarkFail(ipStr string)             { cfEdgeIPFails.markFail(ipStr) }
+func cfEdgeIPMarkReachable(ipStr string)        { cfEdgeIPFails.markReachable(ipStr) }
+
+// orderCFEdgeIPs partitions IPs into healthy vs cooling-down, rotating healthy IPs to spread load.
+func orderCFEdgeIPs(ips []netip.Addr) []netip.Addr {
+	if len(ips) <= 1 {
+		return ips
+	}
+	var healthy, cooling []netip.Addr
+	for _, ip := range ips {
+		if !ip.Is4() {
+			continue
+		}
+		if cfEdgeIPBlockedRecently(ip.String()) {
+			cooling = append(cooling, ip)
+		} else {
+			healthy = append(healthy, ip)
+		}
+	}
+	if len(healthy) > 1 {
+		start := int(cfIPRotation.Add(1) % uint64(len(healthy)))
+		rotated := make([]netip.Addr, len(healthy))
+		for i := range healthy {
+			rotated[i] = healthy[(start+i)%len(healthy)]
+		}
+		healthy = rotated
+	}
+	return append(healthy, cooling...)
+}
 
 // directProofBytes is the minimum amount of payload that must be transferred
 // downstream before a direct TCP route is considered verified. Censorship DPI
@@ -5741,6 +5778,7 @@ func sweepRouteCaches() {
 
 	directDialFails.expireOlderThan(now)
 	cdn203Fails.expireOlderThan(now)
+	cfEdgeIPFails.expireOlderThan(now)
 
 	workerCooldowns.Range(func(key, val any) bool {
 		if cd, ok := val.(workerCooldownState); ok {
@@ -6373,14 +6411,17 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 			return nil, fmt.Errorf("DNS: %w", err)
 		}
 	}
+	ips = orderCFEdgeIPs(ips)
 	var last error
 	for i, ip := range ips {
 		if !ip.Is4() {
 			continue
 		}
+		ipStr := ip.String()
 		attemptCtx, cancel := context.WithTimeout(ctx, 2000*time.Millisecond)
-		raw, e := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ip.String(), "443"), 1200*time.Millisecond)
+		raw, e := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ipStr, "443"), 1200*time.Millisecond)
 		if e == nil {
+			cfEdgeIPMarkReachable(ipStr)
 			setConnSockOpts(raw)
 			var ws *wsConn
 			helloID := utls.HelloChrome_Auto
@@ -6407,8 +6448,11 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 				return nil, e
 			}
 		} else {
-			if (isTimeout(e) || isTimeoutText(e.Error())) && shouldPenalizeRoute(ctx) {
-				noteRouteHTTPFailure(host, e)
+			if isTimeout(e) || isTimeoutText(e.Error()) {
+				cfEdgeIPMarkFail(ipStr)
+				if shouldPenalizeRoute(ctx) {
+					noteRouteHTTPFailure(host, e)
+				}
 			}
 		}
 		cancel()
@@ -6940,6 +6984,132 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 	}, nil
 }
 
+func runCheckDiagnostic() bool {
+	fmt.Println("======================================================================")
+	fmt.Println("  TeleWEB Active Connectivity & Route Diagnostic")
+	fmt.Println("======================================================================")
+	fmt.Println()
+
+	var anyOK bool
+
+	// 1. Check DoH bootstrap & DNS
+	fmt.Println("1. DNS & DoH Bootstrap:")
+	dohCheckPassed := 0
+	for _, ep := range []string{"cloudflare-dns.com", "dns.google", "dns.adguard-dns.com"} {
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+		ips, err := resolveDoHRace(ctx, ep)
+		cancel()
+		dur := time.Since(start).Round(time.Millisecond)
+		if err == nil && len(ips) > 0 {
+			fmt.Printf("  %-38s ... [OK ]  %v (%s)\n", ep, dur, ips[0])
+			dohCheckPassed++
+		} else {
+			fmt.Printf("  %-38s ... [FAIL] %v (%v)\n", ep, dur, err)
+		}
+	}
+	if dohCheckPassed > 0 {
+		anyOK = true
+	}
+
+	// 2. Check Cloudflare Fronting Pool
+	fmt.Println()
+	fmt.Println("2. Cloudflare Fronting Pool (WebSocket 101 to DC2):")
+	domains := cfDomainsCached()
+	if len(domains) == 0 {
+		loadRemoteCFDomainsCache()
+		domains = cfDomainsCached()
+	}
+	cfCheckPassed := 0
+	testedDomains := 0
+	for _, d := range domains {
+		if testedDomains >= 3 {
+			break
+		}
+		host := fmt.Sprintf("kws2.%s", d)
+		testedDomains++
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 3500*time.Millisecond)
+		ws, err := dialCFHost(ctx, systemDNSResolver(), host)
+		cancel()
+		dur := time.Since(start).Round(time.Millisecond)
+		if err == nil && ws != nil {
+			pop := ws.cfPoP
+			if pop == "" {
+				pop = "CF"
+			}
+			_ = ws.Close()
+			fmt.Printf("  %-38s ... [OK ]  %v (PoP: %s)\n", host, dur, pop)
+			cfCheckPassed++
+		} else {
+			fmt.Printf("  %-38s ... [FAIL] %v (%v)\n", host, dur, err)
+		}
+	}
+	if cfCheckPassed > 0 {
+		anyOK = true
+	}
+
+	// 3. Check Cloudflare Worker
+	fmt.Println()
+	fmt.Println("3. Cloudflare Worker Tunnel:")
+	worker := customCFWorkerCached()
+	if worker == "" {
+		worker = nextPublicWorker()
+	}
+	if worker != "" {
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		dst := workerDstForDC(2)
+		ws, err := dialCFWorker(ctx, 2, dst, worker, false)
+		cancel()
+		dur := time.Since(start).Round(time.Millisecond)
+		if err == nil && ws != nil {
+			_ = ws.Close()
+			fmt.Printf("  %-38s ... [OK ]  %v\n", worker, dur)
+			anyOK = true
+		} else {
+			fmt.Printf("  %-38s ... [FAIL] %v (%v)\n", worker, dur, err)
+		}
+	} else {
+		fmt.Println("  (no worker configured or available)         ... [SKIP]")
+	}
+
+	// 4. Check Direct Telegram Core DC (TCP 443 to DC2/DC4)
+	fmt.Println()
+	fmt.Println("4. Direct Telegram Core DC (TCP 443):")
+	for _, dcTest := range []struct {
+		name string
+		addr string
+	}{
+		{"DC2 (149.154.167.51:443)", "149.154.167.51:443"},
+		{"DC4 (149.154.167.91:443)", "149.154.167.91:443"},
+	} {
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		conn, err := trackedDial(ctx, "tcp4", dcTest.addr, 1200*time.Millisecond)
+		cancel()
+		dur := time.Since(start).Round(time.Millisecond)
+		if err == nil && conn != nil {
+			_ = conn.Close()
+			fmt.Printf("  %-38s ... [OK ]  %v (direct reachable)\n", dcTest.name, dur)
+			anyOK = true
+		} else {
+			fmt.Printf("  %-38s ... [FAIL] %v (filtered by ISP)\n", dcTest.name, dur)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("======================================================================")
+	if anyOK {
+		fmt.Println("  Summary: TeleWEB bypass routes operational [SUCCESS]")
+	} else {
+		fmt.Println("  Summary: All tested routes failed [FAILURE]")
+	}
+	fmt.Println("======================================================================")
+
+	return anyOK
+}
+
 func sha1Sum(b []byte) []byte  { h := sha1.Sum(b); return h[:] }
 func (w *wsConn) Close() error { return w.conn.Close() }
 func (w *wsConn) writeFrame(op byte, p []byte) error {
@@ -7137,4 +7307,8 @@ func runChecks() {
 		}
 	}
 	fmt.Println("DC mapping smoke test passed")
+	fmt.Println()
+	if !runCheckDiagnostic() {
+		os.Exit(1)
+	}
 }
