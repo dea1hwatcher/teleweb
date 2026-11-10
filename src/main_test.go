@@ -31,6 +31,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -2055,6 +2056,66 @@ func TestDoH_ParsingAndCache(t *testing.T) {
 	}
 }
 
+func TestDoHOutageCooldown(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TELEWEB_DIR", tmpDir)
+
+	resetDoHOutage()
+	defer resetDoHOutage()
+
+	_ = writeDoHEnabled(true)
+	defer func() { _ = writeDoHEnabled(true) }()
+
+	// 1. Mock server that fails
+	deadHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	})
+	deadServer := httptest.NewServer(deadHandler)
+	defer deadServer.Close()
+
+	origEndpoints := getDoHEndpoints()
+	defer func() { setDoHEndpoints(origEndpoints) }()
+	setDoHEndpoints([]string{deadServer.URL})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := resolveDoHRace(ctx, "fail.test.invalid")
+	if err == nil {
+		t.Fatalf("expected failure from dead DoH endpoint")
+	}
+
+	if !isDoHInCooldown() {
+		t.Fatalf("expected DoH to enter outage cooldown after failure")
+	}
+
+	// 2. Fast-fail while in cooldown without waiting
+	t0 := time.Now()
+	_, err = resolveDoHRace(ctx, "fastfail.test.invalid")
+	if !errors.Is(err, errDoHOutageCooldown) {
+		t.Fatalf("expected errDoHOutageCooldown, got %v", err)
+	}
+	if elapsed := time.Since(t0); elapsed > 50*time.Millisecond {
+		t.Fatalf("expected fast-fail under 50ms, took %v", elapsed)
+	}
+
+	// 3. When probe interval elapses, one probe is allowed through
+	dohLastProbe.Store(time.Now().Add(-6 * time.Second).UnixNano())
+	if isDoHInCooldown() {
+		t.Fatalf("expected probe to be allowed after 6s")
+	}
+	// Subsequent check right away is blocked again
+	if !isDoHInCooldown() {
+		t.Fatalf("expected second check after probe to be blocked")
+	}
+
+	// 4. Mark success and verify cooldown clears
+	markDoHSuccess()
+	if isDoHInCooldown() {
+		t.Fatalf("expected DoH outage cooldown to be cleared after markDoHSuccess")
+	}
+}
+
 func TestApiMain_PoolSize_And_DoH_Config(t *testing.T) {
 	tmpDir := t.TempDir()
 	origBase := getBaseDir()
@@ -2529,6 +2590,27 @@ func TestShouldPenalizeRoute(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 	if shouldPenalizeRoute(expired) {
 		t.Fatal("a dial that ran out of budget must not record failures")
+	}
+
+	// Local network interface down / unreachable errors must NOT penalize routes
+	netUnreach := fmt.Errorf("dial tcp 104.21.1.1:443: connect: %w", syscall.ENETUNREACH)
+	if shouldPenalizeRoute(context.Background(), netUnreach) {
+		t.Fatal("local network unreachable error must not penalize route")
+	}
+
+	hostUnreach := fmt.Errorf("dial tcp 104.21.1.1:443: connect: %w", syscall.EHOSTUNREACH)
+	if shouldPenalizeRoute(context.Background(), hostUnreach) {
+		t.Fatal("local no route to host error must not penalize route")
+	}
+
+	strUnreach := errors.New("read: network is down")
+	if shouldPenalizeRoute(context.Background(), strUnreach) {
+		t.Fatal("network is down string error must not penalize route")
+	}
+
+	remoteErr := errors.New("HTTP 429: too many requests")
+	if !shouldPenalizeRoute(context.Background(), remoteErr) {
+		t.Fatal("normal remote errors must still penalize route")
 	}
 }
 
@@ -5179,4 +5261,212 @@ func TestPipeWSTunnel_InterceptMinus404_KeyNotFoundSuppressed(t *testing.T) {
 	}
 
 	<-done
+}
+
+func TestMediaCircuitBreaker(t *testing.T) {
+	cb := newMediaCircuitBreaker()
+	dc := 2
+
+	if cb.IsBlocked(dc) {
+		t.Fatal("new circuit breaker must not be blocked")
+	}
+
+	// First stall -> 1 strike, 60s block
+	strikes, duration := cb.RecordStall(dc)
+	if strikes != 1 {
+		t.Fatalf("expected 1 strike, got %d", strikes)
+	}
+	if duration != mediaRetryBlockDuration {
+		t.Fatalf("expected %v block, got %v", mediaRetryBlockDuration, duration)
+	}
+	if !cb.IsBlocked(dc) {
+		t.Fatal("expected DC2 to be blocked after first stall")
+	}
+	if cb.IsBlocked(4) {
+		t.Fatal("unrelated DC4 must not be blocked")
+	}
+
+	// Second stall within window -> 2 strikes, 10m block
+	strikes2, duration2 := cb.RecordStall(dc)
+	if strikes2 != 2 {
+		t.Fatalf("expected 2 strikes, got %d", strikes2)
+	}
+	if duration2 != mediaLongBlockDuration {
+		t.Fatalf("expected %v block, got %v", mediaLongBlockDuration, duration2)
+	}
+	if !cb.IsBlocked(dc) {
+		t.Fatal("expected DC2 to be blocked after second stall")
+	}
+}
+
+func TestMediaCircuitBreaker_ResponsiveClears(t *testing.T) {
+	cb := newMediaCircuitBreaker()
+	dc := 4
+
+	// First stall
+	cb.RecordStall(dc)
+	if !cb.IsBlocked(dc) {
+		t.Fatal("expected DC4 to be blocked")
+	}
+
+	// While blockedUntil is in the future, RecordResponsive does not unblock early
+	cb.RecordResponsive(dc)
+	if !cb.IsBlocked(dc) {
+		t.Fatal("RecordResponsive must not unblock while actively in block period")
+	}
+
+	// Simulate expiration of block period
+	cb.mu.Lock()
+	st := cb.states[dc]
+	st.blockedUntil = time.Now().Add(-time.Second)
+	cb.states[dc] = st
+	cb.mu.Unlock()
+
+	// Once block period has expired, responsive clears the entry
+	cb.RecordResponsive(dc)
+	if cb.IsBlocked(dc) {
+		t.Fatal("RecordResponsive must clear state once block period expired")
+	}
+	cb.mu.Lock()
+	_, exists := cb.states[dc]
+	cb.mu.Unlock()
+	if exists {
+		t.Fatal("state for DC4 must be deleted after responsive clear")
+	}
+}
+
+func TestPipeWSTunnel_MediaResponsive(t *testing.T) {
+	globalMediaCircuitBreaker.Reset()
+	defer globalMediaCircuitBreaker.Reset()
+
+	clientConn, proxyClient := net.Pipe()
+	proxyServer, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer proxyClient.Close()
+	defer proxyServer.Close()
+	defer serverConn.Close()
+
+	// Drain frames written to serverConn
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	ws := &wsConn{
+		conn: proxyServer,
+		r:    bufio.NewReader(proxyServer),
+		host: "test-media-front.invalid",
+	}
+
+	init := makeObfuscatedInit(t, 2, 0xEEEEEEEE)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeWSTunnel(proxyClient, ws, init, 1003, 2, true, "149.154.167.51", false)
+	}()
+
+	// 1. Client sends 1500 bytes of valid encrypted intermediate media request
+	block, err := aes.NewCipher(init[8:40])
+	if err != nil {
+		t.Fatalf("aes cipher error: %v", err)
+	}
+	stream := cipher.NewCTR(block, init[40:56])
+	var zero64 [64]byte
+	stream.XORKeyStream(zero64[:], zero64[:])
+
+	payloadSize := 1496
+	packet := make([]byte, 4+payloadSize)
+	binary.LittleEndian.PutUint32(packet[:4], uint32(payloadSize))
+	stream.XORKeyStream(packet, packet)
+
+	go func() {
+		_ = clientConn.SetWriteDeadline(time.Now().Add(time.Second))
+		_, _ = clientConn.Write(packet)
+	}()
+
+	// 2. Server responds with 5000 bytes (> 4096 bytes)
+	mediaChunk := make([]byte, 5000)
+	wsServer := &wsConn{conn: serverConn, r: bufio.NewReader(serverConn), host: "srv"}
+	if err := wsServer.writeFrame(2, mediaChunk); err != nil {
+		t.Fatalf("writeFrame error: %v", err)
+	}
+
+	// 3. Client reads the response chunk
+	clientBuf := make([]byte, 6000)
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	totalRead := 0
+	for totalRead < len(mediaChunk) {
+		n, err := clientConn.Read(clientBuf[totalRead:])
+		if err != nil {
+			t.Fatalf("client read error: %v (read %d)", err, totalRead)
+		}
+		totalRead += n
+	}
+
+	if totalRead != len(mediaChunk) {
+		t.Fatalf("expected %d bytes, got %d", len(mediaChunk), totalRead)
+	}
+
+	// Verify circuit breaker is not blocked
+	if globalMediaCircuitBreaker.IsBlocked(2) {
+		t.Fatal("circuit breaker must not be blocked after responsive media transfer")
+	}
+
+	_ = clientConn.Close()
+	<-done
+}
+
+func TestRedactSensitive(t *testing.T) {
+	input := "Connecting to 149.154.167.51:443 from 127.0.0.1 and IPv6 2001:b28:f23d:f001::a"
+	got := redactSensitive(input)
+
+	if strings.Contains(got, "149.154.167.51") {
+		t.Fatalf("expected public IPv4 to be redacted, got: %s", got)
+	}
+	if !strings.Contains(got, "149.154.***.***") {
+		t.Fatalf("expected masked IPv4 149.154.***.***, got: %s", got)
+	}
+	if !strings.Contains(got, "127.0.0.1") {
+		t.Fatalf("loopback 127.0.0.1 must be preserved, got: %s", got)
+	}
+	if strings.Contains(got, "2001:b28:f23d:f001::a") {
+		t.Fatalf("expected IPv6 to be redacted, got: %s", got)
+	}
+	if !strings.Contains(got, "[ipv6-redacted]") {
+		t.Fatalf("expected [ipv6-redacted], got: %s", got)
+	}
+}
+
+func TestExportDiagnosticsAPI(t *testing.T) {
+	tmpDir := t.TempDir()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
+
+	// Write mock log containing IP
+	_ = os.WriteFile(path("tgws.log"), []byte("test dial to 91.108.56.100:443 ok\n"), 0600)
+
+	req := apiRequest{Cmd: "exportDiagnostics"}
+	res, err := executeAPICommand(req)
+	if err != nil {
+		t.Fatalf("exportDiagnostics failed: %v", err)
+	}
+	diag, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any from exportDiagnostics, got %T", res)
+	}
+	logStr, ok := diag["log"].(string)
+	if !ok {
+		t.Fatalf("expected log string in diagnostics")
+	}
+	if strings.Contains(logStr, "91.108.56.100") {
+		t.Fatalf("log in exportDiagnostics must be sanitized, got: %s", logStr)
+	}
+	if !strings.Contains(logStr, "91.108.***.***") {
+		t.Fatalf("log in exportDiagnostics must contain redacted IP, got: %s", logStr)
+	}
 }
