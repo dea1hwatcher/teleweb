@@ -1742,6 +1742,204 @@ body.swiping .state::after {
   .picker-side { width: 100%; }
 }
 
+/* ==========================================================================
+   Stealth / Hiding Mode Pill & Bottom Sheet (bindhosts M3 pattern)
+   ========================================================================== */
+.mode-pill {
+  appearance: none;
+  border: none;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--shape-full);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: var(--ts-label-medium);
+  font-weight: var(--w-bold);
+  letter-spacing: var(--tracking-label-medium);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant);
+  transition: background-color var(--dur-short) var(--standard),
+              color var(--dur-short) var(--standard),
+              transform var(--dur-short) var(--spring);
+}
+[hidden] { display: none !important; }
+.mode-pill.on {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+.mode-pill.detected {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+.mode-pill.off {
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+.mode-pill:active { transform: scale(0.96); }
+
+.stealth-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-radius: var(--shape-extra-large);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+}
+.stealth-banner.active {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+.stealth-banner.warn {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+.stealth-banner.off {
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+.stealth-banner-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.stealth-banner-title {
+  font-size: var(--ts-title-medium);
+  line-height: var(--lh-title-medium);
+  font-weight: var(--w-bold);
+}
+.stealth-banner-sub {
+  font-size: var(--ts-body-small);
+  line-height: var(--lh-body-small);
+  opacity: .88;
+  margin-top: 2px;
+}
+
+.stealth-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (max-width: 380px) {
+  .stealth-facts { grid-template-columns: 1fr; }
+}
+.stealth-fact {
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--shape-medium);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.stealth-fact-k {
+  font-size: var(--ts-label-small);
+  color: var(--md-sys-color-on-surface-variant);
+  font-weight: var(--w-medium);
+}
+.stealth-fact-v {
+  font-size: var(--ts-body-medium);
+  color: var(--md-sys-color-on-surface);
+  font-weight: var(--w-bold);
+  word-break: break-word;
+}
+
+.mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mode-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--shape-large);
+  background: var(--md-sys-color-surface-container);
+  cursor: pointer;
+  border: 1.5px solid transparent;
+  text-align: left;
+  width: 100%;
+  color: var(--md-sys-color-on-surface);
+  font-family: inherit;
+  position: relative;
+  overflow: hidden;
+  transition: background-color var(--dur-short) var(--standard),
+              border-color var(--dur-short) var(--standard);
+}
+.mode-item.selected {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  border-color: var(--md-sys-color-primary);
+}
+.mode-radio {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--md-sys-color-on-surface-variant);
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+.mode-item.selected .mode-radio {
+  border-color: var(--md-sys-color-primary);
+}
+.mode-item.selected .mode-radio::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--md-sys-color-primary);
+}
+.mode-badge {
+  font-size: 11px;
+  font-weight: var(--w-bold);
+  padding: 2px 8px;
+  border-radius: var(--shape-full);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant);
+  flex: none;
+}
+.mode-item.selected .mode-badge {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+.stealth-modes-ref {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stealth-ref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--shape-medium);
+  background: var(--md-sys-color-surface-container);
+  font-size: var(--ts-body-small);
+}
+.stealth-ref-row.current {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+.stealth-ref-row code {
+  font-family: var(--md-font-code);
+  font-size: 11px;
+  opacity: .9;
+}
+
 /* Motion Accessibility */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -1783,6 +1981,7 @@ body.swiping .state::after {
 <symbol id="i-bolt" viewBox="0 -960 960 960"><path d="m393-165 277-345H466l64-285H323l-72 370h179l-37 260Z"/></symbol>
 <symbol id="i-dns" viewBox="0 -960 960 960"><path d="M200-120q-33 0-56.5-23.5T120-200v-160q0-33 23.5-56.5T200-440h560q33 0 56.5 23.5T840-360v160q0 33-23.5 56.5T760-120H200Zm0-400q-33 0-56.5-23.5T120-600v-160q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v160q0 33-23.5 56.5T760-520H200Zm0-80h560v-160H200v160Zm0 400h560v-160H200v160Zm80-440q17 0 28.5-11.5T320-680q0-17-11.5-28.5T280-720q-17 0-28.5 11.5T240-680q0 17 11.5 28.5T280-640Zm0 400q17 0 28.5-11.5T320-280q0-17-11.5-28.5T280-320q-17 0-28.5 11.5T240-280q0 17 11.5 28.5T280-240Z"/></symbol>
 <symbol id="i-hub" viewBox="0 -960 960 960"><path d="M440-280v-160H280v160h160Zm240 0v-160H520v160h160ZM440-520v-160H280v160h160Zm240 0v-160H520v160h160ZM200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Z"/></symbol>
+<symbol id="i-shield" viewBox="0 -960 960 960"><path d="M480-80q-139-35-229.5-159.5T160-516v-244l320-120 320 120v244q0 152-90.5 276.5T480-80Zm0-84q104-33 172-132t68-220v-189l-240-90-240 90v189q0 121 68 220t172 132Zm0-316Z"/></symbol>
 </defs></svg>
 
 <!-- Top App Bar -->
@@ -1792,6 +1991,10 @@ body.swiping .state::after {
   </button>
   <h1 class="title truncate" id="app-title">Состояние</h1>
   <div class="bar-actions" id="bar-actions">
+    <button class="mode-pill state" id="mode-btn" hidden onclick="openStealthSheet()" aria-label="Режим скрытия модуля" title="Режим скрытия модуля (Bindhosts / SuSFS)">
+      <svg class="icon s18"><use href="#i-shield"/></svg>
+      <span id="mode-btn-label">Режим 0</span>
+    </button>
     <button class="icon-btn state" id="btn-refresh" aria-label="Обновить статус" title="Обновить">
       <svg class="icon s20"><use href="#i-refresh"/></svg>
     </button>
@@ -2128,6 +2331,20 @@ body.swiping .state::after {
           </span>
         </label>
       </div>
+
+      <div id="settings-stealth-group" class="stack" hidden>
+        <h2 class="subhead">Скрытие и безопасность (Android)</h2>
+        <div class="list">
+          <div class="list-item two-line clickable state" role="button" tabindex="0" onclick="openStealthSheet()">
+            <span class="li-icon"><svg class="icon s20"><use href="#i-shield"/></svg></span>
+            <span class="li-text">
+              <span class="li-primary">Режим скрытия модуля</span>
+              <span class="li-secondary" id="settings-stealth-desc">Определение подсистемы…</span>
+            </span>
+            <span class="li-trail"><svg class="icon s20"><use href="#i-chevron-right"/></svg></span>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 </main>
@@ -2232,6 +2449,51 @@ body.swiping .state::after {
       </div>
     </div>
   </div>
+</div>
+
+<!-- Stealth / Hiding Mode Sheet Scrim -->
+<div class="scrim" id="stealth-scrim" onclick="closeStealthSheet()"></div>
+
+<!-- Material 3 Stealth / Hiding Mode Bottom Sheet (Bindhosts UX) -->
+<div class="sheet" id="stealth-sheet" role="dialog" aria-modal="true" aria-labelledby="stealth-sheet-title">
+  <button type="button" class="sheet-drag" aria-label="Закрыть" onclick="closeStealthSheet()"><span class="handle"></span></button>
+
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+    <div class="sheet-title" id="stealth-sheet-title">Режим скрытия (Bindhosts)</div>
+    <button class="icon-btn state" onclick="closeStealthSheet()" aria-label="Закрыть">
+      <svg class="icon s20"><use href="#i-close"/></svg>
+    </button>
+  </div>
+
+  <div class="stealth-banner" id="stealth-banner">
+    <div class="stealth-banner-icon"><svg class="icon s24"><use href="#i-shield"/></svg></div>
+    <div style="min-width:0;flex:1;">
+      <div class="stealth-banner-title" id="stealth-banner-title">Определение режима…</div>
+      <div class="stealth-banner-sub" id="stealth-banner-sub">Проверка SuSFS, KernelSU и Zygisk</div>
+    </div>
+  </div>
+
+  <div class="stealth-facts" id="stealth-facts"></div>
+
+  <h2 class="subhead plain">Политика скрытия</h2>
+  <div class="mode-list" id="mode-options" role="radiogroup" aria-label="Политика скрытия"></div>
+
+  <div class="row">
+    <button type="button" class="btn tonal state" style="flex:1;" id="btn-apply-stealth" onclick="applyStealthRulesNow()">
+      <svg class="icon s18"><use href="#i-shield"/></svg>
+      <span>Применить правила SuSFS</span>
+    </button>
+    <button type="button" class="btn btn-text state" id="btn-reset-stealth" hidden onclick="setStealthPolicy('auto')">
+      <span>Сбросить в Авто</span>
+    </button>
+  </div>
+
+  <h2 class="subhead plain">Матрица режимов Bindhosts</h2>
+  <div class="stealth-modes-ref" id="stealth-modes-ref"></div>
+
+  <p class="helper" id="stealth-helper-note" style="padding:0 4px;">
+    Правила SuSFS действуют на уровне ядра до перезагрузки; флаг Stealth также замораживает динамический статус в module.prop и помечает пути как u:object_r:system_file:s0.
+  </p>
 </div>
 
 <!-- Floating Snackbar -->
@@ -2837,45 +3099,68 @@ async function detectSystemMonet(showToastNotice) {
   if (showToastNotice) toast('Цвет обоев: ' + hex.toUpperCase());
 }
 
-function openThemeSheet() {
+function sheetPair(sheet) {
+  if (sheet && sheet.id === 'stealth-sheet') {
+    return { scrim: $('stealth-scrim'), close: closeStealthSheet };
+  }
+  return { scrim: $('theme-scrim'), close: closeThemeSheet };
+}
+
+function openSheetOverlay(sheetEl, scrimEl, onOpen) {
   haptic(10);
-  const sheet = $('theme-sheet');
-  const scrim = $('theme-scrim');
-  if (!sheet || !scrim) return;
-  sheet.style.transform = '';
-  sheet.style.transition = '';
-  scrim.classList.add('show');
-  sheet.classList.add('open');
-  drawThemeUI();
-  syncPicker(true);
+  if (!sheetEl || !scrimEl) return;
+  sheetEl.style.transform = '';
+  sheetEl.style.transition = '';
+  scrimEl.classList.add('show');
+  sheetEl.classList.add('open');
+  if (onOpen) onOpen();
   if (typeof updateScrollLock === 'function') updateScrollLock();
   if (typeof scheduleSync === 'function') scheduleSync();
 }
 
-function closeThemeSheet() {
+function closeSheetOverlay(sheetEl, scrimEl) {
   haptic(8);
-  const sheet = $('theme-sheet');
-  const scrim = $('theme-scrim');
-  if (sheet) {
-    sheet.classList.remove('open');
-    sheet.style.transform = '';
+  if (sheetEl) {
+    sheetEl.classList.remove('open');
+    sheetEl.style.transform = '';
   }
-  if (scrim) scrim.classList.remove('show');
+  if (scrimEl) scrimEl.classList.remove('show');
   if (typeof updateScrollLock === 'function') updateScrollLock();
   if (typeof scheduleSync === 'function') scheduleSync();
+}
+
+function openThemeSheet() {
+  openSheetOverlay($('theme-sheet'), $('theme-scrim'), () => {
+    drawThemeUI();
+    syncPicker(true);
+  });
+}
+
+function closeThemeSheet() {
+  closeSheetOverlay($('theme-sheet'), $('theme-scrim'));
+}
+
+function openStealthSheet() {
+  openSheetOverlay($('stealth-sheet'), $('stealth-scrim'), () => {
+    renderStealthSheet();
+  });
+}
+
+function closeStealthSheet() {
+  closeSheetOverlay($('stealth-sheet'), $('stealth-scrim'));
 }
 
 /* ── Bottom sheet: drag handle & sheet body swipe down ──────── */
 function sheetScrimFollow(sheet, dy) {
-  const sc = $('theme-scrim');
+  const sc = sheetPair(sheet).scrim;
   if (!sc) return;
   const p = Math.max(0, Math.min(1, 1 - dy / Math.max(1, sheet.offsetHeight)));
   sc.style.transition = 'none';
   sc.style.opacity = p;
 }
 
-function sheetScrimRelease() {
-  const sc = $('theme-scrim');
+function sheetScrimRelease(sheet) {
+  const sc = sheetPair(sheet).scrim;
   if (!sc) return;
   sc.style.transition = sc.style.opacity = '';
 }
@@ -2883,6 +3168,7 @@ function sheetScrimRelease() {
 function initSheetDrag(sheet) {
   if (!sheet) return;
   const zone = sheet.querySelector('.sheet-drag') || sheet;
+  const closeFn = sheetPair(sheet).close;
   let y0 = null, dy = 0, dragged = false;
 
   // Mouse/pen only: on touch devices initSheetSwipe owns the gesture (velocity
@@ -2909,9 +3195,9 @@ function initSheetDrag(sheet) {
     if (y0 === null) return;
     y0 = null;
     sheet.style.transition = '';
-    sheetScrimRelease();
+    sheetScrimRelease(sheet);
     if (dy > Math.min(120, sheet.offsetHeight * 0.25)) {
-      requestAnimationFrame(() => closeThemeSheet());
+      requestAnimationFrame(() => closeFn());
     } else {
       sheet.style.transform = '';
     }
@@ -2925,18 +3211,19 @@ function initSheetDrag(sheet) {
       return;
     }
     if (zone.classList.contains('sheet-drag')) {
-      closeThemeSheet();
+      closeFn();
     }
   });
 }
 
 function initSheetSwipe(sheet) {
   if (!sheet) return;
+  const closeFn = sheetPair(sheet).close;
   let y0 = 0, lastY = 0, lastT = 0, v = 0, state = '';
   sheet.addEventListener('touchstart', (e) => {
     state = '';
     if (e.touches.length !== 1 || e.target.closest('.sheet-drag')) return;
-    if (e.target.closest('.wheel, #wheel, input, select, button, .swatch-dot')) return;
+    if (e.target.closest('.wheel, #wheel, input, select, button, .swatch-dot, .mode-item')) return;
     y0 = lastY = e.touches[0].clientY;
     lastT = e.timeStamp;
     v = 0;
@@ -2971,9 +3258,9 @@ function initSheetSwipe(sheet) {
     if (e.cancelable) e.preventDefault();
     const dy = Math.max(0, lastY - y0);
     sheet.style.transition = '';
-    sheetScrimRelease();
+    sheetScrimRelease(sheet);
     if (e.type === 'touchend' && (dy > Math.min(120, sheet.offsetHeight * 0.25) || (v > 0.5 && dy > 24))) {
-      requestAnimationFrame(() => closeThemeSheet());
+      requestAnimationFrame(() => closeFn());
     } else {
       sheet.style.transform = '';
     }
@@ -3018,6 +3305,8 @@ function initTheme() {
   initWheel();
   initSheetDrag($('theme-sheet'));
   initSheetSwipe($('theme-sheet'));
+  initSheetDrag($('stealth-sheet'));
+  initSheetSwipe($('stealth-sheet'));
   updateThemeSummary();
   if (window.matchMedia) {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -3288,6 +3577,25 @@ async function runDiagnostics() {
       items.push({ warn: true, text: 'Пул сокетов WSS: отключен (прямые подключения)' });
     }
 
+    if (s.isAndroid && s.stealth) {
+      const st = s.stealth;
+      const modeLabel = `Режим ${st.modeCode} (${st.modeName || 'Default'})`;
+      const extra = [];
+      if (st.rootManager) extra.push(st.rootManager);
+      if (st.susfsVersion) extra.push(`SuSFS ${st.susfsVersion}`);
+      if (st.zygiskHandlers && st.zygiskHandlers.length) extra.push(st.zygiskHandlers.join(', '));
+      const detail = extra.length ? ` · ${extra.join(' · ')}` : '';
+      if (st.active) {
+        items.push({ ok: true, text: `Скрытие модуля (Stealth): ${modeLabel}${detail} · module.prop защищён` });
+      } else if (st.override === 'off') {
+        items.push({ warn: true, text: `Скрытие модуля: отключено пользователем (доступен Режим ${st.detectedModeCode}${detail})` });
+      } else if (st.modeCode > 0) {
+        items.push({ ok: true, text: `Скрытие модуля: ${modeLabel}${detail} (без SuSFS)` });
+      } else {
+        items.push({ warn: true, text: `Скрытие модуля: ${modeLabel} — SuSFS не обнаружен` });
+      }
+    }
+
     // Render diagnostic items
     list.innerHTML = items.map(item => {
       let icon = '<span style="color:#4caf50;font-weight:bold;margin-right:8px;">✓</span>';
@@ -3344,6 +3652,8 @@ function render() {
     heroToggleLabel.textContent = "Запустить";
     return;
   }
+
+  renderStealthUI();
 
   // Detected telegram clients
   const apps = (state.apps || []).map(a => a.name).filter((v, i, arr) => arr.indexOf(v) === i);
@@ -3627,8 +3937,20 @@ navDests.forEach(btn => {
   });
 });
 
+function anySheetOpen() {
+  return ['theme-sheet', 'stealth-sheet'].some((id) => {
+    const el = $(id);
+    return !!(el && el.classList.contains('open'));
+  });
+}
+
 /* Back Interceptor & History Sync (KernelSU / APatch / MMRL Contract) */
 function handleBack(allowExit) {
+  const stealthSheet = $("stealth-sheet");
+  if (stealthSheet && stealthSheet.classList.contains("open")) {
+    closeStealthSheet();
+    return true;
+  }
   const sheet = $("theme-sheet");
   if (sheet && sheet.classList.contains("open")) {
     closeThemeSheet();
@@ -3665,8 +3987,7 @@ let syncTimer = 0;
 function uiLayers() {
   let n = (currentPage !== "control") ? 1 : 0;
   if (currentPage === "settings") n++;
-  const sheet = $("theme-sheet");
-  if (sheet && sheet.classList.contains("open")) n++;
+  if (anySheetOpen()) n++;
   return n;
 }
 
@@ -3714,9 +4035,7 @@ window.addEventListener("popstate", (e) => {
 
 /* Lock background scrolling while an overlay is open */
 function updateScrollLock() {
-  const sheet = $("theme-sheet");
-  const lock = !!(sheet && sheet.classList.contains("open"));
-  document.documentElement.classList.toggle("scroll-locked", lock);
+  document.documentElement.classList.toggle("scroll-locked", anySheetOpen());
 }
 
 /* Virtual Keyboard Viewport Handler: prevent navbar occlusion */
@@ -3764,11 +4083,9 @@ function swipeBlocked(t) {
 }
 
 function swipeAllowed() {
-  const sheet = $("theme-sheet");
-  const isSheetOpen = sheet && sheet.classList.contains("open");
   return currentPage !== "settings" &&
          TOP_PAGES.includes(currentPage) &&
-         !isSheetOpen &&
+         !anySheetOpen() &&
          !document.documentElement.classList.contains("scroll-locked") &&
          !transitionCleanup;
 }
@@ -4307,6 +4624,258 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") resumeTransport();
 });
 window.addEventListener("pageshow", () => resumeTransport());
+
+/* ==========================================================================
+   Stealth / Bindhosts Hiding Mode UI Controller
+   ========================================================================== */
+const BINDHOSTS_MODES = [
+  { code: 9, name: "ksu_susfs_bind_kstat", desc: "SuSFS (sus_path + sus_mount + try_umount + add_sus_kstat)" },
+  { code: 1, name: "ksu_susfs_bind", desc: "SuSFS (sus_path + sus_mount + try_umount)" },
+  { code: 10, name: "ksud_kernel_umount", desc: "KernelSU ksud kernel umount (>= 22106)" },
+  { code: 6, name: "ksu_source_mod", desc: "KernelSU Next встроенный umount (>= 12183)" },
+  { code: 2, name: "zygisk_umount", desc: "Zygisk (ReZygisk / NoHello / ZygiskNext / Zygisk-Assistant)" },
+  { code: 0, name: "Default", desc: "Стандартный режим без SuSFS-скрытия" }
+];
+
+function describeStealthMode(st) {
+  if (!st) return { short: "Режим 0", detail: "Определение…" };
+  if (st.override === "off") {
+    return { short: "Скрытие ВЫКЛ", detail: "Отключено вручную (no_stealth)" };
+  }
+  if (st.modeCode > 0) {
+    return { short: `Режим ${st.modeCode}`, detail: `${st.modeName || "SuSFS"}` };
+  }
+  if (st.active) {
+    return { short: "Stealth", detail: "Защита module.prop + SELinux" };
+  }
+  return { short: "Режим 0", detail: "Default (SuSFS не найден)" };
+}
+
+function renderStealthUI() {
+  const modeBtn = $("mode-btn");
+  const modeBtnLabel = $("mode-btn-label");
+  const settingsGroup = $("settings-stealth-group");
+  const settingsDesc = $("settings-stealth-desc");
+
+  const isAndroid = !!(state && state.isAndroid);
+  const st = state && state.stealth;
+
+  if (modeBtn) modeBtn.hidden = !isAndroid;
+  if (settingsGroup) settingsGroup.hidden = !isAndroid;
+  if (!isAndroid || !st) return;
+
+  const info = describeStealthMode(st);
+  if (modeBtn && modeBtnLabel) {
+    modeBtn.className = "mode-pill state";
+    if (st.override === "off") {
+      modeBtn.classList.add("off");
+    } else if (st.active) {
+      modeBtn.classList.add("on");
+    } else if (st.modeCode > 0) {
+      modeBtn.classList.add("detected");
+    }
+    modeBtnLabel.textContent = info.short;
+    modeBtn.title = `Скрытие модуля: ${info.short} (${info.detail})`;
+  }
+
+  if (settingsDesc) {
+    const parts = [`${info.short} (${info.detail})`];
+    parts.push(st.active ? "Stealth ВКЛ" : (st.override === "off" ? "Принудительно ВЫКЛ" : "Авто"));
+    if (st.rootManager) parts.push(st.rootManager);
+    settingsDesc.textContent = parts.join(" · ");
+  }
+
+  const sheet = $("stealth-sheet");
+  if (sheet && sheet.classList.contains("open")) {
+    renderStealthSheet();
+  }
+}
+
+function renderStealthSheet() {
+  const st = state && state.stealth;
+  const banner = $("stealth-banner");
+  const bTitle = $("stealth-banner-title");
+  const bSub = $("stealth-banner-sub");
+  const factsEl = $("stealth-facts");
+  const optsEl = $("mode-options");
+  const refEl = $("stealth-modes-ref");
+  const applyBtn = $("btn-apply-stealth");
+  const resetBtn = $("btn-reset-stealth");
+  if (!banner || !factsEl || !optsEl || !refEl) return;
+
+  if (!st) {
+    banner.className = "stealth-banner";
+    bTitle.textContent = "Данные скрытия недоступны";
+    bSub.textContent = "Выполните обновление статуса";
+    factsEl.innerHTML = "";
+    optsEl.innerHTML = "";
+    refEl.innerHTML = "";
+    return;
+  }
+
+  banner.className = "stealth-banner";
+  const matchedMode = BINDHOSTS_MODES.find(m => m.code === st.modeCode) || BINDHOSTS_MODES[BINDHOSTS_MODES.length - 1];
+  if (st.override === "off") {
+    banner.classList.add("off");
+    bTitle.textContent = "Скрытие отключено (Режим 0)";
+    bSub.textContent = `Активен флаг no_stealth · обнаружен: Режим ${st.detectedModeCode} (${st.detectedModeName || "Default"})`;
+  } else if (st.active) {
+    banner.classList.add("active");
+    bTitle.textContent = st.modeCode > 0
+      ? `Режим ${st.modeCode} · ${st.modeName}`
+      : "Stealth активен (защита TeleWEB)";
+    bSub.textContent = st.modeCode > 0 ? matchedMode.desc : "module.prop заморожен, применены правила скрытия";
+  } else if (st.modeCode > 0) {
+    banner.classList.add("warn");
+    bTitle.textContent = `Режим ${st.modeCode} · ${st.modeName}`;
+    bSub.textContent = matchedMode.desc;
+  } else {
+    bTitle.textContent = "Режим 0 · Default";
+    bSub.textContent = "SuSFS и внешние механизмы hiding не обнаружены";
+  }
+
+  const rootVal = st.rootManager
+    ? (st.rootVersion ? `${st.rootManager} (${st.rootVersion})` : st.rootManager)
+    : "Не определён";
+  const susfsVal = st.susfsFound
+    ? `${st.susfsVersion || "Обнаружен"}${(st.susfsFeatures && st.susfsFeatures.length) ? " · " + st.susfsFeatures.join(", ") : ""}`
+    : "Не найден";
+  const umountList = [];
+  if (st.ksuSourceUmount) umountList.push("KSU source umount");
+  if (st.ksudUmount) umountList.push("ksud kernel umount");
+  if (st.zygiskHandlers && st.zygiskHandlers.length) umountList.push(...st.zygiskHandlers);
+  const umountVal = umountList.length ? umountList.join(", ") : "Стандартный";
+  const guardVal = [
+    st.propLocked ? "module.prop заморожен" : "module.prop динамический",
+    st.selinuxEnforcing ? "SELinux Enforcing" : "SELinux Permissive/Unk"
+  ].join(" · ");
+
+  factsEl.innerHTML = [
+    ["Root-менеджер", rootVal],
+    ["Модуль SuSFS", susfsVal],
+    ["Umount / Zygisk", umountVal],
+    ["Защита модуля", guardVal]
+  ].map(([k, v]) => `
+    <div class="stealth-fact">
+      <span class="stealth-fact-k">${esc(k)}</span>
+      <span class="stealth-fact-v">${esc(v)}</span>
+    </div>
+  `).join("");
+
+  const policies = [
+    {
+      id: "auto",
+      title: "Авто (рекомендуется)",
+      badge: `Авто → Режим ${st.detectedModeCode}`,
+      desc: "Включает Stealth и SuSFS автоматически при наличии ядра SuSFS"
+    },
+    {
+      id: "on",
+      title: "Принудительный Stealth",
+      badge: "stealth",
+      desc: "Замораживает module.prop, включает SELinux system_file и правила SuSFS"
+    },
+    {
+      id: "off",
+      title: "Отключить скрытие",
+      badge: "no_stealth",
+      desc: "Принудительно отключает Stealth и показывает статус в module.prop"
+    }
+  ];
+
+  optsEl.innerHTML = policies.map((p) => {
+    const sel = st.override === p.id;
+    return `
+      <button type="button" class="mode-item state ${sel ? "selected" : ""}" role="radio" aria-checked="${sel}" onclick="setStealthPolicy('${p.id}')">
+        <span class="mode-radio" aria-hidden="true"></span>
+        <span class="li-text">
+          <span class="li-primary">${esc(p.title)}</span>
+          <span class="li-secondary">${esc(p.desc)}</span>
+        </span>
+        <span class="mode-badge">${esc(p.badge)}</span>
+      </button>
+    `;
+  }).join("");
+
+  refEl.innerHTML = BINDHOSTS_MODES.map((m) => {
+    const isCurrent = st.modeCode === m.code;
+    const isDetected = st.detectedModeCode === m.code && st.override === "off";
+    const tag = isCurrent ? "АКТИВЕН" : (isDetected ? "ДОСТУПЕН" : "");
+    return `
+      <div class="stealth-ref-row ${isCurrent ? "current" : ""}">
+        <div style="min-width:0;">
+          <strong>Режим ${m.code}</strong> · <code>${esc(m.name)}</code>
+          <div style="opacity:.82;font-size:11px;">${esc(m.desc)}</div>
+        </div>
+        ${tag ? `<span class="mode-badge">${tag}</span>` : ""}
+      </div>
+    `;
+  }).join("");
+
+  if (applyBtn) {
+    applyBtn.disabled = !!busy;
+    const span = applyBtn.querySelector("span");
+    if (span) span.textContent = st.susfsFound ? "Применить правила SuSFS" : "Обновить правила скрытия";
+  }
+  if (resetBtn) {
+    resetBtn.hidden = st.override === "auto";
+  }
+}
+
+let stealthBusy = false;
+async function setStealthPolicy(mode) {
+  if (stealthBusy) return;
+  haptic(10);
+  stealthBusy = true;
+  try {
+    state = await api("setStealth", { stealthMode: mode });
+    render();
+    renderStealthSheet();
+    const labels = { auto: "Режим Авто применён", on: "Stealth включён", off: "Скрытие отключено" };
+    toast(labels[mode] || "Политика скрытия обновлена");
+  } catch (e) {
+    toast("Ошибка: " + (e.message || e));
+  } finally {
+    stealthBusy = false;
+  }
+}
+
+async function applyStealthRulesNow() {
+  if (stealthBusy) return;
+  haptic(12);
+  stealthBusy = true;
+  const applyBtn = $("btn-apply-stealth");
+  if (applyBtn) applyBtn.disabled = true;
+  try {
+    state = await api("applyStealth");
+    render();
+    renderStealthSheet();
+    toast("Правила скрытия применены");
+  } catch (e) {
+    toast("Ошибка применения правил: " + (e.message || e));
+  } finally {
+    stealthBusy = false;
+    if (applyBtn) applyBtn.disabled = false;
+  }
+}
+
+// Bindhosts-style 5-tap easter egg on hero card opens Stealth / Mode menu on Android
+(() => {
+  const hc = $("hero-card");
+  if (!hc) return;
+  let taps = 0, timer = 0;
+  hc.addEventListener("click", (e) => {
+    if (!state || !state.isAndroid || e.target.closest("button")) return;
+    taps++;
+    clearTimeout(timer);
+    if (taps >= 5) {
+      taps = 0;
+      openStealthSheet();
+      return;
+    }
+    timer = setTimeout(() => { taps = 0; }, 1400);
+  });
+})();
 
 // Initial theme & bridge run
 try {
