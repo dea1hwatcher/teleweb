@@ -2817,7 +2817,8 @@ func TestParsePMPackagesListing(t *testing.T) {
 	out := strings.Join([]string{
 		// -f form: the installed path itself contains '=' characters.
 		"/data/app/~~7rQzlA==/com.example.fork-Kf3mA==/base.apk=com.example.fork uid:10234",
-		"/data/app/~~abcd==/org.telegram.messenger-efgh==/base.apk=org.telegram.messenger uid:10123 hidden",
+		// -f form with package: prefix (standard Android output)
+		"package:/data/app/~~abcd==/org.telegram.messenger-efgh==/base.apk=org.telegram.messenger uid:10123 hidden",
 		// plain form
 		"package:com.instagram.android uid:10456",
 		// unusable lines
@@ -2839,6 +2840,34 @@ func TestParsePMPackagesListing(t *testing.T) {
 		if got[i] != w {
 			t.Errorf("entry %d = %#v, want %#v", i, got[i], w)
 		}
+	}
+}
+
+func TestDiscoverAppsFromSystem(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "packages.list")
+	content := strings.Join([]string{
+		"org.telegram.messenger 10510 0 /data/user/0/org.telegram.messenger default:targetSdkVersion=34 3003",
+		"org.nemogram.messenger 10505 0 /data/user/0/org.nemogram.messenger default:targetSdkVersion=34 3003",
+		"com.google.android.gms 10012 0 /data/user/0/com.google.android.gms default:targetSdkVersion=34",
+	}, "\n")
+	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := packagesListPath
+	packagesListPath = tmp
+	t.Cleanup(func() {
+		packagesListPath = oldPath
+	})
+
+	apps, uids := discoverAppsFromSystem()
+	if len(apps) != 2 || len(uids) != 2 {
+		t.Fatalf("expected 2 apps/uids, got %d apps, %d uids", len(apps), len(uids))
+	}
+	if apps[0].Pkg != "org.telegram.messenger" || apps[0].UID != 10510 {
+		t.Errorf("app[0] = %+v", apps[0])
+	}
+	if apps[1].Pkg != "org.nemogram.messenger" || apps[1].UID != 10505 {
+		t.Errorf("app[1] = %+v", apps[1])
 	}
 }
 
