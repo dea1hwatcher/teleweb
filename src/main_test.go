@@ -5744,3 +5744,230 @@ func TestServeConnRefusesNonMTProtoStream(t *testing.T) {
 	}
 	<-done
 }
+
+type fakeFileInfo struct {
+	name string
+	dir  bool
+}
+
+func (f fakeFileInfo) Name() string { return f.name }
+func (f fakeFileInfo) Size() int64  { return 0 }
+func (f fakeFileInfo) Mode() os.FileMode {
+	if f.dir {
+		return os.ModeDir | 0755
+	}
+	return 0644
+}
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return f.dir }
+func (f fakeFileInfo) Sys() any           { return nil }
+
+func TestDetectStealthStatusWithDeps(t *testing.T) {
+	makeDeps := func(files map[string]bool, dirs map[string]bool, contents map[string]string, cmds map[string]string) stealthProbeDeps {
+		return stealthProbeDeps{
+			isAndroid: true,
+			stat: func(p string) (os.FileInfo, error) {
+				clean := filepath.ToSlash(p)
+				if dirs[clean] {
+					return fakeFileInfo{name: filepath.Base(clean), dir: true}, nil
+				}
+				if files[clean] {
+					return fakeFileInfo{name: filepath.Base(clean), dir: false}, nil
+				}
+				return nil, os.ErrNotExist
+			},
+			readFile: func(p string) ([]byte, error) {
+				clean := filepath.ToSlash(p)
+				if v, ok := contents[clean]; ok {
+					return []byte(v), nil
+				}
+				return nil, os.ErrNotExist
+			},
+			runCmd: func(_ time.Duration, bin string, args ...string) (string, error) {
+				key := bin + " " + strings.Join(args, " ")
+				if v, ok := cmds[strings.TrimSpace(key)]; ok {
+					return v, nil
+				}
+				return "", errors.New("not mocked")
+			},
+		}
+	}
+
+	t.Run("SuSFS kstat auto mode (Mode 9)", func(t *testing.T) {
+		base := t.TempDir()
+		deps := makeDeps(
+			map[string]bool{
+				"/data/adb/ksu/bin/ksu_susfs": true,
+				"/data/adb/ksud":              true,
+			},
+			map[string]bool{"/data/adb/ksu": true},
+			map[string]string{"/sys/fs/selinux/enforce": "1"},
+			map[string]string{
+				"/data/adb/ksu/bin/ksu_susfs show version":          "v1.5.12",
+				"/data/adb/ksu/bin/ksu_susfs show enabled_features": "CONFIG_KSU_SUSFS_SUS_PATH\nCONFIG_KSU_SUSFS_SUS_MOUNT\nCONFIG_KSU_SUSFS_TRY_UMOUNT\nCONFIG_KSU_SUSFS_SUS_KSTAT",
+				"/data/adb/ksud -V":                                 "ksud 1.0.5 (12200) next",
+			},
+		)
+		st := detectStealthStatusWithDeps(base, deps)
+		if !st.Active || st.Override != "auto" || st.ModeCode != 9 || st.ModeName != "ksu_susfs_bind_kstat" {
+			t.Fatalf("unexpected SuSFS kstat status: %+v", st)
+		}
+		if st.RootManager != "KernelSU Next" || !st.SELinuxEnforcing || !st.PropLocked || len(st.SusfsFeatures) != 4 {
+			t.Fatalf("unexpected details: %+v", st)
+		}
+	})
+
+	t.Run("SuSFS without kstat (Mode 1)", func(t *testing.T) {
+		base := t.TempDir()
+		deps := makeDeps(
+			map[string]bool{"/data/adb/ap/bin/ap_susfs": true},
+			map[string]bool{"/data/adb/ap": true},
+			nil,
+			map[string]string{
+				"/data/adb/ap/bin/ap_susfs show version":          "v1.5.2",
+				"/data/adb/ap/bin/ap_susfs show enabled_features": "CONFIG_KSU_SUSFS_SUS_PATH\nCONFIG_KSU_SUSFS_TRY_UMOUNT",
+			},
+		)
+		st := detectStealthStatusWithDeps(base, deps)
+		if st.ModeCode != 1 || st.ModeName != "ksu_susfs_bind" || st.RootManager != "APatch" {
+			t.Fatalf("unexpected Mode 1 status: %+v", st)
+		}
+	})
+
+	t.Run("KernelSU Next source umount (Mode 6)", func(t *testing.T) {
+		base := t.TempDir()
+		deps := makeDeps(
+			map[string]bool{"/data/adb/ksud": true},
+			map[string]bool{"/data/adb/ksu": true},
+			nil,
+			map[string]string{"/data/adb/ksud -V": "ksud 1.0.6-next (12500)"},
+		)
+		st := detectStealthStatusWithDeps(base, deps)
+		if st.DetectedModeCode != 6 || st.DetectedModeName != "ksu_source_mod" || st.ModeCode != 6 {
+			t.Fatalf("expected Mode 6, got %+v", st)
+		}
+	})
+
+	t.Run("ksud kernel umount (Mode 10)", func(t *testing.T) {
+		base := t.TempDir()
+		deps := makeDeps(
+			map[string]bool{"/data/adb/ksud": true},
+			map[string]bool{"/data/adb/ksu": true},
+			nil,
+			map[string]string{
+				"/data/adb/ksud -V":            "ksud 3.0.0 (22150)",
+				"/data/adb/ksud kernel --help": "Commands:\n  umount  Manage umount paths",
+			},
+		)
+		st := detectStealthStatusWithDeps(base, deps)
+		if st.DetectedModeCode != 10 || st.DetectedModeName != "ksud_kernel_umount" {
+			t.Fatalf("expected Mode 10, got %+v", st)
+		}
+	})
+
+	t.Run("Zygisk denylist handlers (Mode 2)", func(t *testing.T) {
+		base := t.TempDir()
+		deps := makeDeps(
+			map[string]bool{"/data/adb/magisk": true},
+			map[string]bool{
+				"/data/adb/modules/rezygisk":       true,
+				"/data/adb/modules/zygisk_nohello": true,
+				"/data/adb/modules/zygisksu":       true,
+			},
+			map[string]string{"/data/adb/zygisksu/denylist_enforce": "1"},
+			nil,
+		)
+		st := detectStealthStatusWithDeps(base, deps)
+		if st.DetectedModeCode != 2 || st.DetectedModeName != "zygisk_umount" || len(st.ZygiskHandlers) != 3 {
+			t.Fatalf("expected Mode 2 with 3 handlers, got %+v", st)
+		}
+	})
+
+	t.Run("no_stealth override preserves detected mode", func(t *testing.T) {
+		base := t.TempDir()
+		noStealthPath := filepath.ToSlash(filepath.Join(base, "no_stealth"))
+		deps := makeDeps(
+			map[string]bool{
+				noStealthPath:                 true,
+				"/data/adb/ksu/bin/ksu_susfs": true,
+			},
+			map[string]bool{"/data/adb/ksu": true},
+			nil,
+			map[string]string{
+				"/data/adb/ksu/bin/ksu_susfs show enabled_features": "CONFIG_KSU_SUSFS_SUS_KSTAT",
+			},
+		)
+		st := detectStealthStatusWithDeps(base, deps)
+		if st.Override != "off" || st.Active || st.ModeCode != 0 || st.DetectedModeCode != 9 {
+			t.Fatalf("expected override off + detected 9, got %+v", st)
+		}
+	})
+}
+
+func TestExecuteAPICommandSetStealth(t *testing.T) {
+	origDir := getBaseDir()
+	tmpDir := t.TempDir()
+	setBaseDir(tmpDir)
+	t.Cleanup(func() {
+		setBaseDir(origDir)
+		invalidateStealthCache()
+	})
+
+	modDir := t.TempDir()
+	propFile := filepath.Join(modDir, "module.prop")
+	if err := os.WriteFile(propFile, []byte("id=teleweb\ndescription=status: active\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TELEWEB_MOD", modDir)
+
+	on := "on"
+	res, err := executeAPICommand(apiRequest{Cmd: "setStealth", StealthMode: &on})
+	if err != nil {
+		t.Fatalf("setStealth on failed: %v", err)
+	}
+	st, ok := res.(Status)
+	if !ok || st.Stealth == nil || st.Stealth.Override != "on" || !st.Stealth.Active {
+		t.Fatalf("unexpected status after setStealth on: %#v", res)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "stealth")); err != nil {
+		t.Fatalf("expected stealth flag file: %v", err)
+	}
+	propBytes, _ := os.ReadFile(propFile)
+	if !strings.Contains(string(propBytes), "description="+defaultDescBase) {
+		t.Fatalf("expected module.prop reset to defaultDescBase, got: %s", string(propBytes))
+	}
+
+	off := "off"
+	res, err = executeAPICommand(apiRequest{Cmd: "setStealth", StealthMode: &off})
+	if err != nil {
+		t.Fatalf("setStealth off failed: %v", err)
+	}
+	st = res.(Status)
+	if st.Stealth.Override != "off" || st.Stealth.Active {
+		t.Fatalf("expected off/inactive, got %+v", st.Stealth)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "no_stealth")); err != nil {
+		t.Fatalf("expected no_stealth flag file: %v", err)
+	}
+
+	autoMode := "auto"
+	res, err = executeAPICommand(apiRequest{Cmd: "setStealth", StealthMode: &autoMode})
+	if err != nil {
+		t.Fatalf("setStealth auto failed: %v", err)
+	}
+	st = res.(Status)
+	if st.Stealth.Override != "auto" {
+		t.Fatalf("expected override auto, got %+v", st.Stealth)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "stealth")); !os.IsNotExist(err) {
+		t.Fatalf("stealth file should be removed in auto mode")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "no_stealth")); !os.IsNotExist(err) {
+		t.Fatalf("no_stealth file should be removed in auto mode")
+	}
+
+	bad := "invalid"
+	if _, err := executeAPICommand(apiRequest{Cmd: "setStealth", StealthMode: &bad}); err == nil {
+		t.Fatalf("expected error on invalid stealthMode")
+	}
+}
