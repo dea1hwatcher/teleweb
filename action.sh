@@ -41,7 +41,7 @@ case "$CMD" in
     exit 0
     ;;
   toggle|--toggle)
-    if "$MODDIR/bin/tgws" status 2>/dev/null | grep -q '"running":true'; then
+    if (timeout 4 "$MODDIR/bin/tgws" status 2>/dev/null || "$MODDIR/bin/tgws" status 2>/dev/null) | grep -q '"running":true'; then
       echo "Остановка TeleWEB..."
       "$MODDIR/bin/tgws" stop
       echo "TeleWEB остановлен ❌"
@@ -68,7 +68,7 @@ case "$CMD" in
     exit 0
     ;;
   status_json)
-    "$MODDIR/bin/tgws" status 2>/dev/null
+    timeout 4 "$MODDIR/bin/tgws" status 2>/dev/null || "$MODDIR/bin/tgws" status 2>/dev/null
     exit 0
     ;;
   ping|rtt|latency)
@@ -142,7 +142,7 @@ VER=$(grep -E '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2 || ech
 echo " Версия модуля:    $VER"
 echo " Архитектура ABI:  $(getprop ro.product.cpu.abi 2>/dev/null)"
 
-STATUS_JSON=$("$MODDIR/bin/tgws" status 2>/dev/null)
+STATUS_JSON=$(timeout 4 "$MODDIR/bin/tgws" status 2>/dev/null || "$MODDIR/bin/tgws" status 2>/dev/null)
 RUNNING=0
 if echo "$STATUS_JSON" | grep -q '"running":true'; then
   RUNNING=1

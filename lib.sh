@@ -258,18 +258,34 @@ wait_for_boot() {
   done
 
   count=0
-  while ! pm path android >/dev/null 2>&1 && [ "$count" -lt 15 ]; do
-    sleep 2
+  while [ "$count" -lt 15 ]; do
+    if [ -f /data/system/packages.list ]; then
+      break
+    fi
+    if timeout 2 pm path android >/dev/null 2>&1 || pm path android >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
     count=$((count + 1))
   done
 }
 
 # Attempt to launch WebUI via standalone managers
 launch_webui() {
-  if pm path io.github.a13e300.ksuwebui >/dev/null 2>&1; then
+  local has_ksuwebui=0
+  local has_mmrl=0
+  if [ -f /data/system/packages.list ]; then
+    grep -q "io.github.a13e300.ksuwebui" /data/system/packages.list 2>/dev/null && has_ksuwebui=1
+    grep -q "com.dergoogler.mmrl.wx" /data/system/packages.list 2>/dev/null && has_mmrl=1
+  else
+    (timeout 2 pm path io.github.a13e300.ksuwebui >/dev/null 2>&1 || pm path io.github.a13e300.ksuwebui >/dev/null 2>&1) && has_ksuwebui=1
+    (timeout 2 pm path com.dergoogler.mmrl.wx >/dev/null 2>&1 || pm path com.dergoogler.mmrl.wx >/dev/null 2>&1) && has_mmrl=1
+  fi
+
+  if [ "$has_ksuwebui" = "1" ]; then
     am start -n "io.github.a13e300.ksuwebui/.WebUIActivity" -e id "teleweb" >/dev/null 2>&1
     return 0
-  elif pm path com.dergoogler.mmrl.wx >/dev/null 2>&1; then
+  elif [ "$has_mmrl" = "1" ]; then
     am start -n "com.dergoogler.mmrl.wx/.ui.activity.webui.WebUIActivity" -e MOD_ID "teleweb" >/dev/null 2>&1
     return 0
   fi
