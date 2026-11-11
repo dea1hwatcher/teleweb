@@ -130,15 +130,21 @@ var enumWindowsCallback = syscall.NewCallback(func(hwnd, lParam uintptr) uintptr
 
 func findMainWindow() uintptr {
 	mainHwndMu.Lock()
-	defer mainHwndMu.Unlock()
 	if mainHwnd != 0 {
 		r, _, _ := procIsWindow.Call(mainHwnd)
 		if r != 0 {
-			return mainHwnd
+			h := mainHwnd
+			mainHwndMu.Unlock()
+			return h
 		}
 		mainHwnd = 0
 	}
+	mainHwndMu.Unlock()
+
 	procEnumWindows.Call(enumWindowsCallback, 0)
+
+	mainHwndMu.Lock()
+	defer mainHwndMu.Unlock()
 	if mainHwnd == 0 {
 		title, _ := windows.UTF16PtrFromString("TeleWEB")
 		h, _, _ := procFindWindow.Call(0, uintptr(unsafe.Pointer(title)))

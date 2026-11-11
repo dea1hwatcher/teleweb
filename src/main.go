@@ -1197,7 +1197,7 @@ func scanActiveTelegramSockets() []int {
 
 func resolveUIDToPackage(uid int) string {
 	// 1. Try reading /data/system/packages.list on rooted Android
-	if b, err := os.ReadFile("/data/system/packages.list"); err == nil {
+	if b, err := os.ReadFile(packagesListPath); err == nil {
 		target := strconv.Itoa(uid)
 		for _, line := range strings.Split(string(b), "\n") {
 			fields := strings.Fields(line)
@@ -1338,9 +1338,22 @@ func packageUID(pkg string) int {
 	if !isAndroidRuntime() {
 		return 0
 	}
+	// 1. Fast direct resolution from /data/system/packages.list (0 subprocesses)
+	if b, err := os.ReadFile(packagesListPath); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == pkg {
+				if n, _ := strconv.Atoi(fields[1]); n > 0 {
+					return n
+				}
+			}
+		}
+	}
+	// 2. Subprocess fallback with bounded timeout and leak protection
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U", pkg}, {"pm", "list", "packages", "-U", pkg}} {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		c.WaitDelay = 500 * time.Millisecond
 		setCmdNoWindow(c)
 		out, err := c.CombinedOutput()
 		cancel()
@@ -1354,8 +1367,9 @@ func packageUID(pkg string) int {
 			}
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	c := exec.CommandContext(ctx, "dumpsys", "package", pkg)
+	c.WaitDelay = 500 * time.Millisecond
 	setCmdNoWindow(c)
 	out, _ := c.CombinedOutput()
 	cancel()
@@ -1375,9 +1389,24 @@ func findPackageAPK(pkg string) string {
 	if !isAndroidRuntime() {
 		return ""
 	}
+	// 1. Fast direct filesystem probe on Android (0 subprocesses)
+	for _, pattern := range []string{
+		"/data/app/*/" + pkg + "*/base.apk",
+		"/data/app/" + pkg + "*/base.apk",
+		"/system/app/" + pkg + "*/base.apk",
+		"/system/priv-app/" + pkg + "*/base.apk",
+		"/product/app/" + pkg + "*/base.apk",
+		"/product/priv-app/" + pkg + "*/base.apk",
+	} {
+		if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+			return matches[0]
+		}
+	}
+	// 2. Fallback to cmd/pm with bounded timeout and pipe leak guard
 	for _, cmd := range [][]string{{"cmd", "package", "path", pkg}, {"pm", "path", pkg}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		c.WaitDelay = 500 * time.Millisecond
 		setCmdNoWindow(c)
 		out, err := c.CombinedOutput()
 		cancel()
@@ -1618,16 +1647,15 @@ func parsePMPackagesListing(out string) []pmPackage {
 	var res []pmPackage
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		var rest, apkPath string
 		if strings.HasPrefix(line, "package:") {
-			rest = strings.TrimPrefix(line, "package:")
-		} else {
-			sep := strings.LastIndex(line, "=")
-			if sep < 0 {
-				continue
-			}
+			line = strings.TrimPrefix(line, "package:")
+		}
+		var rest, apkPath string
+		if sep := strings.LastIndex(line, "="); sep >= 0 {
 			apkPath = line[:sep]
 			rest = line[sep+1:]
+		} else {
+			rest = line
 		}
 		fields := strings.Fields(rest)
 		if len(fields) == 0 || fields[0] == "" {
@@ -1647,9 +1675,56 @@ func parsePMPackagesListing(out string) []pmPackage {
 	return res
 }
 
+var packagesListPath = "/data/system/packages.list"
+
+func discoverAppsFromSystem() ([]App, []int) {
+	listBytes, err := os.ReadFile(packagesListPath)
+	if err != nil {
+		return nil, nil
+	}
+	var apps []App
+	var uids []int
+	seen := map[int]bool{}
+
+	for _, line := range strings.Split(string(listBytes), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pkg := fields[0]
+		uid, err := strconv.Atoi(fields[1])
+		if err != nil || uid <= 0 || seen[uid] {
+			continue
+		}
+		name, wanted := telegramClientName(pkg, "")
+		if !wanted {
+			lower := strings.ToLower(pkg)
+			if strings.Contains(lower, "telegram") || strings.Contains(lower, "nekogram") ||
+				strings.Contains(lower, "nemogram") || strings.Contains(lower, "challegram") ||
+				strings.Contains(lower, "ayugram") || strings.Contains(lower, "forkgram") {
+				name = humanizePackageName(pkg)
+				wanted = true
+			}
+		}
+		if wanted {
+			apkPath := findPackageAPK(pkg)
+			normalIco, monetIco := extractAPKIcons(apkPath)
+			apps = append(apps, App{Name: name, Pkg: pkg, UID: uid, IconNormal: normalIco, IconMonet: monetIco})
+			uids = append(uids, uid)
+			seen[uid] = true
+		}
+	}
+
+	return apps, uids
+}
+
 func discoverApps() ([]App, []int) {
 	if !isAndroidRuntime() {
 		return nil, nil
+	}
+	// 1. Direct system DB read: instant, zero subprocesses, zero binder IPC
+	if apps, uids := discoverAppsFromSystem(); len(apps) > 0 {
+		return apps, uids
 	}
 	var apps []App
 	var uids []int
@@ -1663,8 +1738,9 @@ func discoverApps() ([]App, []int) {
 		{"cmd", "package", "list", "packages", "-U"},
 		{"pm", "list", "packages", "-U"},
 	} {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		c.WaitDelay = 500 * time.Millisecond
 		setCmdNoWindow(c)
 		out, err := c.CombinedOutput()
 		cancel()
