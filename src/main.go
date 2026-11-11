@@ -370,6 +370,30 @@ type Status struct {
 	H2MediaEnabled    bool           `json:"h2MediaEnabled"`
 	DC203DirectTCP    bool           `json:"dc203DirectTcp"`
 	Redirector        bool           `json:"redirector"`
+	IsAndroid         bool           `json:"isAndroid"`
+	Stealth           *StealthStatus `json:"stealth,omitempty"`
+}
+
+// StealthStatus описывает активный режим скрытия модуля (таксономия bindhosts)
+// и обнаруженную подсистему скрытия на устройстве Android.
+type StealthStatus struct {
+	Active           bool     `json:"active"`
+	Override         string   `json:"override"` // "auto" | "on" | "off"
+	ModeCode         int      `json:"modeCode"` // bindhosts: 0, 1, 2, 6, 9, 10
+	ModeName         string   `json:"modeName"`
+	DetectedModeCode int      `json:"detectedModeCode"`
+	DetectedModeName string   `json:"detectedModeName"`
+	RootManager      string   `json:"rootManager,omitempty"`
+	RootVersion      string   `json:"rootVersion,omitempty"`
+	SusfsFound       bool     `json:"susfsFound"`
+	SusfsBin         string   `json:"susfsBin,omitempty"`
+	SusfsVersion     string   `json:"susfsVersion,omitempty"`
+	SusfsFeatures    []string `json:"susfsFeatures,omitempty"`
+	KsudUmount       bool     `json:"ksudUmount"`
+	KsuSourceUmount  bool     `json:"ksuSourceUmount"`
+	ZygiskHandlers   []string `json:"zygiskHandlers,omitempty"`
+	PropLocked       bool     `json:"propLocked"`
+	SELinuxEnforcing bool     `json:"selinuxEnforcing"`
 }
 
 type apiRequest struct {
@@ -386,6 +410,7 @@ type apiRequest struct {
 	ForceTestDC    *bool   `json:"forceTestDc,omitempty"`
 	H2MediaEnabled *bool   `json:"h2MediaEnabled,omitempty"`
 	DC203DirectTCP *bool   `json:"dc203DirectTcp,omitempty"`
+	StealthMode    *string `json:"stealthMode,omitempty"`
 }
 
 func envOr(k, d string) string {
@@ -416,17 +441,33 @@ var (
 	lastWrittenDesc string
 )
 
-func getModulePropPath() string {
-	candidates := []string{
+var susfsCandidatePaths = []string{
+	"/data/adb/ksu/bin/ksu_susfs",
+	"/data/adb/ap/bin/ksu_susfs",
+	"/data/adb/ap/bin/ap_susfs",
+	"/data/adb/bin/ksu_susfs",
+	"/system/bin/ksu_susfs",
+}
+
+func getModuleDir() string {
+	for _, c := range []string{
 		os.Getenv("TELEWEB_MOD"),
 		"/data/adb/modules/teleweb",
 		"/data/adb/modules_update/teleweb",
-	}
-	for _, c := range candidates {
+	} {
 		if c == "" {
 			continue
 		}
-		p := filepath.Join(c, "module.prop")
+		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+			return c
+		}
+	}
+	return ""
+}
+
+func getModulePropPath() string {
+	if modDir := getModuleDir(); modDir != "" {
+		p := filepath.Join(modDir, "module.prop")
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			return p
 		}
@@ -450,25 +491,375 @@ func currentStatusDesc() string {
 	return "status: active ✅ | " + mode + " · DC1-DC5"
 }
 
+type stealthProbeDeps struct {
+	isAndroid bool
+	stat      func(string) (os.FileInfo, error)
+	readFile  func(string) ([]byte, error)
+	runCmd    func(timeout time.Duration, bin string, args ...string) (string, error)
+}
+
+type stealthEnvSnapshot struct {
+	rootManager      string
+	rootVersion      string
+	susfsFound       bool
+	susfsBin         string
+	susfsVersion     string
+	susfsFeatures    []string
+	hasKstat         bool
+	ksudUmount       bool
+	ksuSourceUmount  bool
+	zygiskHandlers   []string
+	selinuxEnforcing bool
+}
+
+var (
+	stealthCacheMu sync.Mutex
+	stealthCache   struct {
+		valid     bool
+		expiresAt time.Time
+		snap      stealthEnvSnapshot
+	}
+	reKSUVerParen = regexp.MustCompile(`\((\d+)\)`)
+)
+
+func runProbeCmd(timeout time.Duration, bin string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Stdin = nil
+	cmd.WaitDelay = 500 * time.Millisecond
+	setCmdNoWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func defaultStealthProbeDeps() stealthProbeDeps {
+	return stealthProbeDeps{
+		isAndroid: isAndroidRuntime(),
+		stat:      os.Stat,
+		readFile:  os.ReadFile,
+		runCmd:    runProbeCmd,
+	}
+}
+
+func invalidateStealthCache() {
+	stealthCacheMu.Lock()
+	stealthCache.valid = false
+	stealthCacheMu.Unlock()
+}
+
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			if len(trimmed) > 64 {
+				return trimmed[:64]
+			}
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func parseKSUVersionCode(s string) int {
+	if m := reKSUVerParen.FindStringSubmatch(s); len(m) == 2 {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return n
+		}
+	}
+	for _, tok := range strings.FieldsFunc(s, func(r rune) bool {
+		return r < '0' || r > '9'
+	}) {
+		if n, err := strconv.Atoi(tok); err == nil && n >= 10000 {
+			return n
+		}
+	}
+	return 0
+}
+
+func probeStealthEnv(deps stealthProbeDeps) stealthEnvSnapshot {
+	var snap stealthEnvSnapshot
+	if !deps.isAndroid {
+		return snap
+	}
+
+	if b, err := deps.readFile("/sys/fs/selinux/enforce"); err == nil {
+		snap.selinuxEnforcing = strings.TrimSpace(string(b)) == "1"
+	}
+
+	for _, p := range susfsCandidatePaths {
+		if fi, err := deps.stat(p); err == nil && !fi.IsDir() {
+			snap.susfsFound = true
+			snap.susfsBin = p
+			break
+		}
+	}
+	if snap.susfsFound {
+		if vOut, _ := deps.runCmd(400*time.Millisecond, snap.susfsBin, "show", "version"); vOut != "" {
+			snap.susfsVersion = firstNonEmptyLine(vOut)
+		}
+		featOut, _ := deps.runCmd(400*time.Millisecond, snap.susfsBin, "show", "enabled_features")
+		if featOut == "" {
+			featOut, _ = deps.runCmd(400*time.Millisecond, snap.susfsBin)
+		}
+		featureTable := []struct {
+			token string
+			alt   string
+			name  string
+			kstat bool
+		}{
+			{"CONFIG_KSU_SUSFS_SUS_PATH", "add_sus_path", "add_sus_path", false},
+			{"CONFIG_KSU_SUSFS_SUS_MOUNT", "add_sus_mount", "add_sus_mount", false},
+			{"CONFIG_KSU_SUSFS_TRY_UMOUNT", "add_try_umount", "add_try_umount", false},
+			{"CONFIG_KSU_SUSFS_SUS_KSTAT", "add_sus_kstat", "add_sus_kstat", true},
+		}
+		for _, item := range featureTable {
+			if strings.Contains(featOut, item.token) || strings.Contains(featOut, item.alt) {
+				snap.susfsFeatures = append(snap.susfsFeatures, item.name)
+				if item.kstat {
+					snap.hasKstat = true
+				}
+			}
+		}
+	}
+
+	statExists := func(p string) bool {
+		_, err := deps.stat(p)
+		return err == nil
+	}
+	statIsFile := func(p string) bool {
+		fi, err := deps.stat(p)
+		return err == nil && !fi.IsDir()
+	}
+
+	if statExists("/data/adb/ksud") || statExists("/data/adb/ksu") {
+		snap.rootManager = "KernelSU"
+		if statIsFile("/data/adb/ksud") {
+			vOut, _ := deps.runCmd(350*time.Millisecond, "/data/adb/ksud", "-V")
+			if vOut == "" {
+				vOut, _ = deps.runCmd(350*time.Millisecond, "/data/adb/ksud", "--version")
+			}
+			snap.rootVersion = firstNonEmptyLine(vOut)
+			lowerV := strings.ToLower(vOut)
+			if strings.Contains(lowerV, "next") || statExists("/data/adb/ksu/.ksu_next") {
+				snap.rootManager = "KernelSU Next"
+			} else if strings.Contains(lowerV, "suki") {
+				snap.rootManager = "SukiSU"
+			}
+			verCode := parseKSUVersionCode(vOut)
+			if strings.Contains(snap.rootManager, "Next") && verCode >= 12183 {
+				snap.ksuSourceUmount = true
+			}
+			if verCode >= 22106 {
+				snap.ksudUmount = true
+			} else if kHelp, _ := deps.runCmd(350*time.Millisecond, "/data/adb/ksud", "kernel", "--help"); strings.Contains(kHelp, "umount") {
+				snap.ksudUmount = true
+			}
+		}
+	} else if statExists("/data/adb/ap") || statExists("/data/adb/apd") {
+		snap.rootManager = "APatch"
+	} else if statExists("/data/adb/magisk") || statExists("/sbin/magisk") {
+		snap.rootManager = "Magisk"
+	}
+
+	zygiskModules := []struct {
+		id           string
+		label        string
+		checkEnforce bool
+	}{
+		{"rezygisk", "ReZygisk", false},
+		{"zygisk-assistant", "Zygisk-Assistant", false},
+		{"zygisk_nohello", "NoHello", false},
+		{"neozygisk", "NeoZygisk", false},
+		{"NeoZygisk", "NeoZygisk", false},
+		{"zygisksu", "ZygiskNext", true},
+		{"shamiko", "Shamiko", false},
+	}
+	seenHandler := map[string]bool{}
+	for _, zm := range zygiskModules {
+		if seenHandler[zm.label] {
+			continue
+		}
+		modPath := "/data/adb/modules/" + zm.id
+		fi, err := deps.stat(modPath)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		if statExists(modPath+"/disable") || statExists(modPath+"/remove") {
+			continue
+		}
+		if zm.checkEnforce {
+			b, err := deps.readFile("/data/adb/zygisksu/denylist_enforce")
+			if err != nil {
+				continue
+			}
+			v, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+			if v <= 0 {
+				continue
+			}
+		}
+		seenHandler[zm.label] = true
+		snap.zygiskHandlers = append(snap.zygiskHandlers, zm.label)
+	}
+	return snap
+}
+
+func cachedStealthEnv() stealthEnvSnapshot {
+	deps := defaultStealthProbeDeps()
+	if !deps.isAndroid {
+		return stealthEnvSnapshot{}
+	}
+	now := time.Now()
+	stealthCacheMu.Lock()
+	if stealthCache.valid && now.Before(stealthCache.expiresAt) {
+		snap := stealthCache.snap
+		stealthCacheMu.Unlock()
+		return snap
+	}
+	stealthCacheMu.Unlock()
+
+	snap := probeStealthEnv(deps)
+	stealthCacheMu.Lock()
+	stealthCache.snap = snap
+	stealthCache.expiresAt = time.Now().Add(30 * time.Second)
+	stealthCache.valid = true
+	stealthCacheMu.Unlock()
+	return snap
+}
+
+func resolveStealthStatus(base string, snap stealthEnvSnapshot, statFn func(string) (os.FileInfo, error)) *StealthStatus {
+	override := "auto"
+	if _, err := statFn(filepath.Join(base, "stealth")); err == nil {
+		override = "on"
+	} else if _, err := statFn(filepath.Join(base, "no_stealth")); err == nil {
+		override = "off"
+	}
+
+	detCode, detName := 0, "Default"
+	switch {
+	case snap.susfsFound && snap.hasKstat:
+		detCode, detName = 9, "ksu_susfs_bind_kstat"
+	case snap.susfsFound:
+		detCode, detName = 1, "ksu_susfs_bind"
+	case snap.ksuSourceUmount:
+		detCode, detName = 6, "ksu_source_mod"
+	case snap.ksudUmount:
+		detCode, detName = 10, "ksud_kernel_umount"
+	case len(snap.zygiskHandlers) > 0:
+		detCode, detName = 2, "zygisk_umount"
+	}
+
+	st := &StealthStatus{
+		Override:         override,
+		DetectedModeCode: detCode,
+		DetectedModeName: detName,
+		RootManager:      snap.rootManager,
+		RootVersion:      snap.rootVersion,
+		SusfsFound:       snap.susfsFound,
+		SusfsBin:         snap.susfsBin,
+		SusfsVersion:     snap.susfsVersion,
+		SusfsFeatures:    snap.susfsFeatures,
+		KsudUmount:       snap.ksudUmount,
+		KsuSourceUmount:  snap.ksuSourceUmount,
+		ZygiskHandlers:   snap.zygiskHandlers,
+		SELinuxEnforcing: snap.selinuxEnforcing,
+	}
+
+	switch override {
+	case "on":
+		st.Active = true
+		st.PropLocked = true
+		st.ModeCode = detCode
+		st.ModeName = detName
+	case "off":
+		st.Active = false
+		st.PropLocked = false
+		st.ModeCode = 0
+		st.ModeName = "Default"
+	default:
+		st.Active = snap.susfsFound
+		st.PropLocked = st.Active
+		st.ModeCode = detCode
+		st.ModeName = detName
+	}
+	return st
+}
+
+func detectStealthStatusWithDeps(base string, deps stealthProbeDeps) *StealthStatus {
+	return resolveStealthStatus(base, probeStealthEnv(deps), deps.stat)
+}
+
+func detectStealthStatus() *StealthStatus {
+	return resolveStealthStatus(getBaseDir(), cachedStealthEnv(), os.Stat)
+}
+
 func isStealthMode() bool {
-	if _, err := os.Stat(filepath.Join(baseDir, "stealth")); err == nil {
+	if _, err := os.Stat(path("stealth")); err == nil {
 		return true
 	}
-	if _, err := os.Stat(filepath.Join(baseDir, "no_stealth")); err == nil {
+	if _, err := os.Stat(path("no_stealth")); err == nil {
 		return false
 	}
-	for _, p := range []string{
-		"/data/adb/ksu/bin/ksu_susfs",
-		"/data/adb/ap/bin/ksu_susfs",
-		"/data/adb/ap/bin/ap_susfs",
-		"/data/adb/bin/ksu_susfs",
-		"/system/bin/ksu_susfs",
-	} {
+	for _, p := range susfsCandidatePaths {
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 			return true
 		}
 	}
 	return false
+}
+
+func applyHidingRulesShell() {
+	if !isAndroidRuntime() {
+		return
+	}
+	modDir := getModuleDir()
+	if modDir == "" {
+		return
+	}
+	libPath := filepath.Join(modDir, "lib.sh")
+	if _, err := os.Stat(libPath); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	script := fmt.Sprintf(`. %q && apply_susfs_hiding %q`, libPath, modDir)
+	cmd := exec.CommandContext(ctx, "/system/bin/sh", "-c", script)
+	cmd.Stdin = nil
+	cmd.WaitDelay = 500 * time.Millisecond
+	if out, err := cmd.CombinedOutput(); err != nil {
+		logf("stealth: apply_susfs_hiding failed: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+}
+
+func setStealthMode(mode string) error {
+	norm := strings.ToLower(strings.TrimSpace(mode))
+	ensureDir()
+	stealthFile := path("stealth")
+	noStealthFile := path("no_stealth")
+	switch norm {
+	case "auto":
+		_ = os.Remove(stealthFile)
+		_ = os.Remove(noStealthFile)
+	case "on":
+		_ = os.Remove(noStealthFile)
+		if err := os.WriteFile(stealthFile, []byte("1\n"), 0600); err != nil {
+			return err
+		}
+	case "off":
+		_ = os.Remove(stealthFile)
+		if err := os.WriteFile(noStealthFile, []byte("1\n"), 0600); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("invalid stealth mode: %s", mode)
+	}
+	invalidateStealthCache()
+	if isStealthMode() {
+		updateModuleDescription(defaultDescBase)
+		applyHidingRulesShell()
+	} else {
+		updateModuleDescription(currentStatusDesc())
+	}
+	return nil
 }
 
 func updateModuleDescription(statusText string) {
@@ -3325,6 +3716,8 @@ func buildStatus(apps []App) Status {
 		H2MediaEnabled: readH2MediaEnabled(),
 		DC203DirectTCP: readDC203DirectTCP(),
 		Redirector:     localRedirectorHealthy(),
+		IsAndroid:      isAndroidRuntime(),
+		Stealth:        detectStealthStatus(),
 		LastCFPoP: func() string {
 			if p := lastCFPoP.Load(); p != nil {
 				return *p
@@ -3584,22 +3977,41 @@ func executeAPICommand(q apiRequest) (any, error) {
 		diag["log"] = redactSensitive(string(logContent))
 		return diag, nil
 	case "netRenew", "net_renew":
-		modDir := os.Getenv("TELEWEB_MOD")
-		if modDir == "" {
-			modDir = "/data/adb/modules/teleweb"
-		}
-		actionPath := filepath.Join(modDir, "action.sh")
-		if _, err := os.Stat(actionPath); err == nil {
-			cmdCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(cmdCtx, "/system/bin/sh", actionPath, "net-renew")
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				return map[string]any{"ok": false, "output": string(out), "error": err.Error()}, nil
+		modDir := getModuleDir()
+		if modDir != "" {
+			actionPath := filepath.Join(modDir, "action.sh")
+			if _, err := os.Stat(actionPath); err == nil {
+				cmdCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(cmdCtx, "/system/bin/sh", actionPath, "net-renew")
+				cmd.Stdin = nil
+				cmd.WaitDelay = 500 * time.Millisecond
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					return map[string]any{"ok": false, "output": string(out), "error": err.Error()}, nil
+				}
+				return map[string]any{"ok": true, "output": string(out)}, nil
 			}
-			return map[string]any{"ok": true, "output": string(out)}, nil
 		}
 		return map[string]any{"ok": false, "error": "net-renew is supported on Android with action.sh only"}, nil
+	case "setStealth", "set_stealth":
+		mode := ""
+		if q.StealthMode != nil {
+			mode = *q.StealthMode
+		} else if q.Target != nil {
+			mode = *q.Target
+		}
+		if err := setStealthMode(mode); err != nil {
+			return nil, err
+		}
+		return status(), nil
+	case "applyStealth", "apply_stealth":
+		invalidateStealthCache()
+		if isStealthMode() {
+			updateModuleDescription(defaultDescBase)
+			applyHidingRulesShell()
+		}
+		return status(), nil
 	case "cftest", "cfTest", "test_cf":
 		target := ""
 		if q.Target != nil {
