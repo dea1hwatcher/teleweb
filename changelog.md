@@ -1,3 +1,15 @@
+### Изменения в v0.2.2:
+
+- **Индикатор и панель режима скрытия в стиле bindhosts (WebUI + Go API)**:
+  - В бэкенд (`detectStealthStatus`, `StealthStatus`) добавлено автоматическое определение активного механизма скрытия по таксономии **bindhosts**: `Режим 9` (`ksu_susfs_bind_kstat`), `Режим 1` (`ksu_susfs_bind`), `Режим 10` (`ksud_kernel_umount`), `Режим 6` (`ksu_source_mod`), `Режим 2` (`zygisk_umount` для ReZygisk / NoHello / ZygiskNext / Zygisk-Assistant / NeoZygisk) и `Режим 0` (`Default`), а также определение Root-менеджера (`KernelSU Next` / `KernelSU` / `SukiSU` / `APatch` / `Magisk`), фич SuSFS и статуса SELinux.
+  - В верхнюю панель WebUI (только на Android) добавлена кнопка-пилюля `#mode-btn` с номером активного режима, а также нижняя шторка управления (`#stealth-sheet`, также открывается 5 нажатиями на карточку статуса), пункт в «Настройках» и строка статуса скрытия в «Экспресс-диагностике».
+  - Добавлены API-команды `setStealth` (`auto` / `on` / `off`) и `applyStealth` для переключения политики скрытия (`stealth` / `no_stealth`), заморозки описания в `module.prop` и повторного применения правил SuSFS без перезагрузки демона.
+- **Устранение зависания на Android 17 + KernelSU Next (`App Discovery Freeze Fix`)**:
+  - Определение UID и путей APK переведено в первую очередь на прямое чтение `/data/system/packages.list` и сканирование `/data/app/.../base.apk` без запуска блокирующих подпроцессов `pm` / `cmd package`.
+  - В `lib.sh`, `action.sh` и `src/main.go` для запасных вызовов подпроцессов добавлены жёсткие таймауты (`timeout` / `WaitDelay = 500ms`), устраняющие зависание WebUI при проверке архитектуры и запуске транспорта.
+- **Исправление запуска нативного GUI на Windows (`Win32 GUI Deadlock Fix`)**:
+  - Устранён дедлок на `mainHwndMu` при инициализации окна и проверке одиночного экземпляра в `win32_gui_windows.go`.
+
 ### Изменения в v0.2.1:
 
 - **Исключение служебных зондов связности (Fix Non-MTProto Probe Loop)**:
