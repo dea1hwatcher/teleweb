@@ -1158,7 +1158,7 @@ func renderDCMatrixCard(gtx layout.Context, th *material.Theme, s Status) layout
 						}),
 						layout.Rigid(layout.Spacer{Width: unit.Dp(20)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return renderMetaChip(gtx, th, "Ошибки перехвата", strconv.FormatInt(s.Fail, 10))
+							return renderMetaChip(gtx, th, "Сбои WSS", strconv.FormatInt(s.Fail, 10))
 						}),
 					)
 				}),
