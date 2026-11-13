@@ -2,6 +2,8 @@
 *.zip
 *.tmp
 *.log
+__pycache__/
+*.pyc
 src/teleweb
 src/teleweb.exe
 bin/
