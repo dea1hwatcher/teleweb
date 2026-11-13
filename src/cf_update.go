@@ -176,31 +176,72 @@ func refreshCFDomains(ctx context.Context) error {
 
 func startCFDomainsUpdater(ctx context.Context) {
 	loadRemoteCFDomainsCache()
+	go runCFDomainsUpdater(ctx, refreshCFDomains, 15*time.Second, 15*time.Second, 1*time.Hour, 1*time.Hour)
+}
 
-	go func() {
-		// Initial fetch shortly after boot, once network is likely up.
+func runCFDomainsUpdater(ctx context.Context, refreshFn func(context.Context) error, initialDelay, initialRetryDelay, maxRetryDuration, steadyInterval time.Duration) {
+	// Initial fetch shortly after boot, once network is likely up.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(initialDelay):
+	}
+
+	err := refreshFn(ctx)
+	if err == nil {
+		runSteadyCFDomainsLoop(ctx, refreshFn, steadyInterval)
+		return
+	}
+
+	logf("cf-domains: initial update failed: %v; starting early-boot retry backoff...", err)
+
+	// Exponential backoff retry loop (handles early boot before mobile/Wi-Fi uplink is ready)
+	retryDelay := initialRetryDelay
+	maxDelay := 5 * time.Minute
+	if initialRetryDelay < time.Second {
+		maxDelay = 100 * time.Millisecond
+	}
+	deadline := time.Now().Add(maxRetryDuration)
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(15 * time.Second):
-			if err := refreshCFDomains(ctx); err != nil {
-				logf("cf-domains: initial update failed: %v; falling back to local/embedded list", err)
-			}
+		case <-time.After(retryDelay):
 		}
 
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := refreshCFDomains(ctx); err != nil {
-					logf("cf-domains: scheduled update failed: %v", err)
-				}
+		if err := refreshFn(ctx); err == nil {
+			logf("cf-domains: early-boot retry succeeded; switching to steady refresh schedule")
+			break
+		}
+
+		if time.Now().After(deadline) {
+			logf("cf-domains: early-boot retry window expired; falling back to local pool until scheduled refresh")
+			break
+		}
+
+		retryDelay *= 2
+		if retryDelay > maxDelay {
+			retryDelay = maxDelay
+		}
+	}
+
+	runSteadyCFDomainsLoop(ctx, refreshFn, steadyInterval)
+}
+
+func runSteadyCFDomainsLoop(ctx context.Context, refreshFn func(context.Context) error, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := refreshFn(ctx); err != nil {
+				logf("cf-domains: scheduled update failed: %v", err)
 			}
 		}
-	}()
+	}
 }
 
 func getDynamicCFDomains() []string {

@@ -431,10 +431,11 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		}
 	}()
 
-	// Unblock client read loop immediately when the bridge is cancelled
+	// Unblock client read loop and teardown socket immediately when the bridge is cancelled
 	go func() {
 		<-bridgeCtx.Done()
 		_ = c.SetReadDeadline(time.Now())
+		_ = c.Close()
 	}()
 
 	// Bound concurrent H2 POSTs. Without a cap, a media upload fans out
@@ -503,6 +504,12 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 			chunk := buf[:nr]
 			framer.plain = append(framer.plain, chunk...)
 			framer.stream.XORKeyStream(framer.plain[prevPlain:], chunk)
+
+			if len(framer.plain) > maxWSFrame {
+				logf("H2 media bridge: buffered plain payload exceeds %d bytes; closing session", maxWSFrame)
+				bridgeCancel()
+				break
+			}
 
 			_, packets, perr := framer.popPackets()
 			if perr != nil {
