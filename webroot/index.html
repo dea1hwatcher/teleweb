@@ -32,7 +32,7 @@
   --ts-body-small: 12px;      --lh-body-small: 16px;     --tracking-body-small: 0.4px;
   --ts-label-large: 14px;     --lh-label-large: 20px;    --tracking-label-large: 0.1px;
   --ts-label-medium: 12px;    --lh-label-medium: 16px;   --tracking-label-medium: 0.5px;
-  --ts-label-small: 11px;     --lh-label-small: 16px;    --tracking-label-small: 0.5px;
+  --ts-label-small: 12px;     --lh-label-small: 16px;    --tracking-label-small: 0.5px;
 
   /* Weights */
   --w-regular: 400; --w-medium: 500; --w-emph: 600; --w-bold: 700;
@@ -190,6 +190,7 @@ html, body {
   background: var(--md-sys-color-surface);
   color: var(--md-sys-color-on-surface);
   font-family: var(--md-font);
+  font-size: 15px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   min-height: 100dvh;
@@ -688,10 +689,10 @@ body.swiping .state::after {
 }
 .dc-card span {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: var(--w-medium);
   color: var(--md-sys-color-on-surface-variant);
-  line-height: 14px;
+  line-height: 16px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1309,7 +1310,7 @@ body.swiping .state::after {
   letter-spacing: -0.02em;
 }
 .stat-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--md-sys-color-outline);
   margin-top: 2px;
 }
@@ -1903,7 +1904,7 @@ body.swiping .state::after {
   background: var(--md-sys-color-primary);
 }
 .mode-badge {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: var(--w-bold);
   padding: 2px 8px;
   border-radius: var(--shape-full);
@@ -1936,7 +1937,7 @@ body.swiping .state::after {
 }
 .stealth-ref-row code {
   font-family: var(--md-font-code);
-  font-size: 11px;
+  font-size: 12px;
   opacity: .9;
 }
 
@@ -2095,17 +2096,17 @@ body.swiping .state::after {
       <div class="card" style="padding:14px 16px;margin-bottom:8px;">
         <h2 class="subhead" style="margin-bottom:8px;">Быстрые профили в 1 клик</h2>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
-          <button type="button" class="btn text" id="btnPresetEco" style="font-size:12px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+          <button type="button" class="btn text" id="btnPresetEco" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
             <span>🔋 Эко</span>
-            <span style="font-size:10px;color:var(--outline);">Батарея</span>
+            <span style="font-size:12px;color:var(--outline);">Батарея</span>
           </button>
-          <button type="button" class="btn text" id="btnPresetTurbo" style="font-size:12px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+          <button type="button" class="btn text" id="btnPresetTurbo" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
             <span>🚀 Турбо</span>
-            <span style="font-size:10px;color:var(--outline);">H2 Медиа</span>
+            <span style="font-size:12px;color:var(--outline);">H2 Медиа</span>
           </button>
-          <button type="button" class="btn text" id="btnPresetBypass" style="font-size:12px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+          <button type="button" class="btn text" id="btnPresetBypass" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
             <span>🛡️ Обход</span>
-            <span style="font-size:10px;color:var(--outline);">Анти-блок</span>
+            <span style="font-size:12px;color:var(--outline);">Анти-блок</span>
           </button>
         </div>
       </div>
@@ -2115,10 +2116,10 @@ body.swiping .state::after {
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
           <h2 class="subhead" style="margin:0;">Сеть и задержка (RTT)</h2>
           <div style="display:flex;gap:6px;">
-            <button type="button" class="btn text" id="btnNetRenew" style="font-size:12px;padding:4px 8px;height:30px;min-height:30px;" title="Сменить IP сотовой вышки">
+            <button type="button" class="btn text" id="btnNetRenew" style="font-size:12px;padding:6px 12px;min-height:36px;" title="Сменить IP сотовой вышки">
               Сменить IP
             </button>
-            <button type="button" class="btn text" id="btnTestLatency" style="font-size:12px;padding:4px 8px;height:30px;min-height:30px;">
+            <button type="button" class="btn text" id="btnTestLatency" style="font-size:12px;padding:6px 12px;min-height:36px;">
               Замер RTT
             </button>
           </div>
@@ -4426,7 +4427,7 @@ if ($("btnTestLatency")) {
 
           html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;">' +
                   '<span>' + esc(host) + '</span>' +
-                  '<span style="padding:2px 8px;border-radius:8px;font-weight:600;font-size:11px;background:' + badgeBg + ';color:' + badgeColor + ';">' + esc(val) + '</span>' +
+                  '<span style="padding:2px 8px;border-radius:8px;font-weight:600;font-size:12px;font-variant-numeric:tabular-nums;background:' + badgeBg + ';color:' + badgeColor + ';">' + esc(val) + '</span>' +
                   '</div>';
         }
       }
@@ -4810,7 +4811,7 @@ function renderStealthSheet() {
       <div class="stealth-ref-row ${isCurrent ? "current" : ""}">
         <div style="min-width:0;">
           <strong>Режим ${m.code}</strong> · <code>${esc(m.name)}</code>
-          <div style="opacity:.82;font-size:11px;">${esc(m.desc)}</div>
+          <div style="opacity:.82;font-size:12px;line-height:16px;">${esc(m.desc)}</div>
         </div>
         ${tag ? `<span class="mode-badge">${tag}</span>` : ""}
       </div>
