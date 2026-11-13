@@ -2990,7 +2990,7 @@ func TestStatusSnapshotsDifferOnlyInAppsAndLog(t *testing.T) {
 	// the stable half is compared; the values themselves are asserted above.
 	api.Apps, api.Log = nil, ""
 	for _, s := range []*Status{&api, &persisted} {
-		s.Uptime, s.Active, s.WS, s.Fail = 0, 0, 0, 0
+		s.Uptime, s.Active, s.WS, s.Fail, s.NonMTProto = 0, 0, 0, 0, 0
 		s.DC = nil
 		s.MemNowBytes, s.MemPeakBytes = 0, 0
 		s.TrafficUpBytes, s.TrafficDownBytes, s.TrafficTotalBytes = 0, 0, 0
@@ -5969,5 +5969,90 @@ func TestExecuteAPICommandSetStealth(t *testing.T) {
 	bad := "invalid"
 	if _, err := executeAPICommand(apiRequest{Cmd: "setStealth", StealthMode: &bad}); err == nil {
 		t.Fatalf("expected error on invalid stealthMode")
+	}
+}
+
+func TestClassifyNonMTProtoStream(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte
+		expected string
+	}{
+		{"empty", []byte{}, "zero_bytes"},
+		{"all_zeros_16", make([]byte, 16), "zero_bytes"},
+		{"all_zeros_64", make([]byte, 64), "zero_bytes"},
+		{"http_get", []byte("GET / HTTP/1.1\r\nHost: 127.0.0.1:17841\r\n\r\n"), "plain_http"},
+		{"http_post", []byte("POST /api HTTP/1.1\r\nHost: 127.0.0.1:17841\r\n\r\n"), "plain_http"},
+		{"http_head", []byte("HEAD /test HTTP/1.1\r\n\r\n"), "plain_http"},
+		{"http_options", []byte("OPTIONS * HTTP/1.1\r\n\r\n"), "plain_http"},
+		{"http_connect", []byte("CONNECT 149.154.167.50:443 HTTP/1.1\r\n\r\n"), "plain_http"},
+		{"http2_preface", []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), "plain_http"},
+		{"tls_client_hello", []byte{0x16, 0x03, 0x01, 0x00, 0x50, 0x01, 0x00, 0x00}, "tls_client_hello"},
+		{"tls_handshake_other", []byte{0x16, 0x03, 0x03, 0x00, 0x10, 0x02, 0x00, 0x00}, "tls_record"},
+		{"tls_alert", []byte{0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x30}, "tls_record"},
+		{"tls_app_data", []byte{0x17, 0x03, 0x03, 0x00, 0x20, 0xaa, 0xbb}, "tls_record"},
+		{"tls_ccs", []byte{0x14, 0x03, 0x03, 0x00, 0x01, 0x01}, "tls_record"},
+		{"random_binary", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}, "unrecognized_binary"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyNonMTProtoStream(tc.input)
+			if got != tc.expected {
+				t.Errorf("classifyNonMTProtoStream(%s) = %q, want %q", tc.name, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestNonMTProtoStreamIsolationFromFailCnt(t *testing.T) {
+	origFail := atomic.LoadInt64(&failCnt)
+	origNonMT := atomic.LoadInt64(&nonMTProtoCnt)
+	defer func() {
+		atomic.StoreInt64(&failCnt, origFail)
+		atomic.StoreInt64(&nonMTProtoCnt, origNonMT)
+	}()
+
+	atomic.StoreInt64(&failCnt, 0)
+	atomic.StoreInt64(&nonMTProtoCnt, 0)
+
+	// Simulate non-MTProto rejection
+	id := int64(100)
+	orig := netip.MustParseAddrPort("127.0.0.1:54321")
+	logNonMTProtoRejection(id, orig, "plain_http", errors.New("unsupported MTProto transport tag"))
+
+	if got := atomic.LoadInt64(&failCnt); got != 0 {
+		t.Fatalf("failCnt must remain 0 on non-MTProto stream, got %d", got)
+	}
+	if got := atomic.LoadInt64(&nonMTProtoCnt); got != 1 {
+		t.Fatalf("nonMTProtoCnt must be 1, got %d", got)
+	}
+
+	// Verify Status snapshot includes NonMTProto
+	var st Status
+	liveMetrics(&st)
+	if st.NonMTProto != 1 {
+		t.Fatalf("Status.NonMTProto must be 1, got %d", st.NonMTProto)
+	}
+	if st.Fail != 0 {
+		t.Fatalf("Status.Fail must be 0, got %d", st.Fail)
+	}
+}
+
+func TestLogNonMTProtoRejectionSampling(t *testing.T) {
+	origNonMT := atomic.LoadInt64(&nonMTProtoCnt)
+	defer atomic.StoreInt64(&nonMTProtoCnt, origNonMT)
+
+	atomic.StoreInt64(&nonMTProtoCnt, 0)
+	id := int64(200)
+	orig := netip.MustParseAddrPort("127.0.0.1:54322")
+	err := errors.New("mock reject")
+
+	for i := 1; i <= 64; i++ {
+		logNonMTProtoRejection(id, orig, "tls_client_hello", err)
+	}
+
+	if got := atomic.LoadInt64(&nonMTProtoCnt); got != 64 {
+		t.Fatalf("expected nonMTProtoCnt to be 64, got %d", got)
 	}
 }
