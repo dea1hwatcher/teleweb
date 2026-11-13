@@ -6072,3 +6072,117 @@ func TestLogNonMTProtoRejectionSampling(t *testing.T) {
 		t.Fatalf("expected nonMTProtoCnt to be 64, got %d", got)
 	}
 }
+
+func TestHandleCDN203RefusesNonTelegramBeforeWorkerDial(t *testing.T) {
+	// Isolate custom worker configuration
+	tmpDir := t.TempDir()
+	origBase := getBaseDir()
+	setBaseDir(tmpDir)
+	defer func() {
+		logMu.Lock()
+		if logFile != nil {
+			_ = logFile.Close()
+			logFile = nil
+		}
+		logMu.Unlock()
+		setBaseDir(origBase)
+	}()
+
+	_ = writeCustomCFWorker("worker.example.com")
+
+	// Pass a non-Telegram IP to handleCDN203
+	fakeOrig := netip.MustParseAddrPort("8.8.8.8:443")
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	// Should exit immediately without attempting any dial
+	handleCDN203(c1, fakeOrig, []byte("fake-init"), 999)
+}
+
+func TestSweepRouteCaches_WorkerStrikesEviction(t *testing.T) {
+	workerStrikesMu.Lock()
+	origStrikes := workerStrikes
+	workerStrikes = make(map[string]workerStrikeState)
+	workerStrikes["stale.example.com:2"] = workerStrikeState{
+		first: time.Now().Add(-2 * workerStallWindow),
+		count: 1,
+	}
+	workerStrikes["fresh.example.com:2"] = workerStrikeState{
+		first: time.Now(),
+		count: 1,
+	}
+	workerStrikesMu.Unlock()
+
+	defer func() {
+		workerStrikesMu.Lock()
+		workerStrikes = origStrikes
+		workerStrikesMu.Unlock()
+	}()
+
+	sweepRouteCaches()
+
+	workerStrikesMu.Lock()
+	defer workerStrikesMu.Unlock()
+	if _, exists := workerStrikes["stale.example.com:2"]; exists {
+		t.Errorf("stale worker strike was not evicted by sweepRouteCaches")
+	}
+	if _, exists := workerStrikes["fresh.example.com:2"]; !exists {
+		t.Errorf("fresh worker strike was prematurely evicted by sweepRouteCaches")
+	}
+}
+
+func TestRejectedLiveUIDs_BoundsAndConcurrency(t *testing.T) {
+	rejectedLiveUIDsMu.Lock()
+	origMap := rejectedLiveUIDs
+	rejectedLiveUIDs = make(map[int]bool)
+	rejectedLiveUIDsMu.Unlock()
+
+	defer func() {
+		rejectedLiveUIDsMu.Lock()
+		rejectedLiveUIDs = origMap
+		rejectedLiveUIDsMu.Unlock()
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 300; i++ {
+		uid := 10000 + i
+		wg.Add(1)
+		go func(u int) {
+			defer wg.Done()
+			markRejectedLiveUID(u)
+			_ = isRejectedLiveUID(u)
+		}(uid)
+	}
+	wg.Wait()
+
+	rejectedLiveUIDsMu.RLock()
+	sz := len(rejectedLiveUIDs)
+	rejectedLiveUIDsMu.RUnlock()
+
+	if sz > 256 {
+		t.Fatalf("expected rejectedLiveUIDs to be capped <= 256, got %d", sz)
+	}
+}
+
+func TestExecuteAPIPayload_FastPathJSON(t *testing.T) {
+	// Raw JSON
+	jsonPayload := `{"cmd":"status"}`
+	res, err := executeAPIPayload(jsonPayload)
+	if err != nil {
+		t.Fatalf("executeAPIPayload failed on raw JSON: %v", err)
+	}
+	if !strings.Contains(string(res), `"ok":true`) {
+		t.Fatalf("expected ok:true in response, got %s", string(res))
+	}
+
+	// Base64 encoded JSON
+	b64Payload := base64.StdEncoding.EncodeToString([]byte(jsonPayload))
+	res2, err := executeAPIPayload(b64Payload)
+	if err != nil {
+		t.Fatalf("executeAPIPayload failed on base64 JSON: %v", err)
+	}
+	if !strings.Contains(string(res2), `"ok":true`) {
+		t.Fatalf("expected ok:true in base64 response, got %s", string(res2))
+	}
+}
