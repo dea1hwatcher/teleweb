@@ -327,6 +327,28 @@ func routeBackoff(failures int) time.Duration {
 	return d
 }
 
+// jitterDuration applies pseudo-randomized jitter between [1-fraction, 1+fraction]
+// to a duration, preventing thundering herds and synchronized retries.
+func jitterDuration(d time.Duration, fraction float64) time.Duration {
+	if d <= 0 || fraction <= 0 {
+		return d
+	}
+	var b [2]byte
+	_, _ = rand.Read(b[:])
+	val := float64(uint16(b[0])<<8 | uint16(b[1]))
+	norm := (val/65535.0)*2.0 - 1.0
+	jittered := float64(d) * (1.0 + norm*fraction)
+	if jittered < float64(100*time.Millisecond) {
+		return 100 * time.Millisecond
+	}
+	return time.Duration(jittered)
+}
+
+// routeBackoffWithJitter returns routeBackoff with +/- 10% jitter.
+func routeBackoffWithJitter(failures int) time.Duration {
+	return jitterDuration(routeBackoff(failures), 0.10)
+}
+
 type App struct {
 	Name       string `json:"name"`
 	Pkg        string `json:"pkg"`
@@ -4316,6 +4338,7 @@ func serve() {
 	// can reach them; the pool additionally gets drained, otherwise up to
 	// poolSize pre-warmed sockets and the rotation goroutine survive until
 	// process death.
+	checkFDLimit()
 	workerCtx, workerStop := context.WithCancel(context.Background())
 	startCFDomainsUpdater(workerCtx)
 	initGlobalWsPool(workerCtx)
@@ -6327,9 +6350,10 @@ const (
 // already recorded for the host.
 func parkFront(host string, park time.Duration, reason string, err error) {
 	now := time.Now()
+	parkJittered := jitterDuration(park, 0.10)
 	routeHealthMu.Lock()
 	state := routeHealth[host]
-	if until := now.Add(park); until.After(state.until) {
+	if until := now.Add(parkJittered); until.After(state.until) {
 		state.until = until
 	}
 	logNow := state.busyAt.IsZero() || now.Sub(state.busyAt) >= serverBusyLogInterval
@@ -6340,7 +6364,7 @@ func parkFront(host string, park time.Duration, reason string, err error) {
 	capRouteHealthLocked()
 	routeHealthMu.Unlock()
 	if logNow {
-		logf("WSS route %s parked for %s (%s): %v", host, park, reason, err)
+		logf("WSS route %s parked for %s (%s): %v", host, parkJittered.Round(time.Millisecond), reason, err)
 	}
 }
 
@@ -6679,7 +6703,7 @@ func noteEarlyRemoteClose(key, host string, err error, age time.Duration, up, do
 	series := state.count // log value: position within the current EOF series
 	if state.count >= 2 {
 		state.failures++
-		state.until = now.Add(routeBackoff(state.failures))
+		state.until = now.Add(routeBackoffWithJitter(state.failures))
 		state.count = 0
 	}
 	routeHealth[host] = state
@@ -7169,7 +7193,7 @@ func noteRouteHTTPFailure(host string, err error) {
 		state.failures = 0
 	}
 	state.failures++
-	cooldown = routeBackoff(state.failures)
+	cooldown = routeBackoffWithJitter(state.failures)
 	var rle *RateLimitError
 	if errors.As(err, &rle) && rle.RetryAfter > 0 {
 		if rle.RetryAfter > cooldown {
