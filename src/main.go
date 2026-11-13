@@ -1681,8 +1681,26 @@ func packageFromPMListing(out string, uid int) string {
 
 // rejectedLiveUIDs remembers UIDs that a live-traffic probe showed not to be
 // Telegram clients, so the watchdog's 30 second tick does not resolve and
-// open the same APK over and over.
-var rejectedLiveUIDs = map[int]bool{}
+// open the same APK over and over. Bounded to 256 entries to prevent unbounded growth.
+var (
+	rejectedLiveUIDsMu sync.RWMutex
+	rejectedLiveUIDs   = map[int]bool{}
+)
+
+func isRejectedLiveUID(uid int) bool {
+	rejectedLiveUIDsMu.RLock()
+	defer rejectedLiveUIDsMu.RUnlock()
+	return rejectedLiveUIDs[uid]
+}
+
+func markRejectedLiveUID(uid int) {
+	rejectedLiveUIDsMu.Lock()
+	defer rejectedLiveUIDsMu.Unlock()
+	if len(rejectedLiveUIDs) >= 256 {
+		rejectedLiveUIDs = make(map[int]bool, 256)
+	}
+	rejectedLiveUIDs[uid] = true
+}
 
 func discoverActiveTelegramClients() {
 	activeUIDs := scanActiveTelegramSockets()
@@ -1699,12 +1717,12 @@ func discoverActiveTelegramClients() {
 	var newApps []App
 	var newUIDs []int
 	for _, uid := range activeUIDs {
-		if known[uid] || rejectedLiveUIDs[uid] {
+		if known[uid] || isRejectedLiveUID(uid) {
 			continue
 		}
 		pkg := resolveUIDToPackage(uid)
 		if pkg == "" {
-			rejectedLiveUIDs[uid] = true
+			markRejectedLiveUID(uid)
 			continue
 		}
 		apkPath := findPackageAPK(pkg)
@@ -1714,7 +1732,7 @@ func discoverActiveTelegramClients() {
 			// — a browser on t.me, a mail checker. Not a client, and inventing
 			// "unknown.telegram.uidN" for it only grew apps.json and the
 			// base64 icons carried in every status write.
-			rejectedLiveUIDs[uid] = true
+			markRejectedLiveUID(uid)
 			continue
 		}
 		normalIco, monetIco := extractAPKIcons(apkPath)
@@ -4055,9 +4073,14 @@ func executeAPICommand(q apiRequest) (any, error) {
 var apiDispatch = executeAPICommand
 
 func executeAPIPayload(arg string) ([]byte, error) {
-	b, err := base64.StdEncoding.DecodeString(arg)
-	if err != nil {
-		b = []byte(arg)
+	trimmed := strings.TrimSpace(arg)
+	var b []byte
+	if strings.HasPrefix(trimmed, "{") {
+		b = []byte(trimmed)
+	} else if decoded, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
+		b = decoded
+	} else {
+		b = []byte(trimmed)
 	}
 	var q apiRequest
 	if err := json.Unmarshal(b, &q); err != nil {
@@ -4602,13 +4625,14 @@ func dcFor(ip netip.Addr) int {
 		}
 		return 0
 	}
-	if d := knownDCMap[ip.String()]; d != 0 {
+	ipStr := ip.String()
+	if d := knownDCMap[ipStr]; d != 0 {
 		return d
 	}
-	if d := knownTestDCMap[ip.String()]; d != 0 {
+	if d := knownTestDCMap[ipStr]; d != 0 {
 		return d
 	}
-	if dc, _, ok := lookupLearnedDC(ip.String()); ok {
+	if dc, _, ok := lookupLearnedDC(ipStr); ok {
 		return dc
 	}
 	if ip.IsPrivate() {
@@ -5073,6 +5097,13 @@ const directProofBytes = 32 * 1024
 func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 	recordDCConnection(203)
 
+	if !isCDN203IP(orig.Addr()) {
+		// Defense in depth: a forged DC203 tag must never turn this function
+		// into a raw TCP tunnel to an arbitrary destination (Rule 5: Allowlist stays an allowlist).
+		logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst", id, orig)
+		return
+	}
+
 	// Level 1: Personal Cloudflare Worker (if configured)
 	worker := customCFWorkerCached()
 	if worker != "" {
@@ -5098,12 +5129,6 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		return
 	}
 
-	if !isCDN203IP(orig.Addr()) {
-		// Defense in depth: a forged DC203 tag must never turn this function
-		// into a raw TCP tunnel to an arbitrary destination.
-		logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst", id, orig)
-		return
-	}
 	dst := net.JoinHostPort(orig.Addr().String(), strconv.Itoa(int(orig.Port())))
 
 	// Helper to dial Cloudflare Fronts or Public Workers (WSS fallback)
@@ -5705,9 +5730,27 @@ func mediaForIP(ip netip.Addr) bool {
 	// tables: lookupLearnedDC below is empty until the first learned session,
 	// so this list cannot be dropped. Authoritative static classification
 	// takes precedence over the learned cache; do NOT extend it by hand when
-	// an endpoint can be learned instead.
-	switch ip.String() {
-	case "149.154.175.52", "149.154.175.211", "149.154.167.151", "149.154.167.222", "149.154.167.223", "149.154.162.123", "149.154.167.35", "149.154.175.102", "149.154.164.250", "149.154.166.120", "149.154.166.121", "149.154.167.118", "149.154.165.111", "149.154.165.136", "149.154.171.255", "91.108.56.102", "91.108.56.128", "91.108.56.151":
+	// an endpoint can be learned instead. Match via [4]byte array for zero heap allocations.
+	b := ip.As4()
+	switch b {
+	case [4]byte{149, 154, 175, 52},
+		[4]byte{149, 154, 175, 211},
+		[4]byte{149, 154, 167, 151},
+		[4]byte{149, 154, 167, 222},
+		[4]byte{149, 154, 167, 223},
+		[4]byte{149, 154, 162, 123},
+		[4]byte{149, 154, 167, 35},
+		[4]byte{149, 154, 175, 102},
+		[4]byte{149, 154, 164, 250},
+		[4]byte{149, 154, 166, 120},
+		[4]byte{149, 154, 166, 121},
+		[4]byte{149, 154, 167, 118},
+		[4]byte{149, 154, 165, 111},
+		[4]byte{149, 154, 165, 136},
+		[4]byte{149, 154, 171, 255},
+		[4]byte{91, 108, 56, 102},
+		[4]byte{91, 108, 56, 128},
+		[4]byte{91, 108, 56, 151}:
 		return true
 	}
 	if _, isMedia, ok := lookupLearnedDC(ip.String()); ok {
@@ -5878,22 +5921,30 @@ func discoverAndroidDNSServers() []string {
 	return out
 }
 
+var (
+	androidResolverOnce sync.Once
+	androidResolverInst *net.Resolver
+)
+
 func androidDNSResolver() *net.Resolver {
-	return &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-		var last error
-		for _, server := range androidDNSServers() {
-			d := net.Dialer{Timeout: 3 * time.Second}
-			c, err := d.DialContext(ctx, network, net.JoinHostPort(server, "53"))
-			if err == nil {
-				return c, nil
+	androidResolverOnce.Do(func() {
+		androidResolverInst = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var last error
+			for _, server := range androidDNSServers() {
+				d := net.Dialer{Timeout: 3 * time.Second}
+				c, err := d.DialContext(ctx, network, net.JoinHostPort(server, "53"))
+				if err == nil {
+					return c, nil
+				}
+				last = err
 			}
-			last = err
-		}
-		if last == nil {
-			last = errors.New("no available Android DNS servers found")
-		}
-		return nil, last
-	}}
+			if last == nil {
+				last = errors.New("no available Android DNS servers found")
+			}
+			return nil, last
+		}}
+	})
+	return androidResolverInst
 }
 
 func systemDNSResolver() *net.Resolver {
@@ -6631,6 +6682,14 @@ func sweepRouteCaches() {
 		}
 		return true
 	})
+
+	workerStrikesMu.Lock()
+	for key, st := range workerStrikes {
+		if now.Sub(st.first) > workerStallWindow {
+			delete(workerStrikes, key)
+		}
+	}
+	workerStrikesMu.Unlock()
 
 	activeDomains := make(map[string]bool)
 	for _, d := range cfDomainsCached() {
