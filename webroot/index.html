@@ -3596,6 +3596,11 @@ async function runDiagnostics() {
       }
     }
 
+    // 6. Non-MTProto transparent filter
+    if (s.nonMTProto > 0) {
+      items.push({ ok: true, text: `Фильтрация: отклонено не-MTProto потоков: ${s.nonMTProto} (HTTP/TLS зонды)` });
+    }
+
     // Render diagnostic items
     list.innerHTML = items.map(item => {
       let icon = '<span style="color:#4caf50;font-weight:bold;margin-right:8px;">✓</span>';
