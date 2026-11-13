@@ -2378,6 +2378,22 @@ func TestRouteBackoffCapsAtThirtyMinutes(t *testing.T) {
 	}
 }
 
+func TestJitterDurationAndBackoff(t *testing.T) {
+	base := 10 * time.Second
+	for i := 0; i < 20; i++ {
+		j := jitterDuration(base, 0.10)
+		if j < 9*time.Second || j > 11*time.Second {
+			t.Fatalf("jittered duration out of bounds [9s, 11s]: %v", j)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		b := routeBackoffWithJitter(1)
+		if b < 27*time.Second || b > 33*time.Second {
+			t.Fatalf("routeBackoffWithJitter(1) out of bounds [27s, 33s]: %v", b)
+		}
+	}
+}
+
 func TestDC203DirectTCP_Config(t *testing.T) {
 	dir := t.TempDir()
 	origDir := getBaseDir()
