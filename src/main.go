@@ -55,6 +55,7 @@ var (
 	active           int64
 	wsCount          int64
 	failCnt          int64
+	nonMTProtoCnt    int64
 	trafficUpBytes   int64 // Telegram client -> WSS, cumulative for this daemon lifetime
 	trafficDownBytes int64 // WSS -> Telegram client, cumulative for this daemon lifetime
 	connSeq          int64
@@ -342,6 +343,7 @@ type Status struct {
 	Active            int64          `json:"active"`
 	WS                int64          `json:"ws"`
 	Fail              int64          `json:"fail"`
+	NonMTProto        int64          `json:"nonMTProto"`
 	DC                map[string]int `json:"dc"`
 	MemNowBytes       int64          `json:"memNowBytes"`
 	MemPeakBytes      int64          `json:"memPeakBytes"`
@@ -3749,6 +3751,7 @@ func liveMetrics(s *Status) {
 	s.Active = atomic.LoadInt64(&active)
 	s.WS = atomic.LoadInt64(&wsCount)
 	s.Fail = atomic.LoadInt64(&failCnt)
+	s.NonMTProto = atomic.LoadInt64(&nonMTProtoCnt)
 	s.LogSuppressed = logSuppressed.Load()
 	s.DC = snapshotDCCounts()
 	s.MemNowBytes = memNow
@@ -3797,6 +3800,7 @@ func status() Status {
 			s.Active = file.Active
 			s.WS = file.WS
 			s.Fail = file.Fail
+			s.NonMTProto = file.NonMTProto
 			s.DC = file.DC
 			s.MemNowBytes = file.MemNowBytes
 			s.MemPeakBytes = file.MemPeakBytes
@@ -3829,6 +3833,7 @@ func status() Status {
 	s.Active = atomic.LoadInt64(&active)
 	s.WS = atomic.LoadInt64(&wsCount)
 	s.Fail = atomic.LoadInt64(&failCnt)
+	s.NonMTProto = atomic.LoadInt64(&nonMTProtoCnt)
 	s.DC = map[string]int{}
 	return s
 }
@@ -4345,7 +4350,11 @@ func serve() {
 	}
 	ln, e := net.Listen("tcp4", fmt.Sprintf("%s:%d", listenHost4, defaultPort))
 	if e != nil {
-		logf("failed to open local port: %v", e)
+		logf("failed to open local port %d: %v", defaultPort, e)
+		if pidBytes, err := os.ReadFile(path("tgws.pid")); err == nil {
+			pidStr := strings.TrimSpace(string(pidBytes))
+			logf("port %d occupied: existing tgws.pid=%s, my pid=%d", defaultPort, pidStr, os.Getpid())
+		}
 		return
 	}
 	defer ln.Close()
@@ -4708,8 +4717,10 @@ func handleClient(c net.Conn) {
 	orig, err := originalDestination(c)
 	if err != nil {
 		if !isNeutralError(err) {
-			atomic.AddInt64(&failCnt, 1)
-			logf("failed to determine original destination: %v", err)
+			count := atomic.AddInt64(&nonMTProtoCnt, 1)
+			if count <= 2 || (count&(count-1) == 0) || (count%1000 == 0) {
+				logf("failed to determine original destination: %v (#%d)", err, count)
+			}
 		}
 		_ = c.Close()
 		return
@@ -4746,12 +4757,15 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 	// connections. This avoids guessing DC/media from overlapping IP pools.
 	init := make([]byte, 64)
 	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, err := io.ReadFull(c, init)
+	n, err := io.ReadFull(c, init)
 	_ = c.SetReadDeadline(time.Time{})
 	if err != nil {
 		if !isNeutralError(err) {
-			atomic.AddInt64(&failCnt, 1)
-			logf("conn #%d %s: failed to read MTProto init: %v", id, orig, err)
+			cls := classifyNonMTProtoStream(init[:n])
+			count := atomic.AddInt64(&nonMTProtoCnt, 1)
+			if count <= 2 || (count&(count-1) == 0) || (count%1000 == 0) {
+				logf("conn #%d %s: failed to read MTProto init (%d bytes, class=%s, %v); refusing WSS tunnel (#%d)", id, orig, n, cls, err, count)
+			}
 		}
 		return
 	}
@@ -4791,8 +4805,8 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		// fails, newMTProtoPacketFramer will fail inside pipeTCPToWSCount anyway; refusing
 		// here avoids dialing a useless WSS connection to Cloudflare.
 		if _, _, _, protoErr := decryptMTProtoInit(init); protoErr != nil {
-			atomic.AddInt64(&failCnt, 1)
-			logf("conn #%d %s: non-MTProto stream (%v); refusing WSS tunnel", id, orig, protoErr)
+			cls := classifyNonMTProtoStream(init)
+			logNonMTProtoRejection(id, orig, cls, protoErr)
 			return
 		}
 		if testDC, ok := knownTestDCMap[orig.Addr().String()]; ok {
@@ -4812,13 +4826,17 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		// DC203 in the init marks a CDN203 media session. A DC203 tag aimed
 		// at a destination outside the CDN203 aggregate means the client
 		// forged the tag to obtain a raw TCP tunnel to an arbitrary host.
-		atomic.AddInt64(&failCnt, 1)
-		logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst", id, orig)
+		count := atomic.AddInt64(&nonMTProtoCnt, 1)
+		if count <= 2 || (count&(count-1) == 0) || (count%1000 == 0) {
+			logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst (#%d)", id, orig, count)
+		}
 		return
 	}
 	if dc < 1 || dc > 5 {
-		atomic.AddInt64(&failCnt, 1)
-		logf("unknown DC for %s (conn %d); refusing direct send", orig, id)
+		count := atomic.AddInt64(&nonMTProtoCnt, 1)
+		if count <= 2 || (count&(count-1) == 0) || (count%1000 == 0) {
+			logf("unknown DC for %s (conn %d); refusing direct send (#%d)", orig, id, count)
+		}
 		return
 	}
 	recordDCConnection(dc)
@@ -5558,6 +5576,51 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 		closeBoth()
 	}()
 	wg.Wait()
+}
+
+// classifyNonMTProtoStream classifies non-MTProto incoming traffic (such as HTTP probes,
+// TLS records, or zeroed scans) without logging raw payloads or secrets.
+func classifyNonMTProtoStream(b []byte) string {
+	if len(b) == 0 {
+		return "zero_bytes"
+	}
+	allZero := true
+	for _, v := range b {
+		if v != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		return "zero_bytes"
+	}
+	// Plain HTTP methods and HTTP/2 connection preface
+	httpPrefixes := []string{"GET ", "POST ", "HEAD ", "OPTIONS ", "PUT ", "DELETE ", "CONNECT ", "PRI * HTTP/2.0"}
+	for _, prefix := range httpPrefixes {
+		if len(b) >= len(prefix) && string(b[:len(prefix)]) == prefix {
+			return "plain_http"
+		}
+	}
+	// TLS records (0x14 CCS, 0x15 Alert, 0x16 Handshake, 0x17 AppData) with TLS version major 0x03
+	if len(b) >= 2 && b[1] == 0x03 {
+		switch b[0] {
+		case 0x16: // Handshake
+			if len(b) >= 6 && b[5] == 0x01 {
+				return "tls_client_hello"
+			}
+			return "tls_record"
+		case 0x14, 0x15, 0x17:
+			return "tls_record"
+		}
+	}
+	return "unrecognized_binary"
+}
+
+func logNonMTProtoRejection(id int64, orig netip.AddrPort, cls string, err error) {
+	count := atomic.AddInt64(&nonMTProtoCnt, 1)
+	if count <= 2 || (count&(count-1) == 0) || (count%1000 == 0) {
+		logf("conn #%d %s: transparent non-MTProto stream (class=%s, %v); refusing WSS tunnel (#%d)", id, orig, cls, err, count)
+	}
 }
 
 // decryptMTProtoInit decrypts the obfuscated MTProto init header's control
