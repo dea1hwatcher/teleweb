@@ -177,3 +177,5 @@ func resetNetworkStack() error {
 	}
 	return nil
 }
+
+func checkFDLimit() {}

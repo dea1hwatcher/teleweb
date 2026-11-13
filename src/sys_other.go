@@ -80,3 +80,5 @@ func startConsole() {}
 func setCmdNoWindow(cmd *exec.Cmd) {}
 
 func resetNetworkStack() error { return nil }
+
+func checkFDLimit() {}

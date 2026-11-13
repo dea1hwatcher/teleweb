@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -67,6 +68,26 @@ func serverListening() bool {
 		}
 	}
 	return false
+}
+
+// checkFDLimit verifies that the process has a sufficient open-file limit (ulimit -n)
+// on Linux/Android to prevent connection drops under concurrent pools and clients.
+func checkFDLimit() {
+	b, err := os.ReadFile("/proc/self/limits")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && strings.Join(fields[:3], " ") == "Max open files" {
+			if limit, err := strconv.ParseUint(fields[3], 10, 64); err == nil {
+				if limit < 256 {
+					logf("system: current file descriptor limit is low (ulimit -n = %d); recommend >= 1024 to avoid socket exhaustion", limit)
+				}
+			}
+			return
+		}
+	}
 }
 
 func setDaemonProcAttr(cmd *exec.Cmd) {
