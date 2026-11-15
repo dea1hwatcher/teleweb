@@ -740,13 +740,15 @@ func TestNoteRouteHTTPFailureCooldown(t *testing.T) {
 
 func TestRouteHTTPRejectionClassification(t *testing.T) {
 	cases := map[string]int{
-		"http 429: too many requests": routeRejectRateLimit,
-		"rate limit exceeded":         routeRejectRateLimit,
-		"http 403: forbidden":         routeRejectForbidden,
-		"http 502: bad gateway":       routeRejectServer,
-		"http 525: ssl handshake":     routeRejectServer,
-		"http 404: not found":         routeRejectNone,
-		"connection reset by peer":    routeRejectNone,
+		"http 429: too many requests":            routeRejectRateLimit,
+		"rate limit exceeded":                    routeRejectRateLimit,
+		"error 1015: you are being rate limited": routeRejectRateLimit,
+		"error 1027: rate limit":                 routeRejectRateLimit,
+		"http 403: forbidden":                    routeRejectForbidden,
+		"http 502: bad gateway":                  routeRejectServer,
+		"http 525: ssl handshake":                routeRejectServer,
+		"http 404: not found":                    routeRejectNone,
+		"connection reset by peer":               routeRejectNone,
 	}
 	for msg, want := range cases {
 		if got := routeHTTPRejection(msg); got != want {
@@ -2604,7 +2606,7 @@ func TestShouldPenalizeRoute(t *testing.T) {
 
 	expired, cancelExpired := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancelExpired()
-	time.Sleep(2 * time.Millisecond)
+	<-expired.Done()
 	if shouldPenalizeRoute(expired) {
 		t.Fatal("a dial that ran out of budget must not record failures")
 	}
@@ -3898,7 +3900,7 @@ func TestDCDomainAffinity(t *testing.T) {
 
 func TestFrontCandidatesForRace_RussianPoPAvoidance(t *testing.T) {
 	// 1. Validate PoP classification
-	for _, pop := range []string{"DME", "LED", "KJA", "SVX", "OVB", "dme", "led"} {
+	for _, pop := range []string{"DME", "LED", "KJA", "SVX", "OVB", "SVO", "ROV", "KZN", "dme", "led", "svo", "rov", "kzn"} {
 		if !isRussianPoP(pop) {
 			t.Errorf("isRussianPoP(%q) = false, want true", pop)
 		}
@@ -5692,6 +5694,18 @@ func TestCleanHTTPErrorBody(t *testing.T) {
 			input: `<div id="cf-error-details" class="p-0">
 			<header class="mx-auto pt-10"><h1 class="text-60">Error 1015</h1></header></div>`,
 			expected: "Error 1015",
+		},
+		{
+			name: "cloudflare html with generic title and error 1015 in body",
+			input: `<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head>
+			<body><div id="cf-error-details"><h1>Error 1015: You are being rate limited</h1></div></body></html>`,
+			expected: "Attention Required! | Cloudflare (Error 1015)",
+		},
+		{
+			name: "cloudflare html with title already containing error code",
+			input: `<!DOCTYPE html><html><head><title>Error 1015: You are being rate limited | Cloudflare</title></head>
+			<body><div id="cf-error-details"><h1>Error 1015: You are being rate limited</h1></div></body></html>`,
+			expected: "Error 1015: You are being rate limited | Cloudflare",
 		},
 		{
 			name: "cloudflare html with no recognizable code",
