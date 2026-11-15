@@ -6515,7 +6515,7 @@ func setDCDomainAffinity(dc int, domain string) {
 // or domestic MTProto blocking on Telegram destinations.
 func isRussianPoP(pop string) bool {
 	switch strings.ToUpper(strings.TrimSpace(pop)) {
-	case "DME", "LED", "KJA", "SVX", "OVB":
+	case "DME", "LED", "KJA", "SVX", "OVB", "SVO", "ROV", "KZN":
 		return true
 	default:
 		return false
@@ -7199,7 +7199,8 @@ const (
 // transient), so callers either cool the host down or move to the next IP.
 func routeHTTPRejection(msg string) int {
 	switch {
-	case strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests"):
+	case strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "1015") || strings.Contains(msg, "1027"):
 		return routeRejectRateLimit
 	case strings.Contains(msg, "403") || strings.Contains(msg, "forbidden"):
 		return routeRejectForbidden
@@ -7556,17 +7557,27 @@ func cleanHTTPErrorBody(body []byte) string {
 	}
 	lower := strings.ToLower(msg)
 	if strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<div") {
+		var code string
+		if idx := strings.Index(lower, "error 1"); idx != -1 && idx+10 <= len(msg) {
+			code = sanitizeLogLine(msg[idx:idx+10], 60)
+		} else if idx := strings.Index(lower, "error code: 1"); idx != -1 && idx+15 <= len(msg) {
+			code = sanitizeLogLine(msg[idx:idx+15], 60)
+		}
 		if start := strings.Index(lower, "<title>"); start != -1 {
 			start += len("<title>")
 			if end := strings.Index(lower[start:], "</title>"); end != -1 {
 				title := strings.TrimSpace(msg[start : start+end])
 				if title != "" {
-					return sanitizeLogLine(title, 120)
+					sanTitle := sanitizeLogLine(title, 120)
+					if code != "" && !strings.Contains(strings.ToLower(sanTitle), strings.ToLower(code)) {
+						return sanTitle + " (" + code + ")"
+					}
+					return sanTitle
 				}
 			}
 		}
-		if idx := strings.Index(lower, "error 1"); idx != -1 && idx+10 <= len(msg) {
-			return sanitizeLogLine(msg[idx:idx+10], 60)
+		if code != "" {
+			return code
 		}
 		return "Cloudflare Error Page"
 	}
