@@ -25,6 +25,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -259,8 +260,19 @@ type natFlowKeyV6 struct {
 }
 
 const (
-	natPortFirst = 20000
-	natPortLast  = 32000
+	natPortDefaultFirst = 20000
+	natPortDefaultLast  = 32000
+)
+
+// natPortFirst/natPortLast are chosen at redirector start so the NAT pool
+// never overlaps the OS ephemeral (dynamic client) port range. When a user
+// widens that range -- a common tweak on hosts with port exhaustion -- the
+// old fixed 20000-32000 pool intercepted replies to unrelated loopback
+// clients: natReturnEntry matched on destination port alone and rewrote
+// their packets as if they belonged to a Telegram flow.
+var (
+	natPortFirst = uint16(natPortDefaultFirst)
+	natPortLast  = uint16(natPortDefaultLast)
 )
 
 var natTable = struct {
@@ -276,11 +288,65 @@ var natTable = struct {
 	next:    natPortFirst,
 }
 
+// configureNATPortRange reads the Windows dynamic TCP port range and moves
+// the NAT pool out of it. Registry values are the same source `netsh int ipv4
+// show dynamicport tcp` reports; a missing value means the OS default, which
+// on modern Windows starts at 49152 and never touches our default pool. If
+// no 1024-port window is free we fail closed: the redirector must not run
+// with a pool that can corrupt unrelated local connections.
+// chooseNATPortRange picks a NAT pool disjoint from the OS dynamic range.
+// Kept separate from the registry read so the decision is testable.
+func chooseNATPortRange(dynStart, dynEnd uint32) (uint16, uint16, error) {
+	const minPool = 1024
+	if dynEnd < dynStart {
+		dynEnd = dynStart
+	}
+	disjoint := func(first, last uint32) bool {
+		return last < dynStart || first > dynEnd
+	}
+	first, last := uint32(natPortDefaultFirst), uint32(natPortDefaultLast)
+	if !disjoint(first, last) {
+		// Prefer the high window, then the low one; both must be large
+		// enough to sustain a few thousand concurrent Telegram flows.
+		switch {
+		case uint32(dynEnd)+1+minPool <= 65535:
+			first, last = dynEnd+1, 65535
+		case dynStart >= 1024+minPool+1:
+			first, last = 1024, dynStart-1
+		default:
+			return 0, 0, fmt.Errorf("no NAT port range disjoint from OS dynamic range %d-%d", dynStart, dynEnd)
+		}
+	}
+	return uint16(first), uint16(last), nil
+}
+
+func configureNATPortRange() error {
+	const tcpipParams = `SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`
+	dynStart, dynEnd := uint32(49152), uint32(65535)
+	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, tcpipParams, registry.QUERY_VALUE); err == nil {
+		if v, _, err := k.GetIntegerValue("MaxUserPortStarting"); err == nil && v > 0 && v <= 65535 {
+			dynStart = uint32(v)
+		}
+		if v, _, err := k.GetIntegerValue("MaxUserPort"); err == nil && v > 0 && v <= 65535 {
+			dynEnd = uint32(v)
+		}
+		_ = k.Close()
+	}
+	var err error
+	natPortFirst, natPortLast, err = chooseNATPortRange(dynStart, dynEnd)
+	if err != nil {
+		return err
+	}
+	natTable.next = natPortFirst
+	logf("redirector: NAT port pool %d-%d (OS dynamic range %d-%d)", natPortFirst, natPortLast, dynStart, dynEnd)
+	return nil
+}
+
 // allocNatEntry claims a free local port for a mapping and indexes it there.
 // The caller holds natTable.mu and files the entry in its own flow map, so both
 // address families share one port space and one lookup for accepted sockets.
 func allocNatEntry(orig netip.AddrPort, clientAddr netip.Addr, clientPort uint16) *natEntry {
-	for i := 0; i < natPortLast-natPortFirst; i++ {
+	for i := uint16(0); i < natPortLast-natPortFirst; i++ {
 		p := natTable.next
 		natTable.next++
 		if natTable.next >= natPortLast {
@@ -775,6 +841,9 @@ func startRedirector() error {
 	if !isElevated() {
 		return errAdminRequired
 	}
+	if err := configureNATPortRange(); err != nil {
+		return err
+	}
 	if err := ensureBFEService(); err != nil {
 		logf("redirector: Base Filtering Engine (BFE) check: %v", err)
 	}
@@ -981,6 +1050,14 @@ func (r *wdRedirector) retLoop() {
 			_ = wdSendPacket(r.hRet, p, &addr)
 			continue
 		}
+		// The WinDivert filter limits captures to listener replies, but keep
+		// the tuple check here too: natReturnEntry used to accept any dport
+		// and could rewrite an unrelated loopback client when the NAT pool
+		// overlapped the OS ephemeral range.
+		if m.sport != uint16(defaultPort) || m.srcIP != [4]byte{127, 0, 0, 1} || m.dstIP != [4]byte{127, 0, 0, 1} {
+			_ = wdSendPacket(r.hRet, p, &addr)
+			continue
+		}
 		e := natReturnEntry(m.dport)
 		if e == nil {
 			_ = wdSendPacket(r.hRet, p, &addr)
@@ -1052,6 +1129,11 @@ func processOut6(p []byte) v6Verdict {
 func processRet6(p []byte) bool {
 	m, ok := parseTCPv6(p)
 	if !ok {
+		return false
+	}
+	var v6Loop [16]byte
+	v6Loop[15] = 1 // ::1
+	if m.sport != uint16(defaultPort) || m.srcIP != v6Loop || m.dstIP != v6Loop {
 		return false
 	}
 	e := natReturnEntry(m.dport)
