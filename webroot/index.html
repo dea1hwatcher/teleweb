@@ -4627,8 +4627,13 @@ async function resumeTransport() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") resumeTransport();
-});
+    if (document.visibilityState === "visible") {
+      resumeTransport();
+      startRefreshPoll();
+    } else {
+      stopRefreshPoll();
+    }
+  });
 window.addEventListener("pageshow", () => resumeTransport());
 
 /* ==========================================================================
@@ -4891,7 +4896,17 @@ try {
   console.warn("TeleWEB init:", e);
 }
 refresh();
-setInterval(refresh, 3000);
+let refreshTimer = null;
+function startRefreshPoll() {
+  if (refreshTimer === null) refreshTimer = setInterval(refresh, 3000);
+}
+function stopRefreshPoll() {
+  if (refreshTimer !== null) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+startRefreshPoll();
 </script>
 </body>
 </html>
