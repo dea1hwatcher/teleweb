@@ -162,18 +162,8 @@ func runDesktop() error {
 	if err := writeEnabled(true); err != nil {
 		return err
 	}
-	if err := ensureServer(); err != nil {
-		return fmt.Errorf("start tgws: %w", err)
-	}
-	if !waitForListener(6 * time.Second) {
-		return fmt.Errorf("tgws failed to listen on port %d", defaultPort)
-	}
-	if err := setupRules(); err != nil {
-		stopServer()
-		return err
-	}
-	if err := ensureWatchdog(); err != nil {
-		logf("watchdog: failed to start: %v", err)
+	if err := startRuntime(6*time.Second, 1); err != nil {
+		return fmt.Errorf("start desktop runtime: %w", err)
 	}
 	logf("desktop runtime active (platform=%s, dir=%s)", runtime.GOOS, getBaseDir())
 	updateModuleDescription(currentStatusDesc())

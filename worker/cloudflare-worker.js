@@ -105,9 +105,14 @@ export default {
         shutdown(1003, "binary messages required");
         return;
       }
+      // Copy synchronously: the message buffer may be detached once the
+      // event handler returns, while `pending` writes it later. A view
+      // would forward truncated bytes and desynchronise the MTProto CTR
+      // stream. The Blob branch already materialises its copy in the
+      // async callback.
       const chunk = blob ? null : data instanceof ArrayBuffer
-        ? new Uint8Array(data)
-        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        ? new Uint8Array(data.slice(0))
+        : new Uint8Array(data).slice();
       const size = blob ? data.size : chunk.byteLength;
       if (pendingBytes + size > MAX_PENDING_BYTES || pendingMessages >= MAX_PENDING_MESSAGES) {
         shutdown(1009, "Telegram write queue full");

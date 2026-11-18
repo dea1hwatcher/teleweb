@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -131,6 +132,32 @@ func setDialSockOpts(c syscall.RawConn) error {
 	})
 }
 
+// localProxyPointsAtOurPort reports whether the Windows Internet Settings
+// proxy string points at this daemon's listener. Disabling "any localhost
+// proxy" used to kill Fiddler, local dev servers and other VPN clients on
+// the "Reset network" button.
+func localProxyPointsAtOurPort(proxyServer string) bool {
+	ourPort := strconv.Itoa(defaultPort)
+	for _, part := range strings.Split(strings.ToLower(proxyServer), ";") {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "direct://" {
+			continue
+		}
+		host, port, err := net.SplitHostPort(part)
+		if err != nil {
+			// A bare "127.0.0.1" without a port is not our listener.
+			continue
+		}
+		if port != ourPort {
+			continue
+		}
+		if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+			return true
+		}
+	}
+	return false
+}
+
 func resetNetworkStack() error {
 	var errs []string
 
@@ -152,8 +179,7 @@ func resetNetworkStack() error {
 		proxyEnable, _, err := k.GetIntegerValue("ProxyEnable")
 		if err == nil && proxyEnable != 0 {
 			proxyServer, _, _ := k.GetStringValue("ProxyServer")
-			lowered := strings.ToLower(proxyServer)
-			if strings.Contains(lowered, "127.0.0.1") || strings.Contains(lowered, "localhost") {
+			if localProxyPointsAtOurPort(proxyServer) {
 				_ = k.SetDWordValue("ProxyEnable", 0)
 				// Notify WinINet that proxy settings changed
 				wininet := windows.NewLazySystemDLL("wininet.dll")
