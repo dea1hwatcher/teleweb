@@ -174,10 +174,21 @@ type h2Reply struct {
 // server->client CTR stream is strictly sequential, so a response that arrives
 // out of order must wait for its predecessors before being encrypted: writing
 // keystream blocks in arrival order would desynchronize the whole session.
+const (
+	// h2MaxBufferedReplies and h2MaxBufferedBytes bound the reorder window.
+	// A single stalled POST (seq N) used to let every later reply accumulate
+	// in buffered without limit -- with 16 MiB frames that is an OOM on an
+	// Android device. Exceeding the window means the CTR stream is no longer
+	// recoverable, so the caller tears the bridge down.
+	h2MaxBufferedReplies = 32
+	h2MaxBufferedBytes   = 4 << 20
+)
+
 type h2ReplySequencer struct {
-	next     uint64
-	buffered map[uint64][]byte
-	write    func(body []byte) error
+	next          uint64
+	buffered      map[uint64][]byte
+	bufferedBytes int
+	write         func(body []byte) error
 }
 
 func newH2ReplySequencer(write func(body []byte) error) *h2ReplySequencer {
@@ -188,13 +199,21 @@ func newH2ReplySequencer(write func(body []byte) error) *h2ReplySequencer {
 // it consumes its sequence slot without writing so later replies still flow.
 // Only a single goroutine (the reply writer) may call push.
 func (s *h2ReplySequencer) push(seq uint64, body []byte) error {
+	if _, exists := s.buffered[seq]; exists {
+		return fmt.Errorf("H2 reply seq %d delivered twice", seq)
+	}
+	if len(s.buffered) >= h2MaxBufferedReplies || s.bufferedBytes+len(body) > h2MaxBufferedBytes {
+		return fmt.Errorf("H2 reply reorder window exhausted (%d replies, %d bytes): seq=%d", len(s.buffered), s.bufferedBytes, seq)
+	}
 	s.buffered[seq] = body
+	s.bufferedBytes += len(body)
 	for {
 		data, ok := s.buffered[s.next]
 		if !ok {
 			return nil
 		}
 		delete(s.buffered, s.next)
+		s.bufferedBytes -= len(data)
 		s.next++
 		if data == nil {
 			continue

@@ -1491,6 +1491,38 @@ func TestCDN203DisabledDoesNotCountInit(t *testing.T) {
 	}
 }
 
+func TestCDN203RejectsNon443Port(t *testing.T) {
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
+	origLog := logFile
+	logFile = nil
+	t.Cleanup(func() {
+		if logFile != nil && logFile != origLog {
+			_ = logFile.Close()
+		}
+		logFile = origLog
+		setBaseDir(oldDir)
+	})
+	if err := writeDC203DirectTCP(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path("status.json"), []byte(`{"cfPriority":false}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A local client dialing a Telegram CDN address on a non-MTProto port must
+	// not get a raw TCP tunnel: the transparent rule matches the IP only and
+	// SO_ORIGINAL_DST would otherwise supply this port as the dial target.
+	client, peer := net.Pipe()
+	defer client.Close()
+	defer peer.Close()
+	before := atomic.LoadInt64(&trafficUpBytes)
+	handleCDN203(client, netip.MustParseAddrPort("91.105.192.100:8080"), make([]byte, 64), 1)
+	if got := atomic.LoadInt64(&trafficUpBytes) - before; got != 0 {
+		t.Fatalf("non-443 CDN203 counted %d bytes of a forbidden tunnel", got)
+	}
+}
+
 func TestCloudflareWorkerContract(t *testing.T) {
 	cases := []struct {
 		dc       int
@@ -2714,6 +2746,44 @@ func TestSweepRouteCachesRemovesStale(t *testing.T) {
 	}
 	if !freshKept {
 		t.Errorf("active entry must survive the sweep")
+	}
+}
+
+func TestH2ReplySequencerBounded(t *testing.T) {
+	var written int
+	seq := newH2ReplySequencer(func(body []byte) error {
+		written++
+		return nil
+	})
+	// seq 0 never arrives: everything else queues. The window must close
+	// before a stalled POST can accumulate an unbounded number of 16 MiB
+	// replies.
+	for i := 1; i <= h2MaxBufferedReplies; i++ {
+		if err := seq.push(uint64(i), []byte("x")); err != nil {
+			t.Fatalf("push(%d) within the window: %v", i, err)
+		}
+	}
+	if err := seq.push(h2MaxBufferedReplies+1, []byte("x")); err == nil {
+		t.Fatal("push beyond the reorder window was accepted")
+	}
+	if written != 0 {
+		t.Fatalf("wrote %d replies while seq 0 was missing", written)
+	}
+
+	// A single oversized body must also be refused even if the entry count
+	// is still below the cap.
+	big := newH2ReplySequencer(func([]byte) error { return nil })
+	if err := big.push(1, make([]byte, h2MaxBufferedBytes+1)); err == nil {
+		t.Fatal("oversized buffered reply was accepted")
+	}
+
+	// Duplicate delivery of the same seq is a protocol error, not a no-op.
+	dup := newH2ReplySequencer(func([]byte) error { return nil })
+	if err := dup.push(5, []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := dup.push(5, []byte("b")); err == nil {
+		t.Fatal("duplicate seq was accepted")
 	}
 }
 
