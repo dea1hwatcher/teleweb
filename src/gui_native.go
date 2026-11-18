@@ -99,6 +99,7 @@ type guiState struct {
 
 	// Routing & Settings
 	settingsInitialized bool
+	pendingEdits        [3]string // domain, worker, DC overrides; applied on the UI thread
 	swCFPriority        widget.Bool
 	swCFBalance         widget.Bool
 	swDoH               widget.Bool
@@ -243,14 +244,17 @@ func guiPollLoop(w *app.Window, st *guiState, stop chan struct{}) {
 			st.refresh()
 			w.Invalidate()
 			if runtime.GOOS == "windows" {
+				st.mu.Lock()
+				running, redirector := st.st.Running, st.st.Redirector
+				st.mu.Unlock()
 				tip := "TeleWEB: Остановлен"
-				if st.st.Running {
+				if running {
 					tip = "TeleWEB: Активен (WinDivert)"
-					if !st.st.Redirector {
+					if !redirector {
 						tip = "TeleWEB: Активен (WSS)"
 					}
 				}
-				updateSystemTray(st.st.Running, tip)
+				updateSystemTray(running, tip)
 			}
 		}
 	}
@@ -279,9 +283,11 @@ func (st *guiState) refresh() {
 		st.swH2Media.Value = s.H2MediaEnabled
 		st.swForceTestDC.Value = s.ForceTestDC
 		st.swDC203.Value = s.DC203DirectTCP
-		st.edCustomDomain.SetText(s.CustomCFDomain)
-		st.edCustomWorker.SetText(s.CustomCFWorker)
-		st.edDCOverrides.SetText(s.DCOverrides)
+		// widget.Editor is not thread-safe: the poll goroutine must never
+		// call SetText while the UI thread is in Layout. Queue the strings
+		// and apply them in handleGuiEvents, which holds st.mu on the UI
+		// thread.
+		st.pendingEdits = [3]string{s.CustomCFDomain, s.CustomCFWorker, s.DCOverrides}
 		st.poolSize = s.PoolSize
 	}
 }
@@ -289,6 +295,13 @@ func (st *guiState) refresh() {
 func handleGuiEvents(w *app.Window, st *guiState, gtx layout.Context) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	// Apply editor text on the UI thread only (see refresh above).
+	if st.pendingEdits != [3]string{} {
+		st.edCustomDomain.SetText(st.pendingEdits[0])
+		st.edCustomWorker.SetText(st.pendingEdits[1])
+		st.edDCOverrides.SetText(st.pendingEdits[2])
+		st.pendingEdits = [3]string{}
+	}
 
 	// Navigation tabs
 	if st.tabStatusBtn.Clicked(gtx) {
