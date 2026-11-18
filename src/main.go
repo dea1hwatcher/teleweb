@@ -1014,10 +1014,12 @@ func logf(format string, a ...any) {
 	}
 }
 
-// rotateLogFile trims tgws.log to its last 128 KiB. The fsync + ReadFile +
-// Truncate cycle used to run under logMu on every 64th log line, stalling
-// every other logf caller (including relay hot paths) for tens of ms on
-// Android flash. Rotation has its own lock and runs off the logging path.
+// rotateLogFile trims tgws.log to its last 128 KiB. The rotation runs off
+// the logging path under its own lock. Crucially it reads ONLY the tail via
+// ReadAt: os.ReadFile of a multi-GB log allocated the whole file in one
+// slice (observed: 2.8 GiB log -> 2.9 GiB heapLiveBytes and 5.7 GiB RSS on
+// Windows), and when that allocation failed the file was never trimmed at
+// all -- a self-sustaining leak.
 func rotateLogFile() {
 	defer rotateScheduled.Store(false)
 	rotateMu.Lock()
@@ -1028,23 +1030,55 @@ func rotateLogFile() {
 	if f == nil {
 		return
 	}
+	const keepSize = 128 * 1024
 	info, err := f.Stat()
-	if err != nil || info.Size() <= 256*1024 {
+	if err != nil || info.Size() <= 2*keepSize {
 		return
 	}
-	b, readErr := os.ReadFile(path("tgws.log"))
-	if readErr != nil || len(b) <= 128*1024 {
+	tail, ok := readLogTailBytes(path("tgws.log"), keepSize)
+	if !ok || len(tail) == 0 {
 		return
-	}
-	tail := b[len(b)-128*1024:]
-	if idx := bytes.IndexByte(tail, '\n'); idx >= 0 && idx < len(tail)-1 {
-		tail = tail[idx+1:]
 	}
 	_ = f.Sync()
 	_ = f.Truncate(0)
 	_, _ = f.Seek(0, io.SeekStart)
 	_, _ = f.Write(tail)
 	_ = f.Sync()
+}
+
+// readLogTailBytes returns the last limit bytes of a file, aligned to the
+// next line boundary. It never allocates more than limit bytes regardless
+// of the file size.
+func readLogTailBytes(file string, limit int) ([]byte, bool) {
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, false
+	}
+	readLen := int64(limit)
+	offset := int64(0)
+	if fi.Size() > readLen {
+		offset = fi.Size() - readLen
+	} else {
+		readLen = fi.Size()
+	}
+	if readLen <= 0 {
+		return nil, true
+	}
+	buf := make([]byte, readLen)
+	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
+		return nil, false
+	}
+	if offset > 0 {
+		if idx := bytes.IndexByte(buf, '\n'); idx >= 0 && idx < len(buf)-1 {
+			buf = buf[idx+1:]
+		}
+	}
+	return buf, true
 }
 
 func runtimeVersion() string {
@@ -4050,10 +4084,8 @@ func executeAPICommand(q apiRequest) (any, error) {
 			"platform": runtime.GOOS + "/" + runtime.GOARCH,
 			"uptime":   time.Since(startAt).Round(time.Second).String(),
 		}
-		logContent, _ := os.ReadFile(path("tgws.log"))
-		if len(logContent) > 64*1024 {
-			logContent = logContent[len(logContent)-64*1024:]
-		}
+		// Never read a multi-GB log into memory just to keep 64 KiB.
+		logContent, _ := readLogTailBytes(path("tgws.log"), 64*1024)
 		diag["log"] = redactSensitive(string(logContent))
 		return diag, nil
 	case "netRenew", "net_renew":
