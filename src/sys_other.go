@@ -32,8 +32,11 @@ func isPidAlive(pid int) bool {
 	if pid <= 1 {
 		return false
 	}
-	p, err := os.FindProcess(pid)
-	return err == nil && p != nil
+	// os.FindProcess succeeds for any positive PID on Unix, so it cannot
+	// tell a stale pid file from a live daemon. Signal 0 probes existence
+	// without delivering anything; EPERM still means the process exists.
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func killProcess(pid int) error {
