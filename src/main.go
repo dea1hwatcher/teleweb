@@ -5103,6 +5103,15 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		logf("conn #%d %s: refusing forged CDN203 for non-Telegram dst", id, orig)
 		return
 	}
+	// The transparent redirect matches the CDN203 aggregate on destination IP
+	// only (no --dport), and SO_ORIGINAL_DST preserves whatever port the local
+	// client dialed. Using that port here would turn the allowlist into a raw
+	// TCP tunnel to an arbitrary port inside the Telegram range. The service
+	// only ever speaks MTProto on 443, so refuse anything else.
+	if orig.Port() != 443 {
+		logf("conn #%d %s: refusing CDN203 non-443 port %d", id, orig, orig.Port())
+		return
+	}
 
 	// Level 1: Personal Cloudflare Worker (if configured)
 	worker := customCFWorkerCached()
@@ -5129,7 +5138,10 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		return
 	}
 
-	dst := net.JoinHostPort(orig.Addr().String(), strconv.Itoa(int(orig.Port())))
+	// Always dial the canonical CDN203 endpoint: orig.Addr() is only used for
+	// the allowlist check above, never for the outbound address (see the port
+	// guard). Keeping one dst also keeps the negative cache stable.
+	dst := net.JoinHostPort(cdn203IP, "443")
 
 	// Helper to dial Cloudflare Fronts or Public Workers (WSS fallback)
 	dialWSSFallback := func() bool {

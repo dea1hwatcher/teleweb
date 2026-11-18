@@ -13,6 +13,19 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestFinishElevatedRestartRunsShutdownHooks(t *testing.T) {
+	oldExit := elevatedExit
+	t.Cleanup(func() { elevatedExit = oldExit })
+	order := []string{}
+	elevatedExit = func(code int) { order = append(order, fmt.Sprintf("exit(%d)", code)) }
+
+	registerShutdownHook(func() { order = append(order, "hook") })
+	finishElevatedRestart()
+	if len(order) != 2 || order[0] != "hook" || order[1] != "exit(0)" {
+		t.Fatalf("teardown order: %v; want [hook exit(0)]", order)
+	}
+}
+
 func TestCopyUTF16AlwaysTerminates(t *testing.T) {
 	var dst [8]uint16
 	copyUTF16(dst[:], "TeleWEB")

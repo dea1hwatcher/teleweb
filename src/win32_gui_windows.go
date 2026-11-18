@@ -295,9 +295,21 @@ func restartElevated() error {
 	const SW_SHOWNORMAL = 1
 	r, _, _ := procShellExecute.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), uintptr(unsafe.Pointer(args)), 0, uintptr(SW_SHOWNORMAL))
 	if r > 32 {
-		os.Exit(0)
+		finishElevatedRestart()
 	}
 	return fmt.Errorf("elevation failed or was cancelled (code %d)", r)
+}
+
+// finishElevatedRestart is separated so the ordering -- hooks before exit --
+// can be asserted in a test without actually terminating the test process.
+var elevatedExit = os.Exit
+
+func finishElevatedRestart() {
+	// The elevated process is a separate instance: without this the old GUI
+	// exits via os.Exit and skips every defer in cmdGui, leaving its child
+	// tgws serve, the tray icon and the single-instance mutex behind.
+	runShutdownHooks()
+	elevatedExit(0)
 }
 
 func acquireSingleInstance() (func(), bool) {

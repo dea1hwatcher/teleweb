@@ -12,6 +12,65 @@ import (
 	"time"
 )
 
+func TestChooseNATPortRangeAvoidsDynamicRange(t *testing.T) {
+	tests := []struct {
+		name                string
+		dynStart, dynEnd    uint32
+		wantFirst, wantLast uint16
+		wantErr             bool
+	}{
+		{"windows default", 49152, 65535, natPortDefaultFirst, natPortDefaultLast, false},
+		{"widened low", 1024, 65535, 0, 0, true},
+		{"widened overlap", 15000, 45000, 45001, 65535, false},
+		{"low window fallback", 25000, 65000, 1024, 24999, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			first, last, err := chooseNATPortRange(tc.dynStart, tc.dynEnd)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v, wantErr=%t", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if first != tc.wantFirst || last != tc.wantLast {
+				t.Fatalf("range=%d-%d, want %d-%d", first, last, tc.wantFirst, tc.wantLast)
+			}
+			if uint32(last) >= tc.dynStart && uint32(first) <= tc.dynEnd {
+				t.Fatalf("range %d-%d overlaps dynamic %d-%d", first, last, tc.dynStart, tc.dynEnd)
+			}
+		})
+	}
+}
+
+func TestProcessRet6RejectsForeignLoopbackSource(t *testing.T) {
+	client := netip.MustParseAddr("2a02:1234:5678::42")
+	telegram := netip.MustParseAddr("2001:b28:f23d:f001::a")
+	const natPort = 23456
+	orig := netip.MustParseAddrPort("[2001:b28:f23d:f001::a]:443")
+	flow := natFlowKeyV6{srcIP: client.As16(), srcPort: 40000, dstIP: telegram.As16(), dstPort: 443}
+
+	oldFlows, oldPorts, oldNext := natTable.flowsV6, natTable.ports, natTable.next
+	natTable.flowsV6, natTable.ports, natTable.next = map[natFlowKeyV6]*natEntry{}, map[uint16]*natEntry{}, natPortFirst
+	t.Cleanup(func() { natTable.flowsV6, natTable.ports, natTable.next = oldFlows, oldPorts, oldNext })
+	if e := natGetOrCreateV6(flow, orig, true); e == nil || e.natPort != natPortFirst {
+		t.Fatalf("mapping: %+v", e)
+	}
+
+	// A reply from a local process on a non-listener source port must not be
+	// rewritten even when its destination port matches an active NAT entry.
+	foreign := buildV6TCPPacket(netip.MustParseAddr("::1"), netip.MustParseAddr("::1"), 44444, natPortFirst, 0x12)
+	if processRet6(foreign) {
+		t.Error("foreign loopback packet was rewritten")
+	}
+
+	// The genuine listener reply is still rewritten.
+	genuine := buildV6TCPPacket(netip.MustParseAddr("::1"), netip.MustParseAddr("::1"), uint16(defaultPort), natPortFirst, 0x12)
+	if !processRet6(genuine) {
+		t.Error("listener reply was not rewritten")
+	}
+}
+
 func TestNatGetOrCreate_SynPurgesStale(t *testing.T) {
 	orig := netip.MustParseAddrPort("149.154.167.51:443")
 	flow := natFlowKey{
