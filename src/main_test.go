@@ -6322,3 +6322,30 @@ func TestExecuteAPIPayload_FastPathJSON(t *testing.T) {
 		t.Fatalf("expected ok:true in base64 response, got %s", string(res2))
 	}
 }
+
+func TestReadLogTailBytesBounded(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "big.log")
+	// 4 MiB is enough to prove the helper does not scale the allocation with
+	// file size while keeping the test fast.
+	const size = 4 << 20
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = 'x'
+	}
+	data[size-10] = '\n'
+	copy(data[size-9:], "LASTLINE\n")
+	if err := os.WriteFile(f, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	tail, ok := readLogTailBytes(f, 1024)
+	if !ok {
+		t.Fatal("readLogTailBytes failed")
+	}
+	if len(tail) > 1024 {
+		t.Fatalf("read %d bytes for a 1024-byte limit", len(tail))
+	}
+	if !strings.HasSuffix(string(tail), "LASTLINE\n") {
+		t.Fatalf("tail lost the last line: %q", tail[len(tail)-32:])
+	}
+}
