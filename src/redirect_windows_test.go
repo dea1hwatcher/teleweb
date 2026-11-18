@@ -211,6 +211,13 @@ func TestParseTCPv6(t *testing.T) {
 	if metaF, okF := parseTCPv6(frag); !okF || metaF.tcpOff != 48 {
 		t.Fatalf("fragment chain: ok=%v tcpOff=%d, want true/48", okF, metaF.tcpOff)
 	}
+	// A non-first fragment has Next Header=6 but no TCP header at this
+	// offset; parsing it would fabricate a flow from payload bytes.
+	nonFirst := append([]byte(nil), frag...)
+	binary.BigEndian.PutUint16(nonFirst[42:44], 8<<3) // fragment offset 8
+	if _, ok := parseTCPv6(nonFirst); ok {
+		t.Error("parseTCPv6 accepted a non-first IPv6 fragment as TCP")
+	}
 	if _, ok := parseTCPv6(pkt[:59]); ok {
 		t.Error("parseTCPv6 accepted a truncated packet")
 	}
