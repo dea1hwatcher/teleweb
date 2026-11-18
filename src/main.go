@@ -65,6 +65,8 @@ var (
 	logMu            sync.Mutex
 	logFile          *os.File
 	logWrites        uint64
+	rotateMu         sync.Mutex
+	rotateScheduled  atomic.Bool
 	lastLogRaw       string
 	repeatLogCount   int
 	lastRepeatLog    time.Time
@@ -1012,23 +1014,44 @@ func logf(format string, a ...any) {
 		// Avoid fsync on every connection event. Android flash syncs are expensive;
 		// append writes are enough for routine diagnostics.
 		logWrites++
-		if logWrites%64 == 0 {
-			if info, err := logFile.Stat(); err == nil && info.Size() > 256*1024 {
-				_ = logFile.Sync()
-				b, readErr := os.ReadFile(path("tgws.log"))
-				if readErr == nil && len(b) > 128*1024 {
-					tail := b[len(b)-128*1024:]
-					if idx := bytes.IndexByte(tail, '\n'); idx >= 0 && idx < len(tail)-1 {
-						tail = tail[idx+1:]
-					}
-					_ = logFile.Truncate(0)
-					_, _ = logFile.Seek(0, io.SeekStart)
-					_, _ = logFile.Write(tail)
-					_ = logFile.Sync()
-				}
-			}
+		if logWrites%64 == 0 && !rotateScheduled.Load() {
+			rotateScheduled.Store(true)
+			go rotateLogFile()
 		}
 	}
+}
+
+// rotateLogFile trims tgws.log to its last 128 KiB. The fsync + ReadFile +
+// Truncate cycle used to run under logMu on every 64th log line, stalling
+// every other logf caller (including relay hot paths) for tens of ms on
+// Android flash. Rotation has its own lock and runs off the logging path.
+func rotateLogFile() {
+	defer rotateScheduled.Store(false)
+	rotateMu.Lock()
+	defer rotateMu.Unlock()
+	logMu.Lock()
+	f := logFile
+	logMu.Unlock()
+	if f == nil {
+		return
+	}
+	info, err := f.Stat()
+	if err != nil || info.Size() <= 256*1024 {
+		return
+	}
+	b, readErr := os.ReadFile(path("tgws.log"))
+	if readErr != nil || len(b) <= 128*1024 {
+		return
+	}
+	tail := b[len(b)-128*1024:]
+	if idx := bytes.IndexByte(tail, '\n'); idx >= 0 && idx < len(tail)-1 {
+		tail = tail[idx+1:]
+	}
+	_ = f.Sync()
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, io.SeekStart)
+	_, _ = f.Write(tail)
+	_ = f.Sync()
 }
 
 func runtimeVersion() string {
@@ -3402,20 +3425,49 @@ func waitForListener(timeout time.Duration) bool {
 	return true
 }
 
+// startRuntime is the single startup contract used by every entry point:
+// bring the listener up, wait for it, install redirect rules, protect the
+// target apps and start the watchdog. Rules are never installed before the
+// listener answers, otherwise a slow start blackholes Telegram traffic.
+// Callers that need boot-specific retries or extra error cleanup do it
+// around this helper.
+func startRuntime(timeout time.Duration, retries int) error {
+	if err := ensureServer(); err != nil {
+		return err
+	}
+	if !waitForListener(timeout) {
+		stopServer()
+		return fmt.Errorf("tgws failed to listen on port %d", defaultPort)
+	}
+	var lastErr error
+	for attempt := 1; attempt <= retries; attempt++ {
+		if lastErr = setupRules(); lastErr == nil {
+			break
+		}
+		if attempt < retries {
+			logf("runtime: redirect setup attempt #%d failed: %v; retrying in 2s", attempt, lastErr)
+			time.Sleep(2 * time.Second)
+		}
+	}
+	if lastErr != nil {
+		stopServer()
+		return lastErr
+	}
+	protectTargetAppProcesses()
+	if err := ensureWatchdog(); err != nil {
+		logf("runtime: failed to start watchdog: %v", err)
+	}
+	return nil
+}
+
 // restoreDaemon replaces a dead or unresponsive daemon and reinstalls the
 // redirect rules: stopServer drops stale rules before the listener is
 // replaced, and rules return only once the new listener is up so traffic is
 // never pointed at a port nobody listens on.
 func restoreDaemon() error {
 	stopServer()
-	if err := ensureServer(); err != nil {
-		return fmt.Errorf("start tgws: %w", err)
-	}
-	if !waitForListener(4 * time.Second) {
-		return fmt.Errorf("tgws failed to listen on port %d", defaultPort)
-	}
-	if err := setupRules(); err != nil {
-		return fmt.Errorf("restore redirect rules: %w", err)
+	if err := startRuntime(4*time.Second, 1); err != nil {
+		return fmt.Errorf("restore daemon: %w", err)
 	}
 	return nil
 }
@@ -3851,6 +3903,7 @@ func status() Status {
 			s.GCCPUPercent = file.GCCPUPercent
 			s.GCPauseAvgMs = file.GCPauseAvgMs
 			s.HeapLiveBytes = file.HeapLiveBytes
+			s.LogSuppressed = file.LogSuppressed
 			if globalWsPool == nil {
 				s.PoolHits, s.PoolMisses, s.PoolIdle = file.PoolHits, file.PoolMisses, file.PoolIdle
 			}
@@ -3899,18 +3952,8 @@ func executeAPICommand(q apiRequest) (any, error) {
 		if !readEnabled() {
 			return status(), nil
 		}
-		if err := ensureServer(); err != nil {
+		if err := startRuntime(4*time.Second, 1); err != nil {
 			return nil, err
-		}
-		if !waitForListener(4 * time.Second) {
-			return nil, fmt.Errorf("tgws failed to listen on port %d", defaultPort)
-		}
-		if err := setupRules(); err != nil {
-			return nil, err
-		}
-		protectTargetAppProcesses()
-		if err := ensureWatchdog(); err != nil {
-			logf("resume: failed to start watchdog: %v", err)
 		}
 		logf("WebUI resume: redirection rules reapplied without restarting live daemon")
 		return status(), nil
@@ -3920,28 +3963,10 @@ func executeAPICommand(q apiRequest) (any, error) {
 				return nil, err
 			}
 			if *q.Enabled {
-				if err := ensureServer(); err != nil {
+				if err := startRuntime(4*time.Second, 1); err != nil {
 					_ = writeEnabled(false)
 					updateModuleDescription("status: failed ⚠️")
 					return nil, err
-				}
-				// REDIRECT rules go in only after the listener is up, otherwise
-				// a slow start would blackhole Telegram traffic into a dead port.
-				if !waitForListener(4 * time.Second) {
-					_ = writeEnabled(false)
-					stopServer()
-					updateModuleDescription("status: failed ⚠️")
-					return nil, fmt.Errorf("tgws failed to listen on port %d", defaultPort)
-				}
-				if err := setupRules(); err != nil {
-					_ = writeEnabled(false)
-					cleanupRules()
-					updateModuleDescription("status: failed ⚠️")
-					return nil, err
-				}
-				protectTargetAppProcesses()
-				if err := ensureWatchdog(); err != nil {
-					logf("failed to start watchdog: %v", err)
 				}
 				updateModuleDescription(currentStatusDesc())
 			} else {
@@ -4214,34 +4239,11 @@ func main() {
 			}
 			// Start the listener before installing REDIRECT rules: rules that
 			// point at a not-yet-listening port blackhole Telegram traffic.
-			if e := ensureServer(); e != nil {
-				logf("boot: failed to start server: %v", e)
+			if e := startRuntime(4*time.Second, 5); e != nil {
+				logf("boot: failed to start runtime: %v", e)
 				fmt.Fprintln(os.Stderr, e)
 				updateModuleDescription("status: failed ⚠️")
 				os.Exit(1)
-			}
-			if !waitForListener(4 * time.Second) {
-				logf("boot: tgws failed to listen on port %d in time", defaultPort)
-				fmt.Fprintln(os.Stderr, fmt.Sprintf("tgws failed to listen on port %d", defaultPort))
-				updateModuleDescription("status: failed ⚠️")
-				os.Exit(1)
-			}
-			var lastErr error
-			for attempt := 1; attempt <= 5; attempt++ {
-				if lastErr = setupRules(); lastErr == nil {
-					break
-				}
-				logf("boot: redirection setup attempt #%d failed: %v; retrying in 2s", attempt, lastErr)
-				time.Sleep(2 * time.Second)
-			}
-			if lastErr != nil {
-				logf("boot: failed to setup redirection rules: %v", lastErr)
-				fmt.Fprintln(os.Stderr, lastErr)
-				updateModuleDescription("status: failed ⚠️")
-				os.Exit(1)
-			}
-			if e := ensureWatchdog(); e != nil {
-				logf("boot: failed to start watchdog: %v", e)
 			}
 			updateModuleDescription(currentStatusDesc())
 			fmt.Println("TeleWEB transport started")
@@ -6876,10 +6878,12 @@ func raceCandidates(ctx context.Context, candidates []dialCandidate, stagger tim
 				return res.ws, res.cand.name, nil
 			}
 			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: %v", res.cand.name, res.err))
-			if active < maxParallel && nextIdx < len(candidates) {
-				startNext()
-				timer.Reset(stagger)
-			}
+			// Do not refill a freed slot here. The stagger ticker is the
+			// only scheduler: refilling on every result turns a race into
+			// a sequential scan when candidates fail in 100-200 ms (DNS,
+			// refused, 403), and resetting the timer on each result used
+			// to postpone the tick forever. The ticker refills free slots
+			// on its next fire.
 		}
 	}
 
