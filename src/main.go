@@ -59,8 +59,6 @@ var (
 	trafficUpBytes   int64 // Telegram client -> WSS, cumulative for this daemon lifetime
 	trafficDownBytes int64 // WSS -> Telegram client, cumulative for this daemon lifetime
 	connSeq          int64
-	statsMu          sync.Mutex
-	dcCounts         = map[string]int{}
 	dcCountsArr      [6]atomic.Int64 // lock-free counters: indices 0..4 for DC1..5, index 5 for DC203
 	logMu            sync.Mutex
 	logFile          *os.File
@@ -117,11 +115,6 @@ func snapshotDCCounts() map[string]int {
 	if c := dcCountsArr[5].Load(); c > 0 {
 		m["203"] = int(c)
 	}
-	statsMu.Lock()
-	for k, v := range dcCounts {
-		m[k] += v
-	}
-	statsMu.Unlock()
 	return m
 }
 
@@ -1085,7 +1078,7 @@ func procSummary(pid int) string {
 		var parts []string
 		for _, entry := range parseProcCgroups(string(cg)) {
 			part := fmt.Sprintf("%s:%s", entry.controllers, entry.path)
-			if processFrozen(pid, entry) {
+			if processFrozen(entry) {
 				part += "(frozen=1)"
 			}
 			parts = append(parts, part)
@@ -1313,6 +1306,23 @@ var (
 	lastCFRay atomic.Pointer[string]
 	lastCFPoP atomic.Pointer[string]
 )
+
+// noteCFRay records Cloudflare edge telemetry from a response header and
+// updates domain affinity when a host is supplied. Both the WSS and H2
+// paths used to carry their own copy of this sequence.
+func noteCFRay(cfRay, host string) {
+	cfRay = strings.TrimSpace(cfRay)
+	if cfRay == "" {
+		return
+	}
+	lastCFRay.Store(&cfRay)
+	if pop := parseCFRayPoP(cfRay); pop != "" {
+		lastCFPoP.Store(&pop)
+		if host != "" {
+			noteDomainPoP(host, pop)
+		}
+	}
+}
 
 func parseCFRayPoP(ray string) string {
 	ray = strings.TrimSpace(ray)
@@ -3097,7 +3107,7 @@ func writePIDToCgroup(pid int, file string) error {
 	return os.WriteFile(file, []byte(strconv.Itoa(pid)), 0644)
 }
 
-func processFrozen(pid int, entry procCgroupEntry) bool {
+func processFrozen(entry procCgroupEntry) bool {
 	if entry.path == "/" {
 		return false
 	}
@@ -3147,7 +3157,7 @@ func protectProcess(pid int) {
 	}
 	entries := parseProcCgroups(string(cgRaw))
 	for _, entry := range entries {
-		if processFrozen(pid, entry) {
+		if processFrozen(entry) {
 			logf("protect: PID %d was in frozen cgroup %s (controllers=%s); moving to root group", pid, entry.path, entry.controllers)
 		}
 		if entry.path == "/" {
@@ -6750,10 +6760,17 @@ func capRouteHealthLocked() {
 // same way; callers must hold the map's own mutex.
 func capFailMapLocked(m map[string]time.Time) {
 	for len(m) > routeHealthCap {
-		for k := range m {
-			delete(m, k)
-			break
+		var oldestKey string
+		var oldest time.Time
+		for k, until := range m {
+			if oldestKey == "" || until.Before(oldest) {
+				oldestKey, oldest = k, until
+			}
 		}
+		if oldestKey == "" {
+			return
+		}
+		delete(m, oldestKey)
 	}
 }
 
@@ -7663,14 +7680,8 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 		return nil, fmt.Errorf("server selected unknown subprotocol %q", p)
 	}
 	cfRay := strings.TrimSpace(resp.Header.Get("CF-Ray"))
-	cfPoP := parseCFRayPoP(cfRay)
-	if cfRay != "" {
-		lastCFRay.Store(&cfRay)
-		if cfPoP != "" {
-			lastCFPoP.Store(&cfPoP)
-		}
-	}
-	return &wsConn{conn: conn, r: r, host: host, cfRay: cfRay, cfPoP: cfPoP}, nil
+	noteCFRay(cfRay, "")
+	return &wsConn{conn: conn, r: r, host: host, cfRay: cfRay, cfPoP: parseCFRayPoP(cfRay)}, nil
 }
 
 func finishWorkerWS(ctx context.Context, raw net.Conn, host, path string, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
@@ -7686,8 +7697,8 @@ func workerDstForDC(dc int) string {
 	if spec, ok := dcSpecs[dc]; ok && spec.workerDst != "" {
 		return spec.workerDst
 	}
-	// Unknown DC: fall back to the DC2 relay, the same default as before.
-	return "149.154.167.51"
+	// Unknown DC: fall back to the DC2 relay from the single source of truth.
+	return dcSpecs[2].workerDst
 }
 
 func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool) (*wsConn, error) {
@@ -7858,7 +7869,7 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 		if customPath != "" {
 			basePath = customPath
 		}
-		path = fmt.Sprintf("%s?dst=149.154.167.51&dc=2", basePath)
+		path = fmt.Sprintf("%s?dst=%s&dc=2", basePath, dcSpecs[2].workerDst)
 		if query != "" {
 			path += "&" + query
 		}
@@ -8092,7 +8103,7 @@ func runCheckDiagnostic(redact ...bool) bool {
 		name string
 		addr string
 	}{
-		{"DC2 (149.154.167.51:443)", "149.154.167.51:443"},
+		{"DC2 (" + dcSpecs[2].workerDst + ":443)", dcSpecs[2].workerDst + ":443"},
 		{"DC4 (149.154.167.91:443)", "149.154.167.91:443"},
 	} {
 		start := time.Now()

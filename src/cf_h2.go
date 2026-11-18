@@ -248,13 +248,7 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 	defer resp.Body.Close()
 
 	// Capture CF-Ray & CF-PoP telemetry from response
-	if cfRay := strings.TrimSpace(resp.Header.Get("CF-Ray")); cfRay != "" {
-		lastCFRay.Store(&cfRay)
-		if pop := parseCFRayPoP(cfRay); pop != "" {
-			lastCFPoP.Store(&pop)
-			noteDomainPoP(host, pop)
-		}
-	}
+	noteCFRay(resp.Header.Get("CF-Ray"), host)
 
 	if resp.StatusCode != http.StatusOK {
 		h2FailsMu.Lock()
