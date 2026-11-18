@@ -633,6 +633,13 @@ func ipv6TCPHeaderOffset(pkt []byte) int {
 			if off+8 > len(pkt) {
 				return -1
 			}
+			// Only the first fragment carries a TCP header. A non-zero
+			// 13-bit offset means the bytes after this header are payload,
+			// and parsing them as TCP would create bogus NAT mappings from
+			// garbage ports.
+			if binary.BigEndian.Uint16(pkt[off+2:off+4])>>3 != 0 {
+				return -1
+			}
 			next = int(pkt[off])
 			off += 8
 		case 51: // Authentication Header: 4*(len+2) bytes, next header first

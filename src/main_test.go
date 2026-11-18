@@ -1763,6 +1763,46 @@ func TestDCLearnAndPersistence(t *testing.T) {
 	}
 }
 
+func TestRaceCandidatesStaggerNotResetByFastFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	const stagger = 60 * time.Millisecond
+	var mu sync.Mutex
+	var starts []time.Time
+	makeFail := func(name string) dialCandidate {
+		return dialCandidate{
+			name: name,
+			dial: func(c context.Context) (*wsConn, error) {
+				mu.Lock()
+				starts = append(starts, time.Now())
+				mu.Unlock()
+				time.Sleep(2 * time.Millisecond) // refused/DNS-style fast failure
+				return nil, errors.New("fast failure")
+			},
+		}
+	}
+	candidates := []dialCandidate{makeFail("0"), makeFail("1"), makeFail("2"), makeFail("3")}
+	_, _, err := raceCandidates(ctx, candidates, stagger, 1)
+	if err == nil {
+		t.Fatal("expected all candidates to fail")
+	}
+	mu.Lock()
+	got := append([]time.Time(nil), starts...)
+	mu.Unlock()
+	if len(got) != len(candidates) {
+		t.Fatalf("started %d candidates, want %d", len(got), len(candidates))
+	}
+	// With maxParallel=1 the first starts immediately; each later one must
+	// be released by the stagger ticker, not by the next fast failure. A
+	// timer.Reset on every result used to postpone the tick indefinitely.
+	for i := 1; i < len(got); i++ {
+		if gap := got[i].Sub(got[i-1]); gap < stagger/2 {
+			t.Fatalf("candidate %d started only %v after %d (stagger %v)", i, gap, i-1, stagger)
+		}
+	}
+}
+
 func TestRaceCandidatesFastFailureRecoversSlot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -3028,6 +3068,18 @@ func TestLoadCachedAppsDropsFabricatedEntries(t *testing.T) {
 	got, uids := loadCachedApps()
 	if len(got) != 1 || got[0].Pkg != "org.telegram.messenger" || len(uids) != 1 || uids[0] != 10123 {
 		t.Fatalf("fabricated entry survived: %#v uids=%v", got, uids)
+	}
+}
+
+func TestStatusCLICopiesLogSuppressed(t *testing.T) {
+	oldDir := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(oldDir) })
+	if err := os.WriteFile(path("status.json"), []byte(`{"logSuppressed":42}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := status().LogSuppressed; got != 42 {
+		t.Fatalf("CLI status lost LogSuppressed: got %d, want 42", got)
 	}
 }
 
