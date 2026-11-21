@@ -310,6 +310,38 @@ func TestMemoryLeak_H2Clients_LRUEviction(t *testing.T) {
 // TestMemoryLeak_BoundedMaps_ProtectAndLearnedDCs ensures warnProtect and learnedDCs
 // maintain hard upper bounds on mobile devices.
 func TestMemoryLeak_BoundedMaps_ProtectAndLearnedDCs(t *testing.T) {
+	origProtect := make(map[any]any)
+	protectWarnings.Range(func(k, v any) bool {
+		origProtect[k] = v
+		protectWarnings.Delete(k)
+		return true
+	})
+	defer func() {
+		protectWarnings.Range(func(k, _ any) bool {
+			protectWarnings.Delete(k)
+			return true
+		})
+		for k, v := range origProtect {
+			protectWarnings.Store(k, v)
+		}
+	}()
+
+	origLearned := make(map[any]any)
+	learnedDCs.Range(func(k, v any) bool {
+		origLearned[k] = v
+		learnedDCs.Delete(k)
+		return true
+	})
+	defer func() {
+		learnedDCs.Range(func(k, _ any) bool {
+			learnedDCs.Delete(k)
+			return true
+		})
+		for k, v := range origLearned {
+			learnedDCs.Store(k, v)
+		}
+	}()
+
 	// 1. warnProtect churn with 1,000 PIDs
 	for pid := 20000; pid < 21000; pid++ {
 		warnProtect(pid, "protect test warning")
