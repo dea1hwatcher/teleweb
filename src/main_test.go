@@ -6349,3 +6349,141 @@ func TestReadLogTailBytesBounded(t *testing.T) {
 		t.Fatalf("tail lost the last line: %q", tail[len(tail)-32:])
 	}
 }
+
+func TestWarnProtect_CeilingInvariant(t *testing.T) {
+	origProtect := make(map[any]any)
+	protectWarnings.Range(func(k, v any) bool {
+		origProtect[k] = v
+		protectWarnings.Delete(k)
+		return true
+	})
+	defer func() {
+		protectWarnings.Range(func(k, _ any) bool {
+			protectWarnings.Delete(k)
+			return true
+		})
+		for k, v := range origProtect {
+			protectWarnings.Store(k, v)
+		}
+	}()
+
+	for pid := 10000; pid < 11000; pid++ {
+		warnProtect(pid, fmt.Sprintf("warning for pid %d", pid))
+		var count int
+		protectWarnings.Range(func(_, _ any) bool {
+			count++
+			return true
+		})
+		if count > 128 {
+			t.Fatalf("protectWarnings exceeded hard cap: got %d, max allowed 128", count)
+		}
+	}
+}
+
+func TestRotateLogFile_ConcurrentWrites(t *testing.T) {
+	tmpDir := t.TempDir()
+	origBase := baseDir
+	setBaseDir(tmpDir)
+	defer func() { setBaseDir(origBase) }()
+
+	logMu.Lock()
+	oldFile := logFile
+	logFile = nil
+	logMu.Unlock()
+	defer func() {
+		logMu.Lock()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		logFile = oldFile
+		logMu.Unlock()
+	}()
+
+	// Seed tgws.log with > 300KB data so rotateLogFile triggers
+	logPath := filepath.Join(tmpDir, "tgws.log")
+	line := strings.Repeat("A", 100) + "\n"
+	seed := strings.Repeat(line, 3500)
+	if err := os.WriteFile(logPath, []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logMu.Lock()
+	logFile = f
+	logMu.Unlock()
+
+	var wg sync.WaitGroup
+	// Run concurrent writers
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				logf("concurrent test writer %d message %d", id, j)
+			}
+		}(i)
+	}
+	// Run concurrent rotations
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rotateLogFile()
+		}()
+	}
+	wg.Wait()
+
+	logMu.Lock()
+	if logFile != nil {
+		_ = logFile.Sync()
+	}
+	logMu.Unlock()
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("log file unexpectedly truncated to 0 bytes")
+	}
+}
+
+func TestWsPool_RefillFailureBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWsPool(ctx, 2)
+	defer pool.Close()
+
+	slot := poolSlot{dc: 2, isMedia: false, isTest: false}
+	sb := pool.getSlotBackoff(slot)
+
+	if sb.consecutive.Load() != 0 || sb.until.Load() != 0 {
+		t.Fatalf("expected initial backoff 0, got consecutive=%d until=%d", sb.consecutive.Load(), sb.until.Load())
+	}
+
+	// Simulate first failure
+	sb.consecutive.Add(1)
+	sb.until.Store(time.Now().Add(15 * time.Second).UnixNano())
+
+	if time.Now().UnixNano() >= sb.until.Load() {
+		t.Fatal("expected slot to be in backoff")
+	}
+
+	// Refill during backoff should immediately return without starting refill
+	pool.Refill(2, false, false)
+	_, rf := pool.getQueue(slot)
+	if rf.Load() != 0 {
+		t.Fatal("expected refilling flag to remain 0 during backoff")
+	}
+
+	// Reset backoff (simulating success)
+	sb.consecutive.Store(0)
+	sb.until.Store(0)
+	if sb.until.Load() != 0 {
+		t.Fatal("expected backoff to be cleared")
+	}
+}
