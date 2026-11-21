@@ -1039,11 +1039,15 @@ func rotateLogFile() {
 	if !ok || len(tail) == 0 {
 		return
 	}
-	_ = f.Sync()
-	_ = f.Truncate(0)
-	_, _ = f.Seek(0, io.SeekStart)
-	_, _ = f.Write(tail)
-	_ = f.Sync()
+	logMu.Lock()
+	if logFile == f {
+		_ = f.Sync()
+		_ = f.Truncate(0)
+		_, _ = f.Seek(0, io.SeekStart)
+		_, _ = f.Write(tail)
+		_ = f.Sync()
+	}
+	logMu.Unlock()
 }
 
 // readLogTailBytes returns the last limit bytes of a file, aligned to the
@@ -3325,7 +3329,7 @@ func warnProtect(pid int, message string) {
 		count++
 		return true
 	})
-	if count > 128 {
+	if count >= 128 {
 		protectWarnings.Range(func(key, _ any) bool {
 			if p, ok := key.(int); ok && !isPidAlive(p) {
 				protectWarnings.Delete(key)
@@ -3333,7 +3337,7 @@ func warnProtect(pid int, message string) {
 			}
 			return true
 		})
-		if count > 128 {
+		if count >= 128 {
 			protectWarnings.Range(func(key, _ any) bool {
 				protectWarnings.Delete(key)
 				count--

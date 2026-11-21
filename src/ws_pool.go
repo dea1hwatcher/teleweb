@@ -29,9 +29,15 @@ const (
 	wsPoolCheckInterval = 15 * time.Second
 )
 
+type slotBackoff struct {
+	consecutive atomic.Int32
+	until       atomic.Int64 // unix nano
+}
+
 type WsPool struct {
 	queues       sync.Map // poolSlot -> chan *poolEntry
 	refilling    sync.Map // poolSlot -> *atomic.Int32
+	backoffs     sync.Map // poolSlot -> *slotBackoff
 	ctx          context.Context
 	cancel       context.CancelFunc
 	size         atomic.Int32
@@ -69,6 +75,15 @@ func (p *WsPool) getQueue(slot poolSlot) (chan *poolEntry, *atomic.Int32) {
 	qVal, _ := p.queues.LoadOrStore(slot, make(chan *poolEntry, 8))
 	rfVal, _ := p.refilling.LoadOrStore(slot, &atomic.Int32{})
 	return qVal.(chan *poolEntry), rfVal.(*atomic.Int32)
+}
+
+func (p *WsPool) getSlotBackoff(slot poolSlot) *slotBackoff {
+	if val, ok := p.backoffs.Load(slot); ok {
+		return val.(*slotBackoff)
+	}
+	sb := &slotBackoff{}
+	actual, _ := p.backoffs.LoadOrStore(slot, sb)
+	return actual.(*slotBackoff)
 }
 
 func isPoolConnAlive(c net.Conn) bool {
@@ -135,6 +150,10 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 		return
 	}
 	slot := poolSlot{dc: dc, isMedia: isMedia, isTest: isTest}
+	sb := p.getSlotBackoff(slot)
+	if time.Now().UnixNano() < sb.until.Load() {
+		return // in consecutive failure backoff window
+	}
 	q, rf := p.getQueue(slot)
 	if !rf.CompareAndSwap(0, 1) {
 		return // another refiller is already running for this slot
@@ -161,20 +180,35 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 			ws, err := dialTelegramWS(withBackgroundDial(dialCtx), dc, isMedia, isTest)
 			dialCancel()
 
-			if err == nil && ws != nil {
-				if int(p.size.Load()) <= 0 || p.ctx.Err() != nil {
-					_ = ws.Close()
-					return
+			if err != nil || ws == nil {
+				// Consecutive failure backoff: scale delay to prevent network/CPU thrashing
+				fails := sb.consecutive.Add(1)
+				delay := 15 * time.Second
+				if fails == 2 {
+					delay = 30 * time.Second
+				} else if fails >= 3 {
+					delay = 60 * time.Second
 				}
-				entry := &poolEntry{ws: ws, createdAt: time.Now()}
-				select {
-				case q <- entry:
-				case <-p.ctx.Done():
-					_ = ws.Close()
-					return
-				default:
-					_ = ws.Close()
-				}
+				sb.until.Store(time.Now().Add(delay).UnixNano())
+				break
+			}
+
+			// Successful dial: reset consecutive failure count and backoff
+			sb.consecutive.Store(0)
+			sb.until.Store(0)
+
+			if int(p.size.Load()) <= 0 || p.ctx.Err() != nil {
+				_ = ws.Close()
+				return
+			}
+			entry := &poolEntry{ws: ws, createdAt: time.Now()}
+			select {
+			case q <- entry:
+			case <-p.ctx.Done():
+				_ = ws.Close()
+				return
+			default:
+				_ = ws.Close()
 			}
 		}
 	}()
