@@ -86,6 +86,16 @@ func (p *WsPool) getSlotBackoff(slot poolSlot) *slotBackoff {
 	return actual.(*slotBackoff)
 }
 
+func (p *WsPool) ResetBackoff(dc int, isMedia bool, isTest bool) {
+	if p == nil {
+		return
+	}
+	slot := poolSlot{dc: dc, isMedia: isMedia, isTest: isTest}
+	sb := p.getSlotBackoff(slot)
+	sb.consecutive.Store(0)
+	sb.until.Store(0)
+}
+
 func isPoolConnAlive(c net.Conn) bool {
 	if c == nil {
 		return false
