@@ -1078,7 +1078,7 @@ func readLogTailBytes(file string, limit int) ([]byte, bool) {
 		return nil, false
 	}
 	if offset > 0 {
-		if idx := bytes.IndexByte(buf, '\n'); idx >= 0 && idx < len(buf)-1 {
+		if idx := bytes.IndexByte(buf, '\n'); idx >= 0 {
 			buf = buf[idx+1:]
 		}
 	}
@@ -4802,6 +4802,8 @@ func isNeutralError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "connection reset by peer") ||
 		strings.Contains(msg, "forcibly closed by the remote host") ||
+		strings.Contains(msg, "aborted by the software") ||
+		strings.Contains(msg, "connection was aborted") ||
 		strings.Contains(msg, "use of closed network connection") ||
 		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "context canceled")
@@ -4960,6 +4962,7 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 			return
 		}
 		if globalWsPool != nil && globalWsPool.size.Load() > 0 {
+			globalWsPool.ResetBackoff(dc, isMedia, isTestDC)
 			globalWsPool.Refill(dc, isMedia, isTestDC)
 		}
 	}

@@ -98,7 +98,8 @@ func isPidAlive(pid int) bool {
 	if pid <= 1 {
 		return false
 	}
-	return syscall.Kill(pid, 0) == nil
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func killProcess(pid int) error {
