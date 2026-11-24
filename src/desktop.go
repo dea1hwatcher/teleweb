@@ -122,8 +122,20 @@ func trackedDial(ctx context.Context, network, addr string, timeout time.Duratio
 		return d.DialContext(overall, network, addr)
 	}
 
+	listenNet := "tcp4"
+	listenHost := "127.0.0.1:0"
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		if ip, err := netip.ParseAddr(host); err == nil && ip.Is6() {
+			listenNet = "tcp6"
+			listenHost = "[::1]:0"
+		}
+	} else if strings.HasPrefix(network, "tcp6") {
+		listenNet = "tcp6"
+		listenHost = "[::1]:0"
+	}
+
 	for attempt := 0; attempt < 3; attempt++ {
-		l, err := net.Listen("tcp4", "127.0.0.1:0")
+		l, err := net.Listen(listenNet, listenHost)
 		if err != nil {
 			return nil, err
 		}

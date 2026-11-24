@@ -6487,3 +6487,64 @@ func TestWsPool_RefillFailureBackoff(t *testing.T) {
 		t.Fatal("expected backoff to be cleared")
 	}
 }
+
+func TestIsNeutralError_WSAECONNABORTED(t *testing.T) {
+	errs := []error{
+		errors.New("wsasend: An established connection was aborted by the software in your host machine."),
+		errors.New("read: connection was aborted by peer"),
+		errors.New("write: broken pipe"),
+		errors.New("connection reset by peer"),
+		io.EOF,
+		net.ErrClosed,
+	}
+	for _, err := range errs {
+		if !isNeutralError(err) {
+			t.Errorf("expected isNeutralError(%v) == true, got false", err)
+		}
+	}
+
+	fatalErr := errors.New("dial tcp 1.2.3.4:443: i/o timeout")
+	if isNeutralError(fatalErr) {
+		t.Errorf("expected isNeutralError(%v) == false, got true", fatalErr)
+	}
+}
+
+func TestWsPool_ResetBackoffMethod(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWsPool(ctx, 2)
+	defer pool.Close()
+
+	slot := poolSlot{dc: 2, isMedia: false, isTest: false}
+	sb := pool.getSlotBackoff(slot)
+
+	sb.consecutive.Store(3)
+	sb.until.Store(time.Now().Add(60 * time.Second).UnixNano())
+
+	pool.ResetBackoff(2, false, false)
+
+	if sb.consecutive.Load() != 0 || sb.until.Load() != 0 {
+		t.Fatalf("expected ResetBackoff to clear counters, got consecutive=%d until=%d",
+			sb.consecutive.Load(), sb.until.Load())
+	}
+}
+
+func TestReadLogTailBytes_TrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "trailing.log")
+	content := "Line 1: preamble\nLine 2: content\nLine 3: tail entry\n"
+	if err := os.WriteFile(logPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	tail, ok := readLogTailBytes(logPath, 25)
+	if !ok {
+		t.Fatal("readLogTailBytes failed")
+	}
+	// With 25 bytes limit, offset starts in "Line 2: content\nLine 3: tail entry\n"
+	// Slicing at first newline should return "Line 3: tail entry\n"
+	if !strings.HasSuffix(string(tail), "Line 3: tail entry\n") {
+		t.Fatalf("unexpected tail: %q", string(tail))
+	}
+}
