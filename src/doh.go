@@ -37,6 +37,7 @@ type dohCacheEntry struct {
 var (
 	dohCache      sync.Map // string -> dohCacheEntry
 	dohHTTPClient *http.Client
+	dohTransport  atomic.Pointer[http.Transport]
 	dohClientOnce sync.Once
 )
 
@@ -111,12 +112,19 @@ func getDoHClient() *http.Client {
 			MaxIdleConns:      16,
 			IdleConnTimeout:   90 * time.Second,
 		}
+		dohTransport.Store(tr)
 		dohHTTPClient = &http.Client{
 			Transport: tr,
 			Timeout:   2 * time.Second,
 		}
 	})
 	return dohHTTPClient
+}
+
+func resetDoHIdleConnections() {
+	if tr := dohTransport.Load(); tr != nil {
+		tr.CloseIdleConnections()
+	}
 }
 
 func readDoHEnabled() bool         { return readFlag("doh_enabled", true) }

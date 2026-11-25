@@ -26,11 +26,8 @@ func cmdWebUI(addr string) {
 	source := root
 	if root != "" {
 		static = http.FileServer(http.Dir(root))
-	} else if fsys := embeddedWebrootFS(); fsys != nil {
-		static = http.FileServer(http.FS(fsys))
-		source = "embedded"
 	} else {
-		fmt.Fprintln(os.Stderr, "webui: webroot/index.html not found and nothing embedded (set TELEWEB_WEBROOT)")
+		fmt.Fprintln(os.Stderr, "webui: webroot/index.html not found (set TELEWEB_WEBROOT)")
 		os.Exit(1)
 	}
 	logf("WebUI listening on http://%s (root: %s)", addr, source)

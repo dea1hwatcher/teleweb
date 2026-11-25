@@ -34,6 +34,12 @@ func selfDialExpire(port uint16) {
 	selfDialRegister(port)
 }
 
+func selfDialDelete(port uint16) {
+	selfDialMu.Lock()
+	delete(selfDialPorts, port)
+	selfDialMu.Unlock()
+}
+
 func isSelfDialPort(port uint16) bool {
 	selfDialMu.RLock()
 	exp, ok := selfDialPorts[port]
@@ -154,12 +160,15 @@ func trackedDial(ctx context.Context, network, addr string, timeout time.Duratio
 		if err == nil {
 			return &selfPortConn{Conn: c, port: port}, nil
 		}
-		selfDialExpire(port)
-		if overall.Err() != nil {
+		if !isLocalAddrInUse(err) {
+			selfDialExpire(port)
+			// Remote endpoint is unreachable/refused/reset; do not retry.
 			return nil, err
 		}
-		if !isLocalAddrInUse(err) {
-			// Remote endpoint is unreachable/refused/reset; do not retry.
+		// Another process claimed port between l.Close() and DialContext: never
+		// exempt a third party's socket from WinDivert interception.
+		selfDialDelete(port)
+		if overall.Err() != nil {
 			return nil, err
 		}
 	}
