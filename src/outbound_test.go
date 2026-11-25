@@ -146,3 +146,66 @@ func TestDialViaOutboundProxy_HTTPConnect(t *testing.T) {
 		t.Fatalf("expected echo 'X', got %v (err=%v)", reply, err)
 	}
 }
+
+func TestNormalizeProxyHostPort_IPv6(t *testing.T) {
+	cases := []struct {
+		host, scheme, want string
+	}{
+		{"[::1]", "socks5", "[::1]:1080"},
+		{"[::1]", "http", "[::1]:8080"},
+		{"[::1]:9050", "socks5", "[::1]:9050"},
+		{"proxy.local", "http", "proxy.local:8080"},
+		{"proxy.local:3128", "http", "proxy.local:3128"},
+	}
+	for _, tc := range cases {
+		if got := normalizeProxyHostPort(tc.host, tc.scheme); got != tc.want {
+			t.Errorf("normalizeProxyHostPort(%q, %q) = %q, want %q", tc.host, tc.scheme, got, tc.want)
+		}
+	}
+}
+
+func TestDialViaOutboundProxy_HTTPConnect_CtxCancelOnTarpit(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := l.Accept()
+		if err == nil {
+			accepted <- c
+		}
+	}()
+
+	tmpDir := t.TempDir()
+	oldBase := getBaseDir()
+	setBaseDir(tmpDir)
+	t.Cleanup(func() { setBaseDir(oldBase) })
+
+	proxyFile := filepath.Join(tmpDir, "outbound_proxy")
+	if err := os.WriteFile(proxyFile, []byte("http://"+l.Addr().String()+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, used, err := dialViaOutboundProxy(ctx, "tcp", "target.telegram.org:443", 5*time.Second)
+	if !used {
+		t.Fatal("expected HTTP proxy to be used")
+	}
+	if err == nil {
+		t.Fatal("expected error when tarpitting HTTP proxy context expires")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("dialViaOutboundProxy blocked too long after ctx cancel: %v", time.Since(start))
+	}
+	select {
+	case c := <-accepted:
+		_ = c.Close()
+	default:
+	}
+}

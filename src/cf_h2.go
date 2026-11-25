@@ -87,6 +87,20 @@ func getH2Client(host string) *http.Client {
 	return c
 }
 
+func resetH2IdleConnections() {
+	h2ClientsMu.Lock()
+	defer h2ClientsMu.Unlock()
+	for h, c := range h2Clients {
+		if c != nil {
+			if tr, ok := c.Transport.(*http.Transport); ok {
+				tr.CloseIdleConnections()
+			}
+		}
+		delete(h2Clients, h)
+		delete(h2LastUsed, h)
+	}
+}
+
 func encodeH2Reply(body []byte, proto uint32) []byte {
 	if len(body) == 0 {
 		return nil

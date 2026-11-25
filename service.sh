@@ -34,7 +34,9 @@ export GOGC=50
 
 chmod 0755 "$MODDIR/bin/tgws" 2>/dev/null
 
-# 1. Reset stale boot state if kernel rebooted
+# 1. Reset stale boot state if kernel rebooted and restore any interrupted RAT profile
+reset_stale_boot_state
+restore_rat_from_backup >/dev/null 2>&1 || true
 reset_stale_boot_state
 
 # 2. Acquire atomic supervisor lock

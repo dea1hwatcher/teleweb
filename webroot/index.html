@@ -210,6 +210,7 @@ svg.icon {
   fill: currentColor;
   display: block;
 }
+svg.icon.s16 { width: 16px; height: 16px; }
 svg.icon.s18 { width: 18px; height: 18px; }
 svg.icon.s20 { width: 20px; height: 20px; }
 svg.icon.s24 { width: 24px; height: 24px; }
@@ -1580,11 +1581,8 @@ body.swiping .state::after {
   border-radius: var(--shape-large);
   margin: 0;
 }
-.subhead {
-  font-size: var(--ts-title-small);
-  line-height: var(--lh-title-small);
-  font-weight: var(--w-bold);
-  color: var(--md-sys-color-primary);
+.sheet .subhead {
+  padding: 0;
   margin: 4px 0 0;
 }
 .subhead.plain {
@@ -2096,17 +2094,17 @@ body.swiping .state::after {
       <div class="card" style="padding:14px 16px;margin-bottom:8px;">
         <h2 class="subhead" style="margin-bottom:8px;">Быстрые профили в 1 клик</h2>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
-          <button type="button" class="btn text" id="btnPresetEco" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+          <button type="button" class="btn text" id="btnPresetEco" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
             <span>🔋 Эко</span>
-            <span style="font-size:12px;color:var(--outline);">Батарея</span>
+            <span style="font-size:12px;color:var(--md-sys-color-outline);">Батарея</span>
           </button>
-          <button type="button" class="btn text" id="btnPresetTurbo" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+          <button type="button" class="btn text" id="btnPresetTurbo" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
             <span>🚀 Турбо</span>
-            <span style="font-size:12px;color:var(--outline);">H2 Медиа</span>
+            <span style="font-size:12px;color:var(--md-sys-color-outline);">H2 Медиа</span>
           </button>
-          <button type="button" class="btn text" id="btnPresetBypass" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
+          <button type="button" class="btn text" id="btnPresetBypass" style="font-size:13px;min-height:44px;padding:8px 4px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:4px;">
             <span>🛡️ Обход</span>
-            <span style="font-size:12px;color:var(--outline);">Анти-блок</span>
+            <span style="font-size:12px;color:var(--md-sys-color-outline);">Анти-блок</span>
           </button>
         </div>
       </div>
@@ -2124,7 +2122,7 @@ body.swiping .state::after {
             </button>
           </div>
         </div>
-        <div id="latencyResults" style="font-size:12px;color:var(--outline);display:flex;flex-direction:column;gap:6px;">
+        <div id="latencyResults" style="font-size:12px;color:var(--md-sys-color-outline);display:flex;flex-direction:column;gap:6px;">
           <div style="text-align:center;padding:6px 0;">Нажмите «Замер RTT» для проверки пинга или «Сменить IP» для ротации сотового адреса</div>
         </div>
       </div>
@@ -2440,11 +2438,11 @@ body.swiping .state::after {
         <input type="text" class="hex" id="custom-hex-input" maxlength="6" placeholder="7ED0FF" aria-label="HEX" autocapitalize="characters" spellcheck="false" oninput="onHexInput(this.value)">
       </div>
       <div class="picker-actions">
-        <button class="btn btn-tonal state" style="flex:1;min-height:36px;padding:0 12px;font-size:var(--ts-label-medium);" onclick="detectSystemMonet(true)">
+        <button class="btn tonal state" style="flex:1;min-height:36px;padding:0 12px;font-size:var(--ts-label-medium);" onclick="detectSystemMonet(true)">
           <svg class="icon s18"><use href="#i-refresh"/></svg>
           <span>Цвет обоев</span>
         </button>
-        <button class="btn btn-text state" style="min-height:36px;padding:0 12px;font-size:var(--ts-label-medium);" onclick="resetTheme()">
+        <button class="btn text state" style="min-height:36px;padding:0 12px;font-size:var(--ts-label-medium);" onclick="resetTheme()">
           <span>Сбросить</span>
         </button>
       </div>
@@ -2484,7 +2482,7 @@ body.swiping .state::after {
       <svg class="icon s18"><use href="#i-shield"/></svg>
       <span>Применить правила SuSFS</span>
     </button>
-    <button type="button" class="btn btn-text state" id="btn-reset-stealth" hidden onclick="setStealthPolicy('auto')">
+    <button type="button" class="btn text state" id="btn-reset-stealth" hidden onclick="setStealthPolicy('auto')">
       <span>Сбросить в Авто</span>
     </button>
   </div>
@@ -2512,12 +2510,6 @@ function isMonetTheme() {
   const val = store.get('m3_is_monet');
   if (val !== null) return val === 'true';
   return currentSeed === systemSeed() && hasBridge();
-}
-
-function toggleMonetIcons(on) {
-  haptic(8);
-  store.set('m3_is_monet', on ? 'true' : 'false');
-  if (typeof render === 'function') render();
 }
 
 /* ==========================================================================
@@ -2881,10 +2873,6 @@ function drawThemeUI() {
   const monoToggle = $('monochrome-toggle');
   if (monoToggle) {
     monoToggle.checked = mono;
-  }
-  const monetToggle = $('monet-icons-toggle');
-  if (monetToggle) {
-    monetToggle.checked = isMonetTheme();
   }
   syncPicker(true);
 }
@@ -3498,7 +3486,7 @@ async function testCFEndpoint(type) {
   if (!input || !resEl) return;
   const target = input.value.trim();
   resEl.style.display = 'block';
-  resEl.innerHTML = '<span style="color:var(--outline);">Проверка соединения…</span>';
+  resEl.innerHTML = '<span style="color:var(--md-sys-color-outline);">Проверка соединения…</span>';
   if (btn) btn.disabled = true;
   try {
     const d = await api('cftest', { target: target });
@@ -3605,13 +3593,13 @@ async function runDiagnostics() {
     // Render diagnostic items
     list.innerHTML = items.map(item => {
       let icon = '<span style="color:#4caf50;font-weight:bold;margin-right:8px;">✓</span>';
-      let col = 'var(--on-surface)';
+      let col = 'var(--md-sys-color-on-surface)';
       if (item.ok === false) {
         icon = '<span style="color:#f44336;font-weight:bold;margin-right:8px;">✗</span>';
         col = '#f44336';
       } else if (item.warn) {
         icon = '<span style="color:#ff9800;font-weight:bold;margin-right:8px;">!</span>';
-        col = 'var(--outline)';
+        col = 'var(--md-sys-color-outline)';
       }
       return `
         <div class="list-item" style="padding:6px 0; font-size:13px; color:${col};">
@@ -3814,7 +3802,6 @@ async function refresh() {
 let currentPage = "control";
 let lastMainPage = "control";
 const TOP_PAGES = ["control", "routing", "logs"];
-const MAIN_TABS = TOP_PAGES;
 const PAGE_TITLES = {
   control: "Состояние",
   routing: "Маршрутизация",
@@ -4266,14 +4253,22 @@ function bindConfigToggle(id, key, msgOn, msgOff) {
   const el = $(id);
   if (!el) return;
   el.addEventListener("change", async (e) => {
-    if (busy) return;
+    const targetEl = e.target;
+    const val = targetEl.checked;
+    if (busy) {
+      targetEl.checked = !val;
+      return;
+    }
+    busy = true;
     haptic(8);
-    const val = e.target.checked;
     try {
       state = await api("setConfig", { [key]: val });
       toast(val ? msgOn : msgOff);
     } catch (err) {
+      targetEl.checked = !val;
       toast(err.message);
+    } finally {
+      busy = false;
     }
     render();
   });
@@ -4394,7 +4389,7 @@ if ($("btnTestLatency")) {
       const lines = raw.split("\n").filter(l => l.indexOf("===") < 0 && l.trim().length > 0);
 
       if (lines.length === 0) {
-        container.innerHTML = '<div style="text-align:center;padding:6px 0;color:var(--error);">Нет данных пинга</div>';
+        container.innerHTML = '<div style="text-align:center;padding:6px 0;color:var(--md-sys-color-error);">Нет данных пинга</div>';
         return;
       }
 
@@ -4405,7 +4400,7 @@ if ($("btnTestLatency")) {
           const host = parts[0];
           const val = parts.slice(1).join(" ");
           const msMatch = /(\d+)\s*ms/.exec(val);
-          let badgeColor = "var(--outline)";
+          let badgeColor = "var(--md-sys-color-outline)";
           let badgeBg = "rgba(128,128,128,0.15)";
 
           if (msMatch) {
@@ -4433,7 +4428,7 @@ if ($("btnTestLatency")) {
       }
       container.innerHTML = html;
     } catch (err) {
-      container.innerHTML = '<div style="text-align:center;padding:6px 0;color:var(--error);">' + esc(err.message || "Ошибка замера") + '</div>';
+      container.innerHTML = '<div style="text-align:center;padding:6px 0;color:var(--md-sys-color-error);">' + esc(err.message || "Ошибка замера") + '</div>';
     } finally {
       btn.disabled = false;
       btn.textContent = "Замер RTT";
@@ -4509,7 +4504,7 @@ async function exportLogs() {
   if (hasBridge()) {
     toast("Экспорт журналов…");
     try {
-      const shCmd = `TF="/sdcard/Download/${filename}"; mkdir -p /sdcard/Download 2>/dev/null; { echo "=========================================="; echo "TeleWEB System Logs Export"; echo "Date: $(date)"; echo "=========================================="; echo; echo "--- DAEMON STATUS ---"; /data/adb/modules/teleweb/bin/tgws status 2>&1; echo; for f in /data/adb/teleweb/*.log; do if [ -f "$f" ]; then echo "=========================================="; echo "LOG FILE: $f"; echo "=========================================="; tail -n 1000 "$f"; echo; fi; done; echo "--- LOGCAT HINTS (last 100) ---"; logcat -b all -d -t 500 2>/dev/null | grep -iE "tgws|teleweb|lmkd|lowmemorykiller|oom" | tail -n 100 || true; } > "$TF" 2>&1; chmod 666 "$TF" 2>/dev/null; am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d "file://$TF" >/dev/null 2>&1; echo "$TF"`;
+      const shCmd = `TF="/sdcard/Download/${filename}"; mkdir -p /sdcard/Download 2>/dev/null; { echo "=========================================="; echo "TeleWEB System Logs Export"; echo "Date: $(date)"; echo "=========================================="; echo; echo "--- DAEMON STATUS ---"; /data/adb/modules/teleweb/bin/tgws status 2>&1; echo; for f in /data/adb/teleweb/*.log; do if [ -f "$f" ]; then echo "=========================================="; echo "LOG FILE: $f"; echo "=========================================="; tail -n 1000 "$f"; echo; fi; done; echo "--- LOGCAT HINTS (last 100) ---"; logcat -b all -d -t 500 2>/dev/null | grep -iE "tgws|teleweb|lmkd|lowmemorykiller|oom" | tail -n 100 || true; } | sed -E 's/127\\.0\\.0\\.1/__TELEWEB_LO__/g; s/([0-9]{1,3}\\.[0-9]{1,3})\\.[0-9]{1,3}\\.[0-9]{1,3}/\\1.***.***/g; s/__TELEWEB_LO__/127.0.0.1/g' > "$TF" 2>&1; chmod 600 "$TF" 2>/dev/null; am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d "file://$TF" >/dev/null 2>&1; echo "$TF"`;
       await kexec(shCmd);
       toast("Журналы сохранены в Download");
       try {
@@ -4576,7 +4571,7 @@ $("btn-export-logs").addEventListener("click", exportLogs);
 // Log Action: Clear
 async function clearLogs() {
   haptic(15);
-  if (hasBridge()) {
+  if (hasBridge() || hasDesktopBridge()) {
     try {
       await kexec(`> /data/adb/teleweb/daemon.log 2>/dev/null; > /data/adb/teleweb/tgws.log 2>/dev/null; > /data/adb/teleweb/supervisor.log 2>/dev/null; > /data/adb/teleweb/watchdog.log 2>/dev/null`);
     } catch (_) {}

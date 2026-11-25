@@ -1464,33 +1464,17 @@ func pidAlive() bool {
 	return true
 }
 func tailLog(n int) string {
-	f, err := os.Open(path("tgws.log"))
-	if err != nil {
+	logMu.Lock()
+	buf, ok := readLogTailBytes(path("tgws.log"), 32*1024)
+	logMu.Unlock()
+	if !ok || len(buf) == 0 {
 		return ""
 	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil || fi.Size() == 0 {
+	trimmed := strings.TrimRight(string(buf), " \t\r\n")
+	if trimmed == "" {
 		return ""
 	}
-
-	const maxTailBytes = 32 * 1024
-	offset := int64(0)
-	readLen := fi.Size()
-	if readLen > maxTailBytes {
-		offset = readLen - maxTailBytes
-		readLen = maxTailBytes
-	}
-	buf := make([]byte, readLen)
-	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
-		return ""
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(buf)), "\n")
-	if offset > 0 && len(lines) > 0 {
-		lines = lines[1:]
-	}
+	lines := strings.Split(trimmed, "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -1719,7 +1703,11 @@ func resolveUIDToPackage(uid int) string {
 	// 3. Fallback to pm / cmd
 	for _, cmd := range [][]string{{"cmd", "package", "list", "packages", "-U"}, {"pm", "list", "packages", "-U"}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+		c.Stdin = nil
+		c.WaitDelay = 500 * time.Millisecond
+		setCmdNoWindow(c)
+		out, err := c.CombinedOutput()
 		cancel()
 		if err == nil {
 			if pkg := packageFromPMListing(string(out), uid); pkg != "" {
@@ -2030,6 +2018,26 @@ func extractPathFromAXML(data []byte) string {
 	return ""
 }
 
+func readAPKIconDataURI(f *zip.File) string {
+	if f == nil || f.UncompressedSize64 >= 1<<20 {
+		return ""
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+	_ = rc.Close()
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	mime := "image/png"
+	if strings.HasSuffix(strings.ToLower(f.Name), ".webp") {
+		mime = "image/webp"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
 func extractAPKIcons(apkPath string) (normalB64 string, monetB64 string) {
 	if apkPath == "" {
 		return "", ""
@@ -2087,33 +2095,8 @@ func extractAPKIcons(apkPath string) (normalB64 string, monetB64 string) {
 		}
 	}
 
-	if bestNormalFile != nil && bestNormalFile.UncompressedSize64 < 1<<20 {
-		if rc, err := bestNormalFile.Open(); err == nil {
-			data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
-			_ = rc.Close()
-			if err == nil && len(data) > 0 {
-				mime := "image/png"
-				if strings.HasSuffix(strings.ToLower(bestNormalFile.Name), ".webp") {
-					mime = "image/webp"
-				}
-				normalB64 = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
-			}
-		}
-	}
-
-	if bestMonetFile != nil && bestMonetFile.UncompressedSize64 < 1<<20 {
-		if rc, err := bestMonetFile.Open(); err == nil {
-			data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
-			_ = rc.Close()
-			if err == nil && len(data) > 0 {
-				mime := "image/png"
-				if strings.HasSuffix(strings.ToLower(bestMonetFile.Name), ".webp") {
-					mime = "image/webp"
-				}
-				monetB64 = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
-			}
-		}
-	}
+	normalB64 = readAPKIconDataURI(bestNormalFile)
+	monetB64 = readAPKIconDataURI(bestMonetFile)
 
 	if monetB64 == "" && monetXMLFile != nil && monetXMLFile.UncompressedSize64 < 256*1024 {
 		if rc, err := monetXMLFile.Open(); err == nil {
@@ -3520,79 +3503,28 @@ func restoreDaemon() error {
 	return nil
 }
 
+func familyRulesHealthy(bin string, cidrs []string) bool {
+	if bin == "" {
+		return false
+	}
+	for _, cidr := range cidrs {
+		if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
+			return false
+		}
+	}
+	return runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
+		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil
+}
+
 func rulesHealthy() bool {
 	if redirectorSupported() {
 		return redirectorHealthy()
 	}
-	bin := findBin("iptables")
-	if bin == "" {
-		return false
-	}
-	for _, cidr := range telegramV4 {
-		if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
-			return false
-		}
-	}
-	// Universal jump check (with root exclusion or global jump)
-	outputOK := runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
-		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil
-
-	// Ensure PREROUTING jump is maintained for hotspot/tethering
-	if runCmd(bin, "-t", "nat", "-C", "PREROUTING", "-p", "tcp", "-j", "TELEWEB") != nil {
-		_ = runCmd(bin, "-t", "nat", "-I", "PREROUTING", "1", "-p", "tcp", "-j", "TELEWEB")
-	}
-	setupTetherMSS(bin)
-
-	if outputOK {
-		return true
-	}
-	// UID-scoped fallback check
-	_, uids := installedApps()
-	if len(uids) > 0 {
-		for _, uid := range uids {
-			if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
-				return false
-			}
-		}
-		return true
-	}
-	return false
+	return familyRulesHealthy(findBin("iptables"), telegramV4)
 }
 
 func ip6RulesHealthy() bool {
-	bin := findBin("ip6tables")
-	if bin == "" {
-		return false
-	}
-	for _, cidr := range telegramV6 {
-		if runCmd(bin, "-t", "nat", "-C", "TELEWEB", "-p", "tcp", "-d", cidr, "-j", "REDIRECT", "--to-ports", strconv.Itoa(defaultPort)) != nil {
-			return false
-		}
-	}
-	// Universal jump check (with root exclusion or global jump)
-	outputOK := runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "!", "--uid-owner", "0", "-j", "TELEWEB") == nil ||
-		runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-j", "TELEWEB") == nil
-
-	// Ensure PREROUTING jump is maintained for hotspot/tethering
-	if runCmd(bin, "-t", "nat", "-C", "PREROUTING", "-p", "tcp", "-j", "TELEWEB") != nil {
-		_ = runCmd(bin, "-t", "nat", "-I", "PREROUTING", "1", "-p", "tcp", "-j", "TELEWEB")
-	}
-	setupTetherMSS(bin)
-
-	if outputOK {
-		return true
-	}
-	// UID-scoped fallback check
-	_, uids := installedApps()
-	if len(uids) > 0 {
-		for _, uid := range uids {
-			if runCmd(bin, "-t", "nat", "-C", "OUTPUT", "-m", "owner", "--uid-owner", strconv.Itoa(uid), "-j", "TELEWEB") != nil {
-				return false
-			}
-		}
-		return true
-	}
-	return false
+	return familyRulesHealthy(findBin("ip6tables"), telegramV6)
 }
 
 // ip6RulesFailed remembers that the ip6tables setup failed at least once, so
@@ -3662,16 +3594,19 @@ func watchdog() {
 	}()
 	for range ticker.C {
 		tickCount++
-		if tickCount%20 == 0 {
-			logf("watchdog: heartbeat enabled=%t daemon_ok=%t rules_ok=%t; daemon{%s}", readEnabled(), daemonHealthy(), rulesHealthy(), procSummary(readPIDFile("tgws.pid")))
-		}
 		if !readEnabled() {
+			if tickCount%20 == 0 {
+				logf("watchdog: heartbeat enabled=false daemon_ok=%t rules_ok=%t; daemon{%s}", daemonHealthy(), rulesHealthy(), procSummary(readPIDFile("tgws.pid")))
+			}
 			continue
 		}
 		protectProcess(pid)
 		discoverActiveTelegramClients()
 		protectTargetAppProcesses()
 		daemonOK, rulesOK := daemonHealthy(), rulesHealthy()
+		if tickCount%20 == 0 {
+			logf("watchdog: heartbeat enabled=true daemon_ok=%t rules_ok=%t; daemon{%s}", daemonOK, rulesOK, procSummary(readPIDFile("tgws.pid")))
+		}
 		if daemonOK != lastDaemonOK || rulesOK != lastRulesOK {
 			logf("watchdog: state change daemon %t->%t, rules %t->%t; %s", lastDaemonOK, daemonOK, lastRulesOK, rulesOK, procSummary(readPIDFile("tgws.pid")))
 			updateModuleDescription(currentStatusDesc())
@@ -3683,6 +3618,8 @@ func watchdog() {
 				logf("watchdog: auto-restart failed: %v", err)
 				continue
 			}
+			rulesOK = rulesHealthy()
+			lastRulesOK = rulesOK
 		}
 		protectProcess(readPIDFile("tgws.pid"))
 		if ip6RulesInstalled.Load() && !ip6RulesFailed.Load() && !ip6RulesHealthy() {
@@ -3691,7 +3628,7 @@ func watchdog() {
 			ip6LastRetry.Store(0)
 		}
 		retryFailedIPv6Rules()
-		if !rulesHealthy() {
+		if !rulesOK {
 			if redirectorSupported() {
 				logf("watchdog: redirector not healthy, attempting restore")
 				if err := setupRules(); err != nil {
@@ -3706,6 +3643,7 @@ func watchdog() {
 					logf("watchdog: failed to restore iptables: %v", err)
 				}
 			}
+			lastRulesOK = rulesHealthy()
 		}
 	}
 }
@@ -4058,6 +3996,7 @@ func executeAPICommand(q apiRequest) (any, error) {
 			if err := writeDoHEnabled(*q.DoHEnabled); err != nil {
 				return nil, err
 			}
+			resetDoHIdleConnections()
 		}
 		if q.ForceTestDC != nil {
 			if err := writeForceTestDC(*q.ForceTestDC); err != nil {
@@ -4068,6 +4007,7 @@ func executeAPICommand(q apiRequest) (any, error) {
 			if err := writeH2MediaEnabled(*q.H2MediaEnabled); err != nil {
 				return nil, err
 			}
+			resetH2IdleConnections()
 		}
 		if q.DC203DirectTCP != nil {
 			if err := writeDC203DirectTCP(*q.DC203DirectTCP); err != nil {
@@ -4089,7 +4029,9 @@ func executeAPICommand(q apiRequest) (any, error) {
 			"uptime":   time.Since(startAt).Round(time.Second).String(),
 		}
 		// Never read a multi-GB log into memory just to keep 64 KiB.
+		logMu.Lock()
 		logContent, _ := readLogTailBytes(path("tgws.log"), 64*1024)
+		logMu.Unlock()
 		diag["log"] = redactSensitive(string(logContent))
 		return diag, nil
 	case "netRenew", "net_renew":
@@ -4097,7 +4039,7 @@ func executeAPICommand(q apiRequest) (any, error) {
 		if modDir != "" {
 			actionPath := filepath.Join(modDir, "action.sh")
 			if _, err := os.Stat(actionPath); err == nil {
-				cmdCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				cmdCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 				defer cancel()
 				cmd := exec.CommandContext(cmdCtx, "/system/bin/sh", actionPath, "net-renew")
 				cmd.Stdin = nil
@@ -5408,12 +5350,14 @@ var (
 	relayStallCloseNs   atomic.Int64
 	relayAnswerDueNs    atomic.Int64
 	relayGaveUpWithinNs atomic.Int64
+	mediaStallTimeoutNs atomic.Int64
 )
 
 func init() {
 	relayStallCloseNs.Store(int64(8 * time.Second))
 	relayAnswerDueNs.Store(int64(150 * time.Millisecond))
 	relayGaveUpWithinNs.Store(int64(300 * time.Millisecond))
+	mediaStallTimeoutNs.Store(int64(mediaStallTimeout))
 }
 
 func getRelayStallClose() time.Duration {
@@ -5422,6 +5366,14 @@ func getRelayStallClose() time.Duration {
 
 func getRelayAnswerDue() time.Duration {
 	return time.Duration(relayAnswerDueNs.Load())
+}
+
+func getMediaStallTimeout() time.Duration {
+	return time.Duration(mediaStallTimeoutNs.Load())
+}
+
+func setMediaStallTimeout(d time.Duration) {
+	mediaStallTimeoutNs.Store(int64(d))
 }
 
 func getRelayGaveUpWithin() time.Duration {
@@ -5476,10 +5428,11 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 		now := time.Now().UnixNano()
 		lastUp.Store(now)
 		if isMedia {
-			if mediaPendingSince.Load() == 0 {
-				mediaPendingSince.Store(now)
+			// Start the stall clock only once cumulative pending upload reaches
+			// mediaMinPendingUp; small keep-alives/ACKs must not pre-age the window.
+			if mediaPendingUp.Add(int64(n)) >= mediaMinPendingUp {
+				mediaPendingSince.CompareAndSwap(0, now)
 			}
-			mediaPendingUp.Add(int64(n))
 		}
 		if upSinceDown.Add(int64(n)) == int64(n) {
 			upWrites.Store(0)
@@ -5494,6 +5447,12 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 		lastDown.Store(time.Now().UnixNano())
 		upSinceDown.Store(0)
 		upWrites.Store(0)
+		// Any server frame while no >=1KB media burst is pending confirms the socket
+		// is alive and resets small uplink byte accumulation.
+		if isMedia && mediaPendingSince.Load() == 0 {
+			mediaPendingUp.Store(0)
+			mediaPendingDown.Store(0)
+		}
 	}
 
 	stallClose := getRelayStallClose()
@@ -5562,7 +5521,18 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 
 	if isMedia {
 		go func() {
-			ticker := time.NewTicker(time.Second)
+			stallDur := getMediaStallTimeout()
+			if stallDur <= 0 {
+				stallDur = mediaStallTimeout
+			}
+			tick := stallDur / 4
+			if tick > time.Second {
+				tick = time.Second
+			}
+			if tick < 10*time.Millisecond {
+				tick = 10 * time.Millisecond
+			}
+			ticker := time.NewTicker(tick)
 			defer ticker.Stop()
 			for {
 				select {
@@ -5573,13 +5543,13 @@ func pipeWSTunnel(c net.Conn, ws *wsConn, init []byte, id int64, dc int, isMedia
 					if since > 0 &&
 						mediaPendingUp.Load() >= mediaMinPendingUp &&
 						mediaPendingDown.Load() < mediaMinMeaningfulDown &&
-						time.Since(time.Unix(0, since)) >= mediaStallTimeout {
+						time.Since(time.Unix(0, since)) >= stallDur {
 						host := ""
 						if ws != nil {
 							host = ws.host
 						}
-						logf("conn #%d DC%d media relay stalled on %s (>15s with %d B sent, <4KB received); cutting stalled relay",
-							id, dc, host, mediaPendingUp.Load())
+						logf("conn #%d DC%d media relay stalled on %s (>%v with %d B sent, <4KB received); cutting stalled relay",
+							id, dc, host, stallDur, mediaPendingUp.Load())
 						strikes, blockedFor := globalMediaCircuitBreaker.RecordStall(dc)
 						if host != "" {
 							parkFront(host, blockedFor, fmt.Sprintf("media relay stall strike %d", strikes), nil)
@@ -6249,34 +6219,35 @@ func (f *mtprotoPacketFramer) nextPacketSize() (int, bool, error) {
 // shrinkBuffers releases oversized framer buffers once the residual data is
 // small, so one large media packet does not pin megabytes for the lifetime of
 // the connection.
-func (f *mtprotoPacketFramer) shrinkBuffers() {
-	if len(f.raw) == 0 {
-		if f.rawStorage != nil {
-			f.raw = f.rawStorage[:0]
-		} else if cap(f.raw) > 128*1024 {
-			f.raw = nil
-		} else if f.raw != nil {
-			f.raw = f.raw[:0]
+func shrinkSliceWithBacking(s, backing []byte) []byte {
+	if len(s) == 0 {
+		if backing != nil {
+			return backing[:0]
 		}
-	} else if cap(f.raw) > 128*1024 && len(f.raw) < 32*1024 {
-		newRaw := make([]byte, len(f.raw), 64*1024)
-		copy(newRaw, f.raw)
-		f.raw = newRaw
+		if cap(s) > 128*1024 {
+			return nil
+		}
+		if s != nil {
+			return s[:0]
+		}
+		return s
 	}
+	if cap(s) > 128*1024 && len(s) < 32*1024 {
+		if backing != nil && len(s) <= cap(backing) {
+			dst := backing[:len(s)]
+			copy(dst, s)
+			return dst
+		}
+		dst := make([]byte, len(s), 64*1024)
+		copy(dst, s)
+		return dst
+	}
+	return s
+}
 
-	if len(f.plain) == 0 {
-		if f.plainStorage != nil {
-			f.plain = f.plainStorage[:0]
-		} else if cap(f.plain) > 128*1024 {
-			f.plain = nil
-		} else if f.plain != nil {
-			f.plain = f.plain[:0]
-		}
-	} else if cap(f.plain) > 128*1024 && len(f.plain) < 32*1024 {
-		newPlain := make([]byte, len(f.plain), 64*1024)
-		copy(newPlain, f.plain)
-		f.plain = newPlain
-	}
+func (f *mtprotoPacketFramer) shrinkBuffers() {
+	f.raw = shrinkSliceWithBacking(f.raw, f.rawStorage)
+	f.plain = shrinkSliceWithBacking(f.plain, f.plainStorage)
 }
 
 // popPackets drains every complete packet currently buffered and advances the
@@ -6335,15 +6306,9 @@ func (f *mtprotoPacketFramer) feed(encrypted []byte, ws *wsConn) error {
 	}
 	if len(f.raw) == 0 && f.rawStorage != nil {
 		f.raw = f.rawStorage[:0]
-	} else if len(f.raw) > 0 && f.rawStorage != nil && cap(f.raw) < 32*1024 {
-		copy(f.rawStorage, f.raw)
-		f.raw = f.rawStorage[:len(f.raw)]
 	}
 	if len(f.plain) == 0 && f.plainStorage != nil {
 		f.plain = f.plainStorage[:0]
-	} else if len(f.plain) > 0 && f.plainStorage != nil && cap(f.plain) < 32*1024 {
-		copy(f.plainStorage, f.plain)
-		f.plain = f.plainStorage[:len(f.plain)]
 	}
 	return nil
 }
@@ -7102,31 +7067,33 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 				directIPs = appendUniqueIP(directIPs, parsed)
 			}
 		}
-		// Always supplement candidate list with live DNS-resolved addresses.
-		// Both hosts are resolved concurrently: two sequential lookups would
-		// stall the start of the dial race by two DNS round trips.
-		resolved := make([][]netip.Addr, len(hosts))
-		var dnsWG sync.WaitGroup
-		dnsCtx := ctx
-		if len(directIPs) > 0 {
-			var dnsCancel context.CancelFunc
-			dnsCtx, dnsCancel = context.WithTimeout(ctx, 50*time.Millisecond)
-			defer dnsCancel()
-		}
-		for i, h := range hosts {
-			dnsWG.Add(1)
-			go func(i int, h string) {
-				defer dnsWG.Done()
-				if ips, err := resolver.LookupNetIP(dnsCtx, "ip4", h); err == nil {
-					resolved[i] = ips
-				}
-			}(i, h)
-		}
-		dnsWG.Wait()
-		for _, ips := range resolved {
-			for _, ip := range ips {
-				if ip.Is4() {
-					directIPs = appendUniqueIP(directIPs, ip)
+		// Supplement static ingress IPs with live DNS only when direct routes will be
+		// raced immediately (or no static ingress exists), avoiding a 50ms stall on
+		// CF-priority dials when ISP DNS is slow or blocked.
+		if !cfPriority || len(directIPs) == 0 {
+			resolved := make([][]netip.Addr, len(hosts))
+			var dnsWG sync.WaitGroup
+			dnsCtx := ctx
+			if len(directIPs) > 0 {
+				var dnsCancel context.CancelFunc
+				dnsCtx, dnsCancel = context.WithTimeout(ctx, 50*time.Millisecond)
+				defer dnsCancel()
+			}
+			for i, h := range hosts {
+				dnsWG.Add(1)
+				go func(i int, h string) {
+					defer dnsWG.Done()
+					if ips, err := resolver.LookupNetIP(dnsCtx, "ip4", h); err == nil {
+						resolved[i] = ips
+					}
+				}(i, h)
+			}
+			dnsWG.Wait()
+			for _, ips := range resolved {
+				for _, ip := range ips {
+					if ip.Is4() {
+						directIPs = appendUniqueIP(directIPs, ip)
+					}
 				}
 			}
 		}
@@ -7369,6 +7336,27 @@ func acquireCFDialSlot(ctx context.Context) (func(), error) {
 	}
 }
 
+func resolveHostIPv4(ctx context.Context, resolver *net.Resolver, host string, dohTimeout, dnsTimeout time.Duration) ([]netip.Addr, error) {
+	if doHEnabledCached() {
+		dohCtx, dohCancel := context.WithTimeout(ctx, dohTimeout)
+		dohIPs, err := resolveDoHRace(dohCtx, host)
+		dohCancel()
+		if err == nil && len(dohIPs) > 0 {
+			return dohIPs, nil
+		}
+	}
+	if resolver == nil {
+		resolver = systemDNSResolver()
+	}
+	dnsCtx := ctx
+	var dnsCancel context.CancelFunc
+	if dnsTimeout > 0 {
+		dnsCtx, dnsCancel = context.WithTimeout(ctx, dnsTimeout)
+		defer dnsCancel()
+	}
+	return resolver.LookupNetIP(dnsCtx, "ip4", host)
+}
+
 func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsConn, error) {
 	release, err := acquireCFDialSlot(ctx)
 	if err != nil {
@@ -7376,21 +7364,9 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 	}
 	defer release()
 
-	var ips []netip.Addr
-	if doHEnabledCached() {
-		dohCtx, dohCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-		dohIPs, err := resolveDoHRace(dohCtx, host)
-		dohCancel()
-		if err == nil && len(dohIPs) > 0 {
-			ips = dohIPs
-		}
-	}
-	if len(ips) == 0 {
-		var err error
-		ips, err = resolver.LookupNetIP(ctx, "ip4", host)
-		if err != nil {
-			return nil, fmt.Errorf("DNS: %w", err)
-		}
+	ips, err := resolveHostIPv4(ctx, resolver, host, 1500*time.Millisecond, 0)
+	if err != nil {
+		return nil, fmt.Errorf("DNS: %w", err)
 	}
 	ips = orderCFEdgeIPs(ips)
 	var last error
@@ -7785,22 +7761,9 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		path += "&" + query
 	}
 
-	var ips []netip.Addr
-	if doHEnabledCached() {
-		dohCtx, dohCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-		dohIPs, err := resolveDoHRace(dohCtx, host)
-		dohCancel()
-		if err == nil && len(dohIPs) > 0 {
-			ips = dohIPs
-		}
-	}
-	if len(ips) == 0 {
-		resolver := systemDNSResolver()
-		var err error
-		ips, err = resolver.LookupNetIP(ctx, "ip4", host)
-		if err != nil {
-			return nil, fmt.Errorf("worker DNS %s: %w", host, err)
-		}
+	ips, err := resolveHostIPv4(ctx, nil, host, 1500*time.Millisecond, 0)
+	if err != nil {
+		return nil, fmt.Errorf("worker DNS %s: %w", host, err)
 	}
 
 	var lastErr error
@@ -7937,16 +7900,7 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 	defer cancel()
 
 	if len(ips) == 0 {
-		if doHEnabledCached() {
-			dohCtx, dohCancel := context.WithTimeout(ctx, 2*time.Second)
-			ips, _ = resolveDoHRace(dohCtx, host)
-			dohCancel()
-		}
-		if len(ips) == 0 {
-			dnsCtx, dnsCancel := context.WithTimeout(ctx, 2*time.Second)
-			ips, _ = systemDNSResolver().LookupNetIP(dnsCtx, "ip4", host)
-			dnsCancel()
-		}
+		ips, _ = resolveHostIPv4(ctx, nil, host, 2*time.Second, 2*time.Second)
 	}
 	if len(ips) == 0 {
 		return map[string]any{
