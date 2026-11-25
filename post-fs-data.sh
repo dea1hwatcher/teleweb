@@ -25,6 +25,11 @@ chmod 700 /data/adb/teleweb 2>/dev/null
 # Clean up stale PID files left from previous device boot to prevent PID collisions
 rm -f /data/adb/teleweb/tgws.pid /data/adb/teleweb/watchdog.pid
 
+# Recover mobile radio profile if a previous RAT switch was interrupted
+if command -v restore_rat_from_backup >/dev/null 2>&1; then
+  restore_rat_from_backup >/dev/null 2>&1 || true
+fi
+
 # Early-stage root hiding & SELinux context hardening (SuSFS) before Zygote forks user apps
 if command -v apply_susfs_hiding >/dev/null 2>&1; then
   apply_susfs_hiding "$MODDIR"

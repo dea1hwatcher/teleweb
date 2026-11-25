@@ -260,11 +260,8 @@ func guiPollLoop(w *app.Window, st *guiState, stop chan struct{}) {
 	}
 }
 
-// refresh calls apiDispatch directly in-process, without spawning child processes.
+// refresh calls apiDispatch outside st.mu so status collection never stalls the UI thread.
 func (st *guiState) refresh() {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-
 	res, err := apiDispatch(apiRequest{Cmd: "status"})
 	if err != nil {
 		return
@@ -273,6 +270,9 @@ func (st *guiState) refresh() {
 	if !ok {
 		return
 	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	st.st = s
 
 	if !st.settingsInitialized {

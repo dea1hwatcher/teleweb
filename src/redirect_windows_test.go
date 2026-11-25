@@ -548,3 +548,74 @@ func TestPruneFlowsTwoPhaseTimeouts(t *testing.T) {
 		}
 	}
 }
+
+func TestParseNetshDynamicPortRange(t *testing.T) {
+	en := "\r\nProtocol tcp Dynamic Port Range\r\n---------------------------------\r\nStart Port      : 49152\r\nNumber of Ports : 16384\r\n"
+	if s, e, ok := parseNetshDynamicPortRange(en); !ok || s != 49152 || e != 65535 {
+		t.Fatalf("EN parse failed: s=%d e=%d ok=%t", s, e, ok)
+	}
+
+	ru := "\r\nПротокол tcp: диапазон динамических портов\r\n---------------------------------\r\nНачальный порт  : 10000\r\nЧисло портов    : 5000\r\n"
+	if s, e, ok := parseNetshDynamicPortRange(ru); !ok || s != 10000 || e != 14999 {
+		t.Fatalf("RU parse failed: s=%d e=%d ok=%t", s, e, ok)
+	}
+
+	if _, _, ok := parseNetshDynamicPortRange("unrelated text"); ok {
+		t.Fatal("invalid output should not succeed")
+	}
+}
+
+func TestAllocNatEntryIncludesUpperBound65535(t *testing.T) {
+	oldFirst, oldLast := natPortFirst, natPortLast
+	oldFlows, oldPorts, oldNext := natTable.flows, natTable.ports, natTable.next
+	t.Cleanup(func() {
+		natPortFirst, natPortLast = oldFirst, oldLast
+		natTable.flows, natTable.ports, natTable.next = oldFlows, oldPorts, oldNext
+	})
+
+	natPortFirst, natPortLast = 65534, 65535
+	natTable.flows = map[natFlowKey]*natEntry{}
+	natTable.ports = map[uint16]*natEntry{}
+	natTable.next = 65534
+
+	orig := netip.MustParseAddrPort("149.154.167.51:443")
+	client := netip.MustParseAddr("127.0.0.1")
+
+	e1 := allocNatEntry(orig, client, 41001)
+	e2 := allocNatEntry(orig, client, 41002)
+	e3 := allocNatEntry(orig, client, 41003)
+
+	if e1 == nil || e1.natPort != 65534 {
+		t.Fatalf("first alloc = %+v, want port 65534", e1)
+	}
+	if e2 == nil || e2.natPort != 65535 {
+		t.Fatalf("second alloc = %+v, want port 65535 (no off-by-one/uint16 overflow)", e2)
+	}
+	if natTable.next != 65534 {
+		t.Fatalf("natTable.next wrapped to %d, want 65534", natTable.next)
+	}
+	if e3 != nil {
+		t.Fatalf("third alloc unexpectedly succeeded: %+v", e3)
+	}
+}
+
+func TestParseTCPv4_RejectsNonZeroFragmentOffset(t *testing.T) {
+	pkt := make([]byte, 40)
+	pkt[0] = 0x45 // IPv4, IHL=5 (20 bytes)
+	pkt[6] = 0x40 // DF flag set, fragment offset = 0
+	pkt[7] = 0x00
+	pkt[9] = 6 // TCP
+	binary.BigEndian.PutUint16(pkt[20:], 50000)
+	binary.BigEndian.PutUint16(pkt[22:], 443)
+	pkt[33] = tcpFlagSYN
+
+	if m, ok := parseTCPv4(pkt); !ok || m.dport != 443 {
+		t.Fatalf("valid unfragmented TCPv4 rejected: ok=%t meta=%+v", ok, m)
+	}
+
+	pkt[6] = 0x00
+	pkt[7] = 0x08 // non-zero fragment offset
+	if _, ok := parseTCPv4(pkt); ok {
+		t.Fatal("non-first IPv4 fragment must not be parsed as a TCP header")
+	}
+}

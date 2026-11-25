@@ -295,13 +295,10 @@ launch_webui() {
 # Quick on-demand network latency (RTT) measurement
 check_latency() {
   local targets="1.1.1.1 cloudflare.com dns.google"
-  if [ -f "$TELEWEB_DIR/config.json" ]; then
+  if [ -s "$TELEWEB_DIR/custom-cf-worker" ]; then
     local w
-    w=$(grep -o '"custom_worker_url"[[:space:]]*:[[:space:]]*"[^"]*"' "$TELEWEB_DIR/config.json" 2>/dev/null | cut -d'"' -f4)
-    if [ -n "$w" ]; then
-      w=$(echo "$w" | sed -e 's|^https\?://||' -e 's|/.*||')
-      [ -n "$w" ] && targets="$w $targets"
-    fi
+    w=$(head -n 1 "$TELEWEB_DIR/custom-cf-worker" 2>/dev/null | tr -d '\r\n ' | sed -e 's|^https\?://||' -e 's|[/?].*||')
+    [ -n "$w" ] && targets="$w $targets"
   fi
 
   for host in $targets; do
@@ -337,14 +334,24 @@ bpf_tether_offload_detach() {
   done
   [ -z "$tc_bin" ] && command -v tc >/dev/null 2>&1 && tc_bin="tc"
 
-  settings put global tether_offload_disabled 1 2>/dev/null
-  device_config put tethering override_bpf_offload false 2>/dev/null
+  if [ "$(settings get global tether_offload_disabled 2>/dev/null)" != "1" ]; then
+    settings put global tether_offload_disabled 1 2>/dev/null
+    device_config put tethering override_bpf_offload false 2>/dev/null
+  fi
 
   [ -n "$tc_bin" ] || return 0
 
-  local ifaces
-  ifaces="$(ls /sys/class/net 2>/dev/null)"
-  for d in $ifaces; do
+  for path_if in /sys/class/net/*; do
+    [ -d "$path_if" ] || continue
+    local d="${path_if##*/}"
+    case "$d" in
+      lo|dummy*|ifb*|tun*|ip_vti*|sit*) continue ;;
+    esac
+    local state=""
+    read -r state < "$path_if/operstate" 2>/dev/null || true
+    case "$state" in
+      down) continue ;;
+    esac
     local out
     out="$("$tc_bin" filter show dev "$d" ingress 2>/dev/null)"
     case "$out" in
@@ -397,9 +404,6 @@ apply_network_tweaks() {
   if grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
     sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || true
   fi
-
-  # Disable Android private DNS to prevent carrier DoT hijacking DoH lookups
-  settings put global private_dns_mode off 2>/dev/null || true
 }
 
 # Targeted conntrack flush: flush flows only for Telegram destination CIDRs
@@ -442,6 +446,40 @@ rotate_all_logs() {
   rotate_log_file "$TGWS_LOG"
 }
 
+# Restore cellular network profile from $TELEWEB_DIR/rat_back if present
+restore_rat_from_backup() {
+  local rb="$TELEWEB_DIR/rat_back"
+  [ -f "$rb" ] || return 0
+  if [ ! -f "/system/bin/cmd" ] && ! command -v cmd >/dev/null 2>&1; then
+    return 1
+  fi
+  local slot orig_types
+  slot="$(sed -n '1p' "$rb" 2>/dev/null | tr -d '\r\n ')"
+  orig_types="$(sed -n '2p' "$rb" 2>/dev/null | tr -d '\r\n')"
+  [ -n "$slot" ] || slot="0"
+  if [ -z "$orig_types" ]; then
+    rm -f "$rb"
+    return 0
+  fi
+  local count=0 cur
+  while [ "$count" -lt 6 ]; do
+    cmd phone set-allowed-network-types-for-users -s "$slot" "$orig_types" >/dev/null 2>&1
+    cur="$(cmd phone get-allowed-network-types-for-users -s "$slot" 2>/dev/null)"
+    if [ "$cur" = "$orig_types" ]; then
+      rm -f "$rb"
+      return 0
+    fi
+    count=$((count + 1))
+    sleep 2
+  done
+  return 1
+}
+
+_teleweb_rat_cleanup() {
+  restore_rat_from_backup >/dev/null 2>&1 || true
+  rm -rf "$TELEWEB_DIR/rat.lock" 2>/dev/null || true
+}
+
 # Cellular external IP renewal via transient RAT toggle (LTE/5G -> GSM/2G -> LTE/5G).
 # Drops PDP context at the cell tower and acquires a new carrier IP without disabling Wi-Fi hotspot.
 mobile_net_renew() {
@@ -454,12 +492,21 @@ mobile_net_renew() {
   local lock="$TELEWEB_DIR/rat.lock"
   mkdir -p "$TELEWEB_DIR" 2>/dev/null
 
+  # Clean stale lock left behind if a previous invocation was killed
+  if [ -d "$lock" ]; then
+    local lpid
+    lpid="$(cat "$lock/pid" 2>/dev/null | tr -d '\r\n ')"
+    if [ -n "$lpid" ] && [ ! -d "/proc/$lpid" ]; then
+      rm -rf "$lock" 2>/dev/null || true
+    fi
+  fi
+
   if ! mkdir "$lock" 2>/dev/null; then
     echo "[!] Операция обновления IP уже выполняется другим процессом."
     return 1
   fi
-  unlock() { rmdir "$lock" 2>/dev/null; }
-  trap unlock EXIT INT TERM
+  echo $$ > "$lock/pid"
+  trap '_teleweb_rat_cleanup' EXIT INT TERM
 
   # Determine active data sub-id / slot
   local sub=""
@@ -480,29 +527,14 @@ mobile_net_renew() {
   orig_types="$(cmd phone get-allowed-network-types-for-users -s "$slot" 2>/dev/null)"
   if [ -z "$orig_types" ]; then
     echo "[!] Не удалось получить текущий профиль сети для SIM $slot."
-    unlock
+    rm -rf "$lock" 2>/dev/null || true
+    trap - EXIT INT TERM
     return 1
   fi
 
   echo "Текущий профиль сети: $orig_types"
   echo "$slot" > "$rb"
   echo "$orig_types" >> "$rb"
-
-  rat_restore() {
-    local count=0
-    while [ "$count" -lt 6 ]; do
-      cmd phone set-allowed-network-types-for-users -s "$slot" "$orig_types" >/dev/null 2>&1
-      local cur
-      cur="$(cmd phone get-allowed-network-types-for-users -s "$slot" 2>/dev/null)"
-      if [ "$cur" = "$orig_types" ]; then
-        rm -f "$rb"
-        return 0
-      fi
-      count=$((count + 1))
-      sleep 2
-    done
-    return 1
-  }
 
   echo "Временное переключение на 2G/GSM для сброса сотовой сессии..."
   cmd phone set-allowed-network-types-for-users -s "$slot" 32768 >/dev/null 2>&1 || \
@@ -511,14 +543,16 @@ mobile_net_renew() {
   sleep 3
 
   echo "Восстановление исходного скоростного профиля сети (LTE/5G)..."
-  if rat_restore; then
+  if restore_rat_from_backup; then
     echo "Профиль сети успешно восстановлен! Новый IP получен от базовой станции."
     targeted_conntrack_flush
-    unlock
+    rm -rf "$lock" 2>/dev/null || true
+    trap - EXIT INT TERM
     return 0
   else
     echo "[!] Внимание: не удалось автоматически подтвердить возврат профиля сети."
-    unlock
+    rm -rf "$lock" 2>/dev/null || true
+    trap - EXIT INT TERM
     return 1
   fi
 }
@@ -551,12 +585,4 @@ apply_private_dns() {
   esac
 }
 
-# Idempotently drain duplicate iptables rules until none remain (up to 16 iterations)
-drain_iptables_rule() {
-  local count=0
-  while [ "$count" -lt 16 ]; do
-    "$@" >/dev/null 2>&1 || break
-    count=$((count + 1))
-  done
-}
 
