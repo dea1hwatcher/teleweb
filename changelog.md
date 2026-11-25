@@ -1,3 +1,26 @@
+### Изменения в v0.2.6:
+
+- **Надёжность медиа-релея и стабильность соединений (`Media Stall & DNS Latency Fix`)**:
+  - В `pipeWSTunnel` таймер 15-секундного порога простоя (`mediaStallTimeout`) теперь запускается только после достижения 1 КБ исходящих данных (`mediaMinPendingUp`) и сбрасывается при штатном ответе сервера, устраняя ложные обрывы долгих keep-alive/RPC-соединений и парковку доменов Cloudflare.
+  - В `dialTelegramWS` устранён 50 мс синхронный барьер DNS-резолвинга прямых хостов при активном приоритете Cloudflare (`cfPriority`) и наличии статических адресов DC.
+  - Таймаут выполнения команды `netRenew` в API расширен с 20 с до 35 с.
+- **Устойчивость мобильной сети и Private DNS (`Android RAT & Shell Hardening`)**:
+  - Добавлено автовосстановление профиля модема из `$TELEWEB_DIR/rat_back` (`restore_rat_from_backup`) при прерывании `mobile_net_renew()` в `trap` и при раннем запуске `post-fs-data.sh` / `service.sh` после перезагрузки, а также очистка зависших lock-файлов по PID.
+  - Удалено принудительное отключение `private_dns_mode off` из `apply_network_tweaks()` — пользовательские настройки Private DNS (DoT) больше не сбрасываются при каждом запуске службы.
+  - `check_latency` теперь считывает кастомный Cloudflare Worker из `$TELEWEB_DIR/custom-cf-worker`; `bpf_tether_offload_detach` пропускает повторные вызовы `settings` и выключенные интерфейсы; в `uninstall.sh` добавлена полная очистка `teleweb-mss` и IPv6-фильтров `OUTPUT`.
+- **Исходящие прокси, пулы и инвалидация кэшей (`Proxy, Pool & Cache Safety`)**:
+  - В `dialHTTPConnect` добавлены дедлайны по `ctx.Deadline()` с немедленной отменой через `context.AfterFunc` и закрытием `resp.Body`; в fallback-ветке SOCKS5 запоздавший `net.Conn` закрывается при отмене контекста; добавлена корректная поддержка IPv6-литералов без порта (`normalizeProxyHostPort`).
+  - `WsPool.Close()` теперь корректно ожидает завершения горутины ротации `StartRotation()` через `refillWg`.
+  - Внедрена автоматическая очистка idle HTTP/2-соединений DoH и H2-моста (`resetDoHIdleConnections`, `resetH2IdleConnections`) при изменении конфигурации `outbound_proxy` и флагов в `setConfig`.
+- **Перехватчик WinDivert и Windows GUI (`Windows Interceptor & UI Reliability`)**:
+  - `configureNATPortRange()` опрашивает актуальный динамический диапазон портов ОС через `netsh int ipv4 show dynamicport tcp` независимо от локали Windows с сохранением legacy fallback; в `allocNatEntry()` устранены пропуск верхнего порта и риск переполнения `uint16` при `natPortLast = 65535`; `parseTCPv4()` отсекает непервые IPv4-фрагменты.
+  - Разделена жизнеспособность IPv4 и IPv6 петель WinDivert (`running` vs `runningV6`, единый раннер `runRecvLoop`): отказ IPv6 больше не останавливает IPv4, а сбой IPv4 освобождает все хендлы немедленно.
+  - Повышение прав до администратора (`--replace`) дожидается освобождения `singleMutexH` без разрыва активного прокси при отмене UAC; выход из трея (`wndProc`) перенесён в горутину под `trayQuitStarted`; `trackedDial` немедленно удаляет порт при конфликте стороннего процесса (`isLocalAddrInUse`); `guiState.refresh()` вынесен из-под `st.mu.Lock()`.
+- **WebUI, Cloudflare Worker, фаервол и очистка кодовой базы**:
+  - Исправлена очистка журналов в десктопном WebUI (`hasDesktopBridge()`), добавлено редактирование публичных IP-адресов при экспорте логов на Android, исправлены CSS-переменные `--md-sys-color-*`, классы `.btn.tonal`/`.btn.text`/`.s16` и гонка `bindConfigToggle`.
+  - В `worker/cloudflare-worker.js` исправлено копирование любых представлений `ArrayBuffer.isView` (`DataView` / типизированные массивы).
+  - Проверки `rulesHealthy` / `ip6RulesHealthy` объединены в чистый read-only предикат `familyRulesHealthy` без мутаций `PREROUTING`/`TCPMSS` в `watchdog`; удалены осиротевшие заглушки `embeddedWebrootFS()`, мёртвая `drain_iptables_rule` и небезопасная мёртвая ветка в `mtprotoPacketFramer.feed` с переиспользованием backing-буферов; унифицированы DoH/DNS, `tailLog` и чтение иконок APK, добавлены новые регрессионные тесты.
+
 ### Изменения в v0.2.5:
 
 - **Корректная проверка жизнеспособности процессов на Linux (`Linux Liveness EPERM Parity`)**:
