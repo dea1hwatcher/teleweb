@@ -165,3 +165,25 @@ func TestApplyWindowsDarkThemeNoHwnd(t *testing.T) {
 	// Should gracefully return without panic when no window is present
 	applyWindowsDarkTheme("NonExistentWindow")
 }
+
+func TestGuiStateRefreshConcurrentRace(t *testing.T) {
+	oldBase := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(oldBase) })
+
+	st := &guiState{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10; i++ {
+			st.refresh()
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		st.mu.Lock()
+		_ = st.busy
+		_ = st.st.Running
+		st.mu.Unlock()
+	}
+	<-done
+}

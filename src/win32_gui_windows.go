@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -97,16 +98,17 @@ type notifyIconDataW struct {
 }
 
 var (
-	mainHwnd       uintptr
-	mainHwndMu     sync.Mutex
-	trayMu         sync.Mutex
-	trayNID        notifyIconDataW
-	trayHwnd       uintptr
-	trayActive     bool
-	trayTipText    = "TeleWEB: прозрачный WSS транспорт"
-	trayOnToggleFn func()
-	trayOnQuitFn   func()
-	singleMutexH   uintptr
+	mainHwnd        uintptr
+	mainHwndMu      sync.Mutex
+	trayMu          sync.Mutex
+	trayNID         notifyIconDataW
+	trayHwnd        uintptr
+	trayActive      bool
+	trayTipText     = "TeleWEB: прозрачный WSS транспорт"
+	trayOnToggleFn  func()
+	trayOnQuitFn    func()
+	trayQuitStarted atomic.Bool
+	singleMutexH    uintptr
 )
 
 func setMainHwnd(hwnd uintptr) {
@@ -291,11 +293,12 @@ func restartElevated() error {
 	}
 	verb, _ := windows.UTF16PtrFromString("runas")
 	file, _ := windows.UTF16PtrFromString(exe)
-	args, _ := windows.UTF16PtrFromString("gui")
+	args, _ := windows.UTF16PtrFromString("gui --replace")
 	const SW_SHOWNORMAL = 1
 	r, _, _ := procShellExecute.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), uintptr(unsafe.Pointer(args)), 0, uintptr(SW_SHOWNORMAL))
 	if r > 32 {
 		finishElevatedRestart()
+		return nil
 	}
 	return fmt.Errorf("elevation failed or was cancelled (code %d)", r)
 }
@@ -312,26 +315,46 @@ func finishElevatedRestart() {
 	elevatedExit(0)
 }
 
+func hasCLIArg(flag string) bool {
+	for _, a := range os.Args[1:] {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
 func acquireSingleInstance() (func(), bool) {
 	name, _ := windows.UTF16PtrFromString("Local\\TeleWEB_SingleInstance_Mutex")
-	h, _, err := procCreateMutex.Call(0, 1, uintptr(unsafe.Pointer(name)))
-	if h == 0 {
-		return func() {}, true
-	}
 	const ERROR_ALREADY_EXISTS = 183
-	if err == syscall.Errno(ERROR_ALREADY_EXISTS) {
-		showMainWindow(true)
-		time.Sleep(60 * time.Millisecond)
-		procCloseHandle.Call(h)
-		return nil, false
+	maxAttempts := 1
+	if hasCLIArg("--replace") {
+		// Elevated replacement may start before the non-elevated instance
+		// reaches finishElevatedRestart() and closes singleMutexH.
+		maxAttempts = 40
 	}
-	singleMutexH = h
-	return func() {
-		if singleMutexH != 0 {
-			procCloseHandle.Call(singleMutexH)
-			singleMutexH = 0
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		h, _, err := procCreateMutex.Call(0, 1, uintptr(unsafe.Pointer(name)))
+		if h == 0 {
+			return func() {}, true
 		}
-	}, true
+		if err != syscall.Errno(ERROR_ALREADY_EXISTS) {
+			singleMutexH = h
+			return func() {
+				if singleMutexH != 0 {
+					procCloseHandle.Call(singleMutexH)
+					singleMutexH = 0
+				}
+			}, true
+		}
+		procCloseHandle.Call(h)
+		if attempt+1 < maxAttempts {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	showMainWindow(true)
+	time.Sleep(60 * time.Millisecond)
+	return nil, false
 }
 
 const (
@@ -421,8 +444,8 @@ func setupSystemTray(title string, onToggle func(), onQuit func()) func() {
 						trayMu.Lock()
 						fn := trayOnQuitFn
 						trayMu.Unlock()
-						if fn != nil {
-							fn()
+						if fn != nil && trayQuitStarted.CompareAndSwap(false, true) {
+							go fn()
 						}
 					}
 					return 0

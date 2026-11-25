@@ -685,3 +685,20 @@ func TestPipeWSTunnelRoundTrip(t *testing.T) {
 		t.Errorf("goroutine leak after tunnel teardown: initial=%d final=%d", initialGoroutines, final)
 	}
 }
+
+func TestMemoryLeak_WsPool_StartRotationClose(t *testing.T) {
+	runtime.GC()
+	initial := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWsPool(ctx, 1)
+	pool.StartRotation()
+	pool.Close()
+
+	runtime.GC()
+	if final := runtime.NumGoroutine(); final > initial+2 {
+		t.Fatalf("StartRotation goroutine leaked after Close(): initial=%d final=%d", initial, final)
+	}
+}

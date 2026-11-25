@@ -11,5 +11,3 @@ import (
 var embeddedFiles embed.FS
 
 func embeddedDriverFS() fs.FS { return subEmbedded(embeddedFiles, "drivers/386") }
-
-func embeddedWebrootFS() fs.FS { return nil }

@@ -11,11 +11,38 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"golang.org/x/net/proxy"
 )
+
+var (
+	outboundSigMu   sync.Mutex
+	outboundSigInit bool
+	lastOutboundSig string
+)
+
+func noteOutboundProxyConfig(proxyURL, noProxy string) {
+	sig := proxyURL + "\x00" + noProxy
+	outboundSigMu.Lock()
+	if !outboundSigInit {
+		outboundSigInit = true
+		lastOutboundSig = sig
+		outboundSigMu.Unlock()
+		return
+	}
+	changed := sig != lastOutboundSig
+	if changed {
+		lastOutboundSig = sig
+	}
+	outboundSigMu.Unlock()
+	if changed {
+		resetDoHIdleConnections()
+		resetH2IdleConnections()
+	}
+}
 
 // shouldBypassOutboundProxy evaluates destination address against loopback
 // and standard NO_PROXY comma-separated patterns (IP, CIDR, suffix, wildcard).
@@ -67,6 +94,9 @@ func shouldBypassOutboundProxy(target string, noProxy string) bool {
 // readOutboundProxyConfig reads configured outbound proxy from path("outbound_proxy")
 // or falls back to standard ALL_PROXY, HTTPS_PROXY, HTTP_PROXY environment variables.
 func readOutboundProxyConfig() (proxyURL string, noProxy string) {
+	defer func() {
+		noteOutboundProxyConfig(proxyURL, noProxy)
+	}()
 	if b, err := os.ReadFile(path("outbound_proxy")); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 		if len(lines) > 0 {
@@ -118,6 +148,15 @@ func dialHTTPConnect(ctx context.Context, proxyAddr, targetAddr, user, pass stri
 		return nil, fmt.Errorf("http proxy dial failed: %w", err)
 	}
 
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(10 * time.Second)
+	}
+	_ = conn.SetDeadline(deadline)
+	stopCancel := context.AfterFunc(ctx, func() {
+		_ = conn.SetDeadline(time.Now())
+	})
+
 	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", targetAddr, targetAddr)
 	if user != "" || pass != "" {
 		auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
@@ -126,6 +165,7 @@ func dialHTTPConnect(ctx context.Context, proxyAddr, targetAddr, user, pass stri
 	req += "User-Agent: TeleWEB/2.1\r\n\r\n"
 
 	if _, err := io.WriteString(conn, req); err != nil {
+		stopCancel()
 		_ = conn.Close()
 		return nil, fmt.Errorf("http proxy write failed: %w", err)
 	}
@@ -133,18 +173,37 @@ func dialHTTPConnect(ctx context.Context, proxyAddr, targetAddr, user, pass stri
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
 	if err != nil {
+		stopCancel()
 		_ = conn.Close()
 		return nil, fmt.Errorf("http proxy response failed: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		stopCancel()
+		_ = resp.Body.Close()
 		_ = conn.Close()
 		return nil, fmt.Errorf("http proxy rejected CONNECT: status %d %s", resp.StatusCode, resp.Status)
 	}
+
+	stopCancel()
+	_ = conn.SetDeadline(time.Time{})
 
 	if br.Buffered() > 0 {
 		return &bufConn{Conn: conn, r: io.MultiReader(br, conn)}, nil
 	}
 	return conn, nil
+}
+
+// normalizeProxyHostPort appends the scheme's default port when host lacks one,
+// handling bare bracketed IPv6 literals such as "[::1]" cleanly.
+func normalizeProxyHostPort(host, scheme string) string {
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host
+	}
+	port := "1080"
+	if strings.EqualFold(scheme, "http") {
+		port = "8080"
+	}
+	return net.JoinHostPort(strings.Trim(host, "[]"), port)
 }
 
 // dialViaOutboundProxy checks whether an outbound proxy is configured and applicable,
@@ -168,14 +227,7 @@ func dialViaOutboundProxy(ctx context.Context, network, addr string, timeout tim
 		},
 	}
 
-	proxyHostPort := u.Host
-	if !strings.Contains(proxyHostPort, ":") {
-		if strings.EqualFold(u.Scheme, "http") {
-			proxyHostPort += ":8080"
-		} else {
-			proxyHostPort += ":1080"
-		}
-	}
+	proxyHostPort := normalizeProxyHostPort(u.Host, u.Scheme)
 
 	var user, pass string
 	if u.User != nil {
@@ -197,15 +249,21 @@ func dialViaOutboundProxy(ctx context.Context, network, addr string, timeout tim
 			conn, err := ctxDialer.DialContext(ctx, network, addr)
 			return conn, true, err
 		}
-		// Fallback for non-context dialer
+		// Fallback for non-context dialer: ensure late connections on cancelled ctx are closed.
 		type dialResult struct {
 			c   net.Conn
 			err error
 		}
-		ch := make(chan dialResult, 1)
+		ch := make(chan dialResult)
 		go func() {
 			c, e := s5Dialer.Dial(network, addr)
-			ch <- dialResult{c: c, err: e}
+			select {
+			case ch <- dialResult{c: c, err: e}:
+			case <-ctx.Done():
+				if c != nil {
+					_ = c.Close()
+				}
+			}
 		}()
 		select {
 		case <-ctx.Done():

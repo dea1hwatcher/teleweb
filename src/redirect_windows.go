@@ -320,15 +320,65 @@ func chooseNATPortRange(dynStart, dynEnd uint32) (uint16, uint16, error) {
 	return uint16(first), uint16(last), nil
 }
 
+// parseNetshDynamicPortRange extracts start and inclusive end port from the output
+// of `netsh int ipv4 show dynamicport tcp` in a locale-independent way.
+func parseNetshDynamicPortRange(out string) (start, end uint32, ok bool) {
+	var nums [2]uint32
+	found := 0
+	for _, line := range strings.Split(out, "\n") {
+		colon := strings.IndexByte(line, ':')
+		if colon < 0 {
+			continue
+		}
+		valStr := strings.TrimSpace(line[colon+1:])
+		if fields := strings.Fields(valStr); len(fields) > 0 {
+			if n, err := strconv.ParseUint(fields[0], 10, 32); err == nil {
+				nums[found] = uint32(n)
+				found++
+				if found == 2 {
+					break
+				}
+			}
+		}
+	}
+	if found != 2 || nums[0] == 0 || nums[1] == 0 || nums[0] > 65535 {
+		return 0, 0, false
+	}
+	last := nums[0] + nums[1] - 1
+	if last > 65535 {
+		last = 65535
+	}
+	return nums[0], last, true
+}
+
+func queryNetshDynamicPortRange() (uint32, uint32, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "netsh", "int", "ipv4", "show", "dynamicport", "tcp")
+	setCmdNoWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	return parseNetshDynamicPortRange(string(out))
+}
+
 func configureNATPortRange() error {
 	const tcpipParams = `SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`
 	dynStart, dynEnd := uint32(49152), uint32(65535)
+	fromNetsh := false
+	if s, e, ok := queryNetshDynamicPortRange(); ok {
+		dynStart, dynEnd = s, e
+		fromNetsh = true
+	}
 	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, tcpipParams, registry.QUERY_VALUE); err == nil {
 		if v, _, err := k.GetIntegerValue("MaxUserPortStarting"); err == nil && v > 0 && v <= 65535 {
 			dynStart = uint32(v)
 		}
 		if v, _, err := k.GetIntegerValue("MaxUserPort"); err == nil && v > 0 && v <= 65535 {
-			dynEnd = uint32(v)
+			if !fromNetsh || uint32(v) > dynEnd {
+				dynEnd = uint32(v)
+			}
 		}
 		_ = k.Close()
 	}
@@ -346,11 +396,16 @@ func configureNATPortRange() error {
 // The caller holds natTable.mu and files the entry in its own flow map, so both
 // address families share one port space and one lookup for accepted sockets.
 func allocNatEntry(orig netip.AddrPort, clientAddr netip.Addr, clientPort uint16) *natEntry {
-	for i := uint16(0); i < natPortLast-natPortFirst; i++ {
+	total := int(natPortLast) - int(natPortFirst) + 1
+	if total <= 0 {
+		return nil
+	}
+	for i := 0; i < total; i++ {
 		p := natTable.next
-		natTable.next++
-		if natTable.next >= natPortLast {
+		if p >= natPortLast || p < natPortFirst {
 			natTable.next = natPortFirst
+		} else {
+			natTable.next = p + 1
 		}
 		if _, busy := natTable.ports[p]; busy {
 			continue
@@ -562,6 +617,10 @@ func parseTCPv4(pkt []byte) (tcpMeta, bool) {
 	if len(pkt) < 40 || pkt[0]>>4 != 4 {
 		return m, false
 	}
+	// Reject non-first IPv4 fragments: only fragment offset 0 carries a TCP header.
+	if pkt[6]&0x1f != 0 || pkt[7] != 0 {
+		return m, false
+	}
 	m.ihl = int(pkt[0]&0x0f) * 4
 	if m.ihl < 20 || len(pkt) < m.ihl+20 || pkt[9] != 6 {
 		return m, false
@@ -681,10 +740,45 @@ func v6FromLoopback(p []byte, meta tcpMetaV6, orig netip.AddrPort, client netip.
 // ------------------------------ Redirector ---------------------------------
 
 type wdRedirector struct {
+	mu           sync.Mutex
 	hOut, hRet   uintptr
 	hOut6, hRet6 uintptr
 	running      atomic.Bool
+	runningV6    atomic.Bool
 	stopJanitor  chan struct{}
+}
+
+func (r *wdRedirector) closeV6Handles() {
+	r.runningV6.Store(false)
+	r.mu.Lock()
+	hOut6, hRet6 := r.hOut6, r.hRet6
+	r.hOut6, r.hRet6 = 0, 0
+	r.mu.Unlock()
+	if hOut6 != 0 {
+		_, _, _ = wdClose.Call(hOut6)
+	}
+	if hRet6 != 0 {
+		_, _, _ = wdClose.Call(hRet6)
+	}
+}
+
+func (r *wdRedirector) stopAll() {
+	r.running.Store(false)
+	r.runningV6.Store(false)
+	r.mu.Lock()
+	hOut, hRet, hOut6, hRet6 := r.hOut, r.hRet, r.hOut6, r.hRet6
+	r.hOut, r.hRet, r.hOut6, r.hRet6 = 0, 0, 0, 0
+	stopCh := r.stopJanitor
+	r.stopJanitor = nil
+	r.mu.Unlock()
+	if stopCh != nil {
+		close(stopCh)
+	}
+	for _, h := range []uintptr{hOut, hRet, hOut6, hRet6} {
+		if h != 0 {
+			_, _, _ = wdClose.Call(h)
+		}
+	}
 }
 
 var (
@@ -825,24 +919,7 @@ func startRedirector() error {
 		if activeRedirector.running.Load() {
 			return nil
 		}
-		// Clean up previous inactive redirector handles before opening new ones
-		activeRedirector.running.Store(false)
-		if activeRedirector.stopJanitor != nil {
-			close(activeRedirector.stopJanitor)
-			activeRedirector.stopJanitor = nil
-		}
-		if activeRedirector.hOut != 0 {
-			_, _, _ = wdClose.Call(activeRedirector.hOut)
-		}
-		if activeRedirector.hRet != 0 {
-			_, _, _ = wdClose.Call(activeRedirector.hRet)
-		}
-		if activeRedirector.hOut6 != 0 {
-			_, _, _ = wdClose.Call(activeRedirector.hOut6)
-		}
-		if activeRedirector.hRet6 != 0 {
-			_, _, _ = wdClose.Call(activeRedirector.hRet6)
-		}
+		activeRedirector.stopAll()
 		activeRedirector = nil
 	}
 	if !isElevated() {
@@ -895,6 +972,7 @@ func startRedirector() error {
 				break
 			}
 			r.hOut6, r.hRet6 = hOut6, hRet6
+			r.runningV6.Store(true)
 			go r.out6Loop()
 			go r.ret6Loop()
 			logf("redirector: Telegram IPv6 -> [::1]:%d; other IPv6 TCP passes through", defaultPort)
@@ -931,23 +1009,7 @@ func tryUnloadWinDivertService() {
 func stopRedirector() {
 	redirectorMu.Lock()
 	if activeRedirector != nil {
-		activeRedirector.running.Store(false)
-		if activeRedirector.stopJanitor != nil {
-			close(activeRedirector.stopJanitor)
-			activeRedirector.stopJanitor = nil
-		}
-		if activeRedirector.hOut != 0 {
-			_, _, _ = wdClose.Call(activeRedirector.hOut)
-		}
-		if activeRedirector.hRet != 0 {
-			_, _, _ = wdClose.Call(activeRedirector.hRet)
-		}
-		if activeRedirector.hOut6 != 0 {
-			_, _, _ = wdClose.Call(activeRedirector.hOut6)
-		}
-		if activeRedirector.hRet6 != 0 {
-			_, _, _ = wdClose.Call(activeRedirector.hRet6)
-		}
+		activeRedirector.stopAll()
 		activeRedirector = nil
 		logf("redirector: WinDivert stopped")
 	}
@@ -959,28 +1021,32 @@ func stopRedirector() {
 	tryUnloadWinDivertService()
 }
 
-func (r *wdRedirector) outLoop() {
+func (r *wdRedirector) runRecvLoop(label string, handle uintptr, active *atomic.Bool, onFailure func(), handlePkt func(p []byte, addr *wdAddr) bool) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			logStack(fmt.Sprintf("FATAL panic in WinDivert outLoop: %v", rec))
-			r.running.Store(false)
+			logStack(fmt.Sprintf("FATAL panic in WinDivert %s: %v", label, rec))
+			if onFailure != nil {
+				onFailure()
+			}
 		}
 	}()
 	pkt := make([]byte, winDivertBufferSize)
 	var consecErr int
-	for r.running.Load() {
-		n, addr, err := wdRecvPacket(r.hOut, pkt)
+	for active.Load() {
+		n, addr, err := wdRecvPacket(handle, pkt)
 		if err != nil {
-			if !r.running.Load() || isFatalWinDivertError(err) {
+			if !active.Load() || isFatalWinDivertError(err) {
 				return
 			}
 			consecErr++
 			if consecErr <= 3 || consecErr%50 == 0 {
-				logf("redirector: recv: %v (consecutive errors: %d)", err, consecErr)
+				logf("redirector: %s recv: %v (consecutive errors: %d)", label, err, consecErr)
 			}
 			if consecErr > 100 {
-				logf("redirector: too many consecutive recv errors (%d), terminating outLoop", consecErr)
-				r.running.Store(false)
+				logf("redirector: too many consecutive %s recv errors (%d), terminating", label, consecErr)
+				if onFailure != nil {
+					onFailure()
+				}
 				return
 			}
 			time.Sleep(50 * time.Millisecond)
@@ -988,29 +1054,29 @@ func (r *wdRedirector) outLoop() {
 		}
 		consecErr = 0
 		p := pkt[:n]
+		if handlePkt(p, &addr) {
+			_ = wdSendPacket(handle, p, &addr)
+		}
+	}
+}
+
+func (r *wdRedirector) outLoop() {
+	r.runRecvLoop("outLoop", r.hOut, &r.running, r.stopAll, func(p []byte, addr *wdAddr) bool {
 		m, ok := parseTCPv4(p)
 		if !ok || isSelfDialPort(m.sport) {
-			_ = wdSendPacket(r.hOut, p, &addr)
-			continue
+			return true
 		}
 		isSYN := (m.flags & (tcpFlagSYN | tcpFlagACK)) == tcpFlagSYN
 		flow := natFlowKey{srcIP: m.srcIP, srcPort: m.sport, dstIP: m.dstIP, dstPort: m.dport}
-		// Fast path: established flows are resolved under a read lock. A SYN
-		// (new or retransmitted) may carry a stale TIME_WAIT mapping, so it
-		// falls through to natGetOrCreate which purges and rebinds a fresh
-		// local port for the new connection.
 		e := natLookupFlow(flow)
 		if e == nil || isSYN {
 			e = natGetOrCreate(flow, netip.AddrPortFrom(netip.AddrFrom4(m.dstIP), m.dport), isSYN)
 			if e == nil {
-				// Every local port is taken: fail closed by dropping the packet
-				// so it does not leak directly outside the tunnel, matching the
-				// IPv6 v6Drop invariant.
 				natTable.mu.RLock()
 				flows := len(natTable.ports)
 				natTable.mu.RUnlock()
 				logf("redirector: NAT port range exhausted (%d flows); %s:%d -> %s:%d dropped instead of escaping the tunnel", flows, netip.AddrFrom4(m.srcIP), m.sport, netip.AddrFrom4(m.dstIP), m.dport)
-				continue
+				return false
 			}
 		}
 		e.touch(m.flags, time.Now().UnixNano())
@@ -1018,62 +1084,27 @@ func (r *wdRedirector) outLoop() {
 		p[16], p[17], p[18], p[19] = 127, 0, 0, 1
 		binary.BigEndian.PutUint16(p[m.ihl:], e.natPort)
 		binary.BigEndian.PutUint16(p[m.ihl+2:], defaultPort)
-		wdCalcChecksums(p, &addr)
-		_ = wdSendPacket(r.hOut, p, &addr)
-	}
+		wdCalcChecksums(p, addr)
+		return true
+	})
 }
 
 func (r *wdRedirector) retLoop() {
-	defer func() {
-		if rec := recover(); rec != nil {
-			logStack(fmt.Sprintf("FATAL panic in WinDivert retLoop: %v", rec))
-			r.running.Store(false)
-		}
-	}()
-	pkt := make([]byte, winDivertBufferSize)
-	var consecErr int
-	for r.running.Load() {
-		n, addr, err := wdRecvPacket(r.hRet, pkt)
-		if err != nil {
-			if !r.running.Load() || isFatalWinDivertError(err) {
-				return
-			}
-			consecErr++
-			if consecErr <= 3 || consecErr%50 == 0 {
-				logf("redirector: ret recv: %v (consecutive errors: %d)", err, consecErr)
-			}
-			if consecErr > 100 {
-				logf("redirector: too many consecutive ret recv errors (%d), terminating retLoop", consecErr)
-				r.running.Store(false)
-				return
-			}
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		consecErr = 0
-		p := pkt[:n]
+	r.runRecvLoop("retLoop", r.hRet, &r.running, r.stopAll, func(p []byte, addr *wdAddr) bool {
 		m, ok := parseTCPv4(p)
 		if !ok {
-			_ = wdSendPacket(r.hRet, p, &addr)
-			continue
+			return true
 		}
-		// The WinDivert filter limits captures to listener replies, but keep
-		// the tuple check here too: natReturnEntry used to accept any dport
-		// and could rewrite an unrelated loopback client when the NAT pool
-		// overlapped the OS ephemeral range.
 		if m.sport != uint16(defaultPort) || m.srcIP != [4]byte{127, 0, 0, 1} || m.dstIP != [4]byte{127, 0, 0, 1} {
-			_ = wdSendPacket(r.hRet, p, &addr)
-			continue
+			return true
 		}
 		e := natReturnEntry(m.dport)
 		if e == nil {
-			_ = wdSendPacket(r.hRet, p, &addr)
-			continue
+			return true
 		}
 		e.touch(m.flags, time.Now().UnixNano())
 		if !e.orig.Addr().Is4() {
-			_ = wdSendPacket(r.hRet, p, &addr)
-			continue
+			return true
 		}
 		o := e.orig.Addr().As4()
 		client := e.clientAddr.As4()
@@ -1082,9 +1113,9 @@ func (r *wdRedirector) retLoop() {
 		binary.BigEndian.PutUint16(p[m.ihl:], e.orig.Port())
 		binary.BigEndian.PutUint16(p[m.ihl+2:], e.clientPort)
 		addr.clearLoopback()
-		wdCalcChecksums(p, &addr)
-		_ = wdSendPacket(r.hRet, p, &addr)
-	}
+		wdCalcChecksums(p, addr)
+		return true
+	})
 }
 
 // v6Verdict classifies what processOut6 decided about a captured packet.
@@ -1157,81 +1188,35 @@ func processRet6(p []byte) bool {
 // through here because the filter cannot be narrowed to a range; a packet that
 // is not tunnel material is injected back unchanged in the same iteration.
 func (r *wdRedirector) out6Loop() {
-	defer func() {
-		if rec := recover(); rec != nil {
-			logStack(fmt.Sprintf("FATAL panic in WinDivert out6Loop: %v", rec))
-			r.running.Store(false)
-		}
-	}()
-	pkt := make([]byte, winDivertBufferSize)
-	var consecErr int
-	for r.running.Load() {
-		n, addr, err := wdRecvPacket(r.hOut6, pkt)
-		if err != nil {
-			if !r.running.Load() || isFatalWinDivertError(err) {
-				return
-			}
-			consecErr++
-			if consecErr <= 3 || consecErr%50 == 0 {
-				logf("redirector: v6 recv: %v (consecutive errors: %d)", err, consecErr)
-			}
-			if consecErr > 100 {
-				logf("redirector: too many consecutive v6 recv errors (%d), terminating out6Loop", consecErr)
-				r.running.Store(false)
-				return
-			}
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		consecErr = 0
-		p := pkt[:n]
+	onV6Fail := func() {
+		r.closeV6Handles()
+		logf("%s", v6CoverageNotice(hostHasGlobalIPv6()))
+	}
+	r.runRecvLoop("out6Loop", r.hOut6, &r.runningV6, onV6Fail, func(p []byte, addr *wdAddr) bool {
 		switch processOut6(p) {
 		case v6Rewritten:
-			wdCalcChecksums(p, &addr)
+			wdCalcChecksums(p, addr)
 		case v6Drop:
-			continue
+			return false
 		}
-		_ = wdSendPacket(r.hOut6, p, &addr)
-	}
+		return true
+	})
 }
 
 // ret6Loop rewrites the listener's replies back into the Telegram endpoint, the
 // IPv6 counterpart of retLoop.
 func (r *wdRedirector) ret6Loop() {
-	defer func() {
-		if rec := recover(); rec != nil {
-			logStack(fmt.Sprintf("FATAL panic in WinDivert ret6Loop: %v", rec))
-			r.running.Store(false)
-		}
-	}()
-	pkt := make([]byte, winDivertBufferSize)
-	var consecErr int
-	for r.running.Load() {
-		n, addr, err := wdRecvPacket(r.hRet6, pkt)
-		if err != nil {
-			if !r.running.Load() || isFatalWinDivertError(err) {
-				return
-			}
-			consecErr++
-			if consecErr <= 3 || consecErr%50 == 0 {
-				logf("redirector: v6 ret recv: %v (consecutive errors: %d)", err, consecErr)
-			}
-			if consecErr > 100 {
-				logf("redirector: too many consecutive v6 ret recv errors (%d), terminating ret6Loop", consecErr)
-				r.running.Store(false)
-				return
-			}
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		consecErr = 0
-		p := pkt[:n]
+	onV6Fail := func() {
+		r.closeV6Handles()
+		logf("%s", v6CoverageNotice(hostHasGlobalIPv6()))
+	}
+	r.runRecvLoop("ret6Loop", r.hRet6, &r.runningV6, onV6Fail, func(p []byte, addr *wdAddr) bool {
 		if processRet6(p) {
 			addr.clearLoopback()
-			wdCalcChecksums(p, &addr)
+			wdCalcChecksums(p, addr)
 		}
-		_ = wdSendPacket(r.hRet6, p, &addr)
-	}
+		return true
+	})
 }
 
 func redirectorHealthy() bool {

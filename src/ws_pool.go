@@ -238,7 +238,12 @@ func (p *WsPool) Warmup(activeDCs []int) {
 }
 
 func (p *WsPool) StartRotation() {
+	if p == nil {
+		return
+	}
+	p.refillWg.Add(1)
 	go func() {
+		defer p.refillWg.Done()
 		ticker := time.NewTicker(wsPoolCheckInterval)
 		defer ticker.Stop()
 
@@ -247,6 +252,9 @@ func (p *WsPool) StartRotation() {
 			case <-p.ctx.Done():
 				return
 			case <-ticker.C:
+				if p.ctx.Err() != nil {
+					return
+				}
 				p.rotate()
 			}
 		}

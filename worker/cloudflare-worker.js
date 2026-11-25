@@ -112,7 +112,7 @@ export default {
       // async callback.
       const chunk = blob ? null : data instanceof ArrayBuffer
         ? new Uint8Array(data.slice(0))
-        : new Uint8Array(data).slice();
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
       const size = blob ? data.size : chunk.byteLength;
       if (pendingBytes + size > MAX_PENDING_BYTES || pendingMessages >= MAX_PENDING_MESSAGES) {
         shutdown(1009, "Telegram write queue full");
