@@ -6548,3 +6548,191 @@ func TestReadLogTailBytes_TrailingNewline(t *testing.T) {
 		t.Fatalf("unexpected tail: %q", string(tail))
 	}
 }
+
+func TestPipeWSTunnel_MediaIdlePingThenUploadDoesNotStall(t *testing.T) {
+	prevStall := getMediaStallTimeout()
+	setMediaStallTimeout(60 * time.Millisecond)
+	t.Cleanup(func() { setMediaStallTimeout(prevStall) })
+
+	globalMediaCircuitBreaker.Reset()
+	t.Cleanup(func() { globalMediaCircuitBreaker.Reset() })
+
+	routeHealthMu.Lock()
+	origRH, hadRH := routeHealth["test-media-ping.invalid"]
+	delete(routeHealth, "test-media-ping.invalid")
+	routeHealthMu.Unlock()
+	t.Cleanup(func() {
+		routeHealthMu.Lock()
+		if hadRH {
+			routeHealth["test-media-ping.invalid"] = origRH
+		} else {
+			delete(routeHealth, "test-media-ping.invalid")
+		}
+		routeHealthMu.Unlock()
+	})
+
+	clientConn, proxyClient := net.Pipe()
+	proxyServer, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer proxyClient.Close()
+	defer proxyServer.Close()
+	defer serverConn.Close()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	ws := &wsConn{
+		conn: proxyServer,
+		r:    bufio.NewReader(proxyServer),
+		host: "test-media-ping.invalid",
+	}
+
+	init := makeObfuscatedInit(t, 2, 0xEEEEEEEE)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeWSTunnel(proxyClient, ws, init, 2001, 2, true, "149.154.167.51", false)
+	}()
+
+	block, err := aes.NewCipher(init[8:40])
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := cipher.NewCTR(block, init[40:56])
+	stream.XORKeyStream(make([]byte, 64), make([]byte, 64))
+
+	sendIntermediate := func(payloadSize int) {
+		pkt := make([]byte, 4+payloadSize)
+		binary.LittleEndian.PutUint32(pkt[:4], uint32(payloadSize))
+		stream.XORKeyStream(pkt, pkt)
+		_ = clientConn.SetWriteDeadline(time.Now().Add(time.Second))
+		if _, err := clientConn.Write(pkt); err != nil {
+			t.Fatalf("client write (%dB): %v", payloadSize, err)
+		}
+	}
+
+	// 1. Small keep-alive/ping below mediaMinPendingUp (1024 B)
+	sendIntermediate(40)
+
+	// Wait longer than mediaStallTimeout before sending the actual media request
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("pipeWSTunnel closed during idle ping below mediaMinPendingUp")
+	default:
+	}
+
+	// 2. Now send real >=1KB request; server replies >=4KB promptly
+	sendIntermediate(1500)
+	wsServer := &wsConn{conn: serverConn, r: bufio.NewReader(serverConn), host: "srv"}
+	mediaChunk := make([]byte, 5000)
+	if err := wsServer.writeFrame(2, mediaChunk); err != nil {
+		t.Fatalf("server writeFrame: %v", err)
+	}
+
+	replyBuf := make([]byte, 6000)
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.ReadFull(clientConn, replyBuf[:len(mediaChunk)]); err != nil {
+		t.Fatalf("client ReadFull: %v", err)
+	}
+	if globalMediaCircuitBreaker.IsBlocked(2) {
+		t.Fatal("media circuit breaker must remain unblocked after idle ping + responsive transfer")
+	}
+
+	_ = clientConn.Close()
+	<-done
+}
+
+func TestFramerShrinkBuffersReusesBackingStorage(t *testing.T) {
+	rawStorage := make([]byte, 0, 64*1024)
+	plainStorage := make([]byte, 0, 64*1024)
+	bigRaw := make([]byte, 16, 200*1024)
+	copy(bigRaw, "partial-mtproto!")
+	bigPlain := make([]byte, 16, 200*1024)
+	copy(bigPlain, "plain-mtproto-16")
+
+	f := &mtprotoPacketFramer{
+		proto:        0xEFEFEFEF,
+		raw:          bigRaw,
+		plain:        bigPlain,
+		rawStorage:   rawStorage,
+		plainStorage: plainStorage,
+	}
+	f.shrinkBuffers()
+
+	if cap(f.raw) != 64*1024 || cap(f.plain) != 64*1024 {
+		t.Fatalf("expected 64KB backing cap, got raw=%d plain=%d", cap(f.raw), cap(f.plain))
+	}
+	if string(f.raw) != "partial-mtproto!" || string(f.plain) != "plain-mtproto-16" {
+		t.Fatalf("data corrupted on shrink: raw=%q plain=%q", string(f.raw), string(f.plain))
+	}
+	if &f.raw[:cap(f.raw)][0] != &rawStorage[:cap(rawStorage)][0] {
+		t.Fatal("expected shrinkBuffers to reuse f.rawStorage without heap allocation")
+	}
+}
+
+func TestTailLog_BoundaryNewlineWithLock(t *testing.T) {
+	origBase := getBaseDir()
+	tmpDir := t.TempDir()
+	setBaseDir(tmpDir)
+	t.Cleanup(func() { setBaseDir(origBase) })
+
+	// Construct file > 32KB so offset lands right on a '\n' byte before kept lines
+	const maxTail = 32 * 1024
+	kept := "lineA: preserved first full line\nlineB: second\nlineC: third"
+	padBytes := maxTail - len(kept)
+	if padBytes < 10 {
+		t.Fatal("unexpected padding size")
+	}
+	prefix := strings.Repeat("x", padBytes-1) + "\n"
+	content := strings.Repeat("p", 128) + prefix + kept + "\n"
+	if err := os.WriteFile(path("tgws.log"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailLog(3)
+	if got != kept {
+		t.Fatalf("tailLog boundary mismatch:\nwant:\n%s\ngot:\n%s", kept, got)
+	}
+}
+
+func TestOutboundProxyChangeInvalidatesIdleTransports(t *testing.T) {
+	h2ClientsMu.Lock()
+	origH2 := h2Clients
+	origUsed := h2LastUsed
+	h2Clients = map[string]*http.Client{"cached.cf.test": {Transport: &http.Transport{}}}
+	h2LastUsed = map[string]time.Time{"cached.cf.test": time.Now()}
+	h2ClientsMu.Unlock()
+	t.Cleanup(func() {
+		h2ClientsMu.Lock()
+		h2Clients = origH2
+		h2LastUsed = origUsed
+		h2ClientsMu.Unlock()
+	})
+
+	outboundSigMu.Lock()
+	origInit, origSig := outboundSigInit, lastOutboundSig
+	outboundSigInit = true
+	lastOutboundSig = "http://old-proxy:8080\x00"
+	outboundSigMu.Unlock()
+	t.Cleanup(func() {
+		outboundSigMu.Lock()
+		outboundSigInit, lastOutboundSig = origInit, origSig
+		outboundSigMu.Unlock()
+	})
+
+	noteOutboundProxyConfig("http://new-proxy:8080", "")
+
+	h2ClientsMu.RLock()
+	remaining := len(h2Clients)
+	h2ClientsMu.RUnlock()
+	if remaining != 0 {
+		t.Fatalf("expected H2 client cache to clear on proxy change, got %d entries", remaining)
+	}
+}
