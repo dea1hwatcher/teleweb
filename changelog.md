@@ -1,3 +1,19 @@
+### Изменения в v0.2.7:
+
+- **L5 TLS-обход DPI и авто-эскалация по методологии CircumVolve (`src/tls_evasion.go`, `src/main.go`, `webroot/index.html`)**:
+  - Реализована кросс-платформенная фрагментация первого исходящего `ClientHello` через zero-alloc pass-through обёртку `tlsSplitConn` (`atomic.Bool` отключает перехват сразу после первого handshake-рекорда без накладных расходов на горячий релей WebSocket/HTTP2).
+  - Поддержаны 4 профиля обхода: разрез по середине SNI-хостнейма (`mid-sni`), разрез перед расширением SNI (`before-sni`), фрагментация 4-байтового заголовка TLS Handshake до 2 байт с гетерогенной парой версий `0x0301`/`0x0303` (`sub-header`) и `Pre-SNI` RFC 7685 Padding 4096 Б до `SNIExtension` с дедупликацией `0x0015` (`pre-sni-pad`).
+  - L5-фрагментация также подключена к `crypto/tls` транспортам (`src/cf_h2.go`, `src/doh.go`) с деградацией `pre-sni-pad -> before-sni` и сохранением строгой проверки сертификатов (`InsecureSkipVerify: false`).
+  - Добавлена классификация пост-connect сбросов и таймаутов `classifyTLSHandshakeErr` (включая числовые коды Winsock `10054`/`10053`/`10057` для неанглоязычных локалей Windows) с автоматической эскалацией профиля хоста и однократным ретраем в `dialCFHost`, `dialCFWorker`, прямых кандидатах `dialTelegramWS` и диагностике `runCFTestProbe`.
+  - В WebUI (`webroot/index.html`) и REST API (`/api` `tlsEvasion`) добавлен селектор режима обхода (`auto | split | aggressive | off`) и интеграция с пресетом «Анти-блокировка».
+- **Умный карантин Cloudflare Workers и ранняя отмена диалов (`Upstream Sync`)**:
+  - Парсинг `Retry-After` теперь поддерживает как секунды, так и HTTP-date (RFC 1123); при HTTP `429` квоты Workers карантин ставится на домен до ближайшей полуночи UTC вместо 15-минутного потолка, а в `dialTelegramWS` выполняется перебор здоровых публичных воркеров.
+  - Внедрена обёртка `watchedClientConn` для немедленной отмены `dialCtx` при раннем закрытии сокета клиентом Telegram с сохранением уже присланных ранних байт без параллельного чтения.
+  - Пополнение `WsPool.Refill` синхронизировано с реальным истечением кулдаунов фронтов и воркеров; мост `cf_h2.go` учитывает `routeHealth`, `dcDomainAffinity` и `isRussianPoP` и логирует итоги H2-сессии; в цикл `Accept()` добавлено троттлинг-предупреждение `EMFILE`/`ENFILE`.
+- **Тесты и оффлайн E2E-проверка DPI (`src/tls_evasion_test.go`, `src/e2eclient/main.go`, `desktop/linux/docker-e2e/e2e.sh`)**:
+  - Добавлены модульные и `-race` тесты парсера `ClientHello`, разрезания всех TLS-профилей на локальном `crypto/tls` с эфемерным CA, симуляцией `RST`-инжекции DPI и сохранением минимум 1 маршрута в `frontCandidatesForRace`.
+  - В `e2eclient dpi-proxy` и Docker `e2e.sh` добавлена двойная валидация против локального симулятора SNI-DPI и системного CA.
+
 ### Изменения в v0.2.6:
 
 - **Надёжность медиа-релея и стабильность соединений (`Media Stall & DNS Latency Fix`)**:
