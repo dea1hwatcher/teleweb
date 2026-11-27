@@ -1330,9 +1330,31 @@ func readCustomCFWorker() string {
 	return normalizeWorkerAddress(string(b))
 }
 
+func workerHostOnly(w string) string {
+	w = normalizeWorkerAddress(w)
+	if idx := strings.IndexByte(w, '?'); idx != -1 {
+		w = w[:idx]
+	}
+	if slash := strings.IndexByte(w, '/'); slash != -1 {
+		w = w[:slash]
+	}
+	return w
+}
+
 func writeCustomCFWorker(w string) error {
 	ensureDir()
+	prevHost := workerHostOnly(readCustomCFWorker())
 	w = normalizeWorkerAddress(w)
+	newHost := workerHostOnly(w)
+	if prevHost != "" {
+		clearWorkerCooldown(prevHost)
+	}
+	if newHost != "" && newHost != prevHost {
+		clearWorkerCooldown(newHost)
+	}
+	if globalWsPool != nil {
+		globalWsPool.ResetAllBackoffs()
+	}
 	if w == "" {
 		_ = os.Remove(path("custom-cf-worker"))
 		return nil
@@ -2659,9 +2681,10 @@ func cleanupIPv6FilterBlock(bin string, cidrs []string) {
 }
 
 type RateLimitError struct {
-	StatusCode int
-	RetryAfter time.Duration
-	Message    string
+	StatusCode    int
+	RetryAfter    time.Duration
+	HasRetryAfter bool
+	Message       string
 }
 
 func (e *RateLimitError) Error() string {
@@ -2669,6 +2692,43 @@ func (e *RateLimitError) Error() string {
 		return fmt.Sprintf("HTTP %d (retry after %v): %s", e.StatusCode, e.RetryAfter, e.Message)
 	}
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Message)
+}
+
+// parseRetryAfter parses an HTTP Retry-After header as either integer delay
+// seconds or an HTTP-date relative to now.
+func parseRetryAfter(raw string, now time.Time) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if sec, err := strconv.Atoi(raw); err == nil {
+		if sec > 0 {
+			return time.Duration(sec) * time.Second, true
+		}
+		return 0, false
+	}
+	if until, err := http.ParseTime(raw); err == nil {
+		if until.After(now) {
+			return until.Sub(now), true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// nextUTCMidnightCooldown computes how long remains until 00:00 UTC, when
+// Cloudflare Workers free-plan daily request quotas reset.
+func nextUTCMidnightCooldown(now time.Time) time.Duration {
+	utc := now.UTC()
+	next := utc.Truncate(24 * time.Hour).Add(24 * time.Hour)
+	d := next.Sub(utc)
+	if d < time.Minute {
+		d = time.Minute
+	}
+	if d > 24*time.Hour {
+		d = 24 * time.Hour
+	}
+	return d
 }
 
 type workerCooldownState struct {
@@ -2711,6 +2771,37 @@ func isWorkerInCooldown(host string, optDC ...int) bool {
 	return false
 }
 
+func workerCooldownRemaining(host string, optDC ...int) time.Duration {
+	dc := 0
+	if len(optDC) > 0 {
+		dc = optDC[0]
+	}
+	now := time.Now()
+	var maxRem time.Duration
+	if dc > 0 {
+		k := workerCooldownKey(host, dc)
+		if v, ok := workerCooldowns.Load(k); ok {
+			cd := v.(workerCooldownState)
+			if now.Before(cd.until) {
+				maxRem = cd.until.Sub(now)
+			} else {
+				workerCooldowns.Delete(k)
+			}
+		}
+	}
+	if v, ok := workerCooldowns.Load(host); ok {
+		cd := v.(workerCooldownState)
+		if now.Before(cd.until) {
+			if rem := cd.until.Sub(now); rem > maxRem {
+				maxRem = rem
+			}
+		} else {
+			workerCooldowns.Delete(host)
+		}
+	}
+	return maxRem
+}
+
 func markWorkerCooldownDC(host string, dc int, retryAfter time.Duration) {
 	key := host
 	if dc > 0 {
@@ -2732,18 +2823,36 @@ func markWorkerCooldownDC(host string, dc int, retryAfter time.Duration) {
 			delay = 15 * time.Minute
 		}
 		retryAfter = delay
-	} else if retryAfter > 15*time.Minute {
-		retryAfter = 15 * time.Minute
+	} else if retryAfter > 24*time.Hour {
+		retryAfter = 24 * time.Hour
 	}
 	workerCooldowns.Store(key, workerCooldownState{
 		until:   time.Now().Add(retryAfter),
 		strikes: strikes,
 	})
 	if dc > 0 {
-		logf("worker %s (DC%d): rate limited (HTTP 429/503); quarantined for %v", host, dc, retryAfter)
+		logf("worker %s (DC%d): rate limited (HTTP 429/503); quarantined for %v", host, dc, retryAfter.Round(time.Second))
 	} else {
-		logf("worker %s: rate limited (HTTP 429/503); quarantined for %v", host, retryAfter)
+		logf("worker %s: rate limited (HTTP 429/503); quarantined for %v", host, retryAfter.Round(time.Second))
 	}
+}
+
+func markWorkerRateLimit(host string, dc int, err error) {
+	var rle *RateLimitError
+	if errors.As(err, &rle) && rle.StatusCode == http.StatusTooManyRequests {
+		wait := rle.RetryAfter
+		if !rle.HasRetryAfter || wait <= 0 {
+			wait = nextUTCMidnightCooldown(time.Now())
+		}
+		// Workers 429 limits are scoped per Worker deployment/account across all DCs.
+		markWorkerCooldownDC(host, 0, wait)
+		return
+	}
+	var retryAfter time.Duration
+	if rle != nil {
+		retryAfter = rle.RetryAfter
+	}
+	markWorkerCooldownDC(host, dc, retryAfter)
 }
 
 func clearWorkerCooldown(host string, optDC ...int) {
@@ -3976,6 +4085,9 @@ func executeAPICommand(q apiRequest) (any, error) {
 			if err := writeCustomCFDomain(*q.CustomCFDomain); err != nil {
 				return nil, err
 			}
+			if globalWsPool != nil {
+				globalWsPool.ResetAllBackoffs()
+			}
 		}
 		if q.CustomCFWorker != nil {
 			if err := writeCustomCFWorker(*q.CustomCFWorker); err != nil {
@@ -4403,10 +4515,8 @@ func serve() {
 			for {
 				c, err := ln6.Accept()
 				if err != nil {
-					if pause := acceptPause(err); pause < 0 {
+					if handleAcceptError(err, "tcp6") {
 						return
-					} else if pause > 0 {
-						time.Sleep(pause)
 					}
 					continue
 				}
@@ -4468,13 +4578,8 @@ func serve() {
 	for {
 		c, e := ln.Accept()
 		if e != nil {
-			// EMFILE/ENFILE return immediately and would spin the CPU at
-			// 100%; pause briefly instead. A closed listener stops the loop.
-			if pause := acceptPause(e); pause < 0 {
+			if handleAcceptError(e, "tcp4") {
 				return
-			} else if pause > 0 {
-				logf("accept: %v; retrying in %s", e, pause)
-				time.Sleep(pause)
 			}
 			continue
 		}
@@ -4784,6 +4889,111 @@ func acceptPause(err error) time.Duration {
 	return 50 * time.Millisecond
 }
 
+var lastAcceptWarnNs atomic.Int64
+
+// shouldLogThrottled updates lastNs atomically using now and reports whether
+// interval has elapsed since the previous emitted log.
+func shouldLogThrottled(lastNs *atomic.Int64, now time.Time, interval time.Duration) bool {
+	nowNs := now.UnixNano()
+	prev := lastNs.Load()
+	if prev != 0 && time.Duration(nowNs-prev) < interval {
+		return false
+	}
+	return lastNs.CompareAndSwap(prev, nowNs)
+}
+
+func isFDLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "too many open files")
+}
+
+func handleAcceptError(err error, proto string) bool {
+	pause := acceptPause(err)
+	if pause < 0 {
+		return true
+	}
+	if pause > 0 {
+		if shouldLogThrottled(&lastAcceptWarnNs, time.Now(), 30*time.Second) {
+			if isFDLimitError(err) {
+				logf("accept (%s): open file descriptor limit reached (%v); throttling accept every %s", proto, err, pause)
+			} else {
+				logf("accept (%s): %v; retrying in %s", proto, err, pause)
+			}
+		}
+		time.Sleep(pause)
+	}
+	return false
+}
+
+// watchedClientConn performs a single read-ahead on the client socket while an
+// upstream dial race is in flight so an immediate client EOF/RST cancels the
+// dial context without spawning a permanent concurrent reader.
+type watchedClientConn struct {
+	net.Conn
+	pending   []byte
+	err       error
+	done      chan struct{}
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func watchClientDuringDial(ctx context.Context, c net.Conn) (context.Context, *watchedClientConn) {
+	watchCtx, cancel := context.WithCancel(ctx)
+	w := &watchedClientConn{
+		Conn:   c,
+		done:   make(chan struct{}),
+		cancel: cancel,
+	}
+	go func() {
+		defer close(w.done)
+		buf := make([]byte, 32*1024)
+		n, err := c.Read(buf)
+		if n > 0 {
+			w.pending = buf[:n]
+		}
+		w.err = err
+		if n == 0 && err != nil {
+			cancel()
+		}
+	}()
+	return watchCtx, w
+}
+
+func (w *watchedClientConn) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	<-w.done
+	if len(w.pending) > 0 {
+		n := copy(p, w.pending)
+		w.pending = w.pending[n:]
+		if len(w.pending) > 0 {
+			return n, nil
+		}
+		w.pending = nil
+		return n, w.err
+	}
+	if w.err != nil {
+		return 0, w.err
+	}
+	return w.Conn.Read(p)
+}
+
+func (w *watchedClientConn) Close() error {
+	w.closeOnce.Do(func() {
+		w.cancel()
+		w.closeErr = w.Conn.Close()
+	})
+	<-w.done
+	return w.closeErr
+}
+
 func serveConn(c net.Conn, orig netip.AddrPort) {
 	id := atomic.AddInt64(&connSeq, 1)
 	atomic.AddInt64(&active, 1)
@@ -4889,11 +5099,17 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
+	clientConn := c
 	var ws *wsConn
 	if globalWsPool != nil && globalWsPool.size.Load() > 0 {
 		ws = globalWsPool.Get(dc, isMedia, isTestDC)
 	}
 	if ws == nil {
+		var watched *watchedClientConn
+		ctx, watched = watchClientDuringDial(ctx, c)
+		defer watched.Close()
+		clientConn = watched
+
 		var err error
 		ws, err = dialTelegramWS(ctx, dc, isMedia, isTestDC)
 		if err != nil {
@@ -4921,7 +5137,7 @@ func serveConn(c net.Conn, orig netip.AddrPort) {
 		testTag = " (test)"
 	}
 	logf("conn #%d %s -> DC%d%s media=%t via WSS (%s)%s", id, orig, dc, testTag, isMedia, ws.host, rayInfo)
-	pipeWSTunnel(c, ws, init, id, dc, isMedia, orig.Addr().String(), !parsed)
+	pipeWSTunnel(clientConn, ws, init, id, dc, isMedia, orig.Addr().String(), !parsed)
 }
 
 func readDC203DirectTCP() bool         { return readFlag("dc203_direct_tcp", true) }
@@ -5170,7 +5386,7 @@ func handleCDN203(c net.Conn, orig netip.AddrPort, init []byte, id int64) {
 		}
 
 		if worker == "" {
-			if pubWorker := nextPublicWorker(); pubWorker != "" {
+			for _, pubWorker := range availablePublicWorkers(203) {
 				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 				ws, err := dialCFWorker(ctx, 203, cdn203IP, pubWorker, false)
 				cancel()
@@ -5809,41 +6025,47 @@ var (
 	systemRootCAsOnce sync.Once
 )
 
+var defaultAndroidCADirs = []string{
+	"/system/etc/security/cacerts",
+	"/apex/com.android.conscrypt/cacerts",
+	"/apex/com.google.android.conscrypt/cacerts",
+	"/data/misc/keychain/cacerts-added",
+	"/data/misc/user/0/cacerts-added",
+	"/data/misc/keychain/certs-added",
+	"/etc/security/cacerts",
+}
+
+// buildRootCertPool starts from the OS system trust store when available and
+// additively appends PEM certificates found in extraDirs without replacing it.
+func buildRootCertPool(extraDirs []string) (*x509.CertPool, int) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	added := 0
+	for _, dir := range extraDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err == nil && len(data) > 0 && pool.AppendCertsFromPEM(data) {
+				added++
+			}
+		}
+	}
+	return pool, added
+}
+
 // getSystemRootCAs loads Android trusted system and APEX root certificates.
 // Go binaries compiled with GOOS=linux do not automatically search Android certificate paths.
 func getSystemRootCAs() *x509.CertPool {
 	systemRootCAsOnce.Do(func() {
-		pool, err := x509.SystemCertPool()
-		if err != nil || pool == nil {
-			pool = x509.NewCertPool()
-		}
-		dirs := []string{
-			"/system/etc/security/cacerts",
-			"/apex/com.android.conscrypt/cacerts",
-			"/apex/com.google.android.conscrypt/cacerts",
-			"/data/misc/keychain/cacerts-added",
-			"/data/misc/user/0/cacerts-added",
-			"/data/misc/keychain/certs-added",
-			"/etc/security/cacerts",
-		}
-		added := 0
-		for _, dir := range dirs {
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if entry.IsDir() {
-					continue
-				}
-				data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-				if err == nil && len(data) > 0 {
-					if pool.AppendCertsFromPEM(data) {
-						added++
-					}
-				}
-			}
-		}
+		pool, added := buildRootCertPool(defaultAndroidCADirs)
 		if added > 0 {
 			logf("tls: successfully loaded %d Android system CA certificates", added)
 		}
@@ -6091,6 +6313,24 @@ func nextPublicWorker() string {
 	}
 	idx := int(publicWorkerSeq.Add(1) % uint64(len(publicTunnelWorkers)))
 	return publicTunnelWorkers[idx]
+}
+
+// availablePublicWorkers returns public workers in rotated order while skipping
+// workers currently quarantined by HTTP 429/503 or stall cooldowns.
+func availablePublicWorkers(dc int) []string {
+	n := len(publicTunnelWorkers)
+	if n == 0 {
+		return nil
+	}
+	start := int((publicWorkerSeq.Add(1) - 1) % uint64(n))
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		w := publicTunnelWorkers[(start+i)%n]
+		if w != "" && !isWorkerInCooldown(w, dc) {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 var domainPattern = regexp.MustCompile(`^(?i)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -6592,16 +6832,25 @@ func frontCandidatesForRace(dc int, domains []string, start, max int) []string {
 	hosts := make([]string, 0, max)
 	seen := map[string]bool{}
 
-	// If a preferred affinity domain exists for this DC and is healthy, try it first
-	// (only if it didn't resolve to a Russian PoP).
+	// If a preferred affinity domain exists in the active domain pool for this DC
+	// and is healthy, try it first (only if it didn't resolve to a Russian PoP).
 	if pref := getDCDomainAffinity(dc); pref != "" {
-		pop, _ := domainLastPoP.Load(pref)
-		popStr, _ := pop.(string)
-		if !isRussianPoP(popStr) {
-			host := frontHost(dc, pref)
-			if !routeCoolingDown(host) {
-				hosts = append(hosts, host)
-				seen[pref] = true
+		inPool := false
+		for _, d := range domains {
+			if d == pref {
+				inPool = true
+				break
+			}
+		}
+		if inPool {
+			pop, _ := domainLastPoP.Load(pref)
+			popStr, _ := pop.(string)
+			if !isRussianPoP(popStr) {
+				host := frontHost(dc, pref)
+				if !routeCoolingDown(host) {
+					hosts = append(hosts, host)
+					seen[pref] = true
+				}
 			}
 		}
 	}
@@ -6665,6 +6914,81 @@ func allFrontsParked(dc int, isMedia bool) (time.Duration, bool) {
 		}
 	}
 	return nearestRetryFor(frontsForDC(dc))
+}
+
+func allDirectIPsBlockedForDC(dc int) bool {
+	var seen bool
+	if pref := preferredIngressForDC(dc); pref != "" {
+		seen = true
+		if !directDialBlockedRecently(pref) {
+			return false
+		}
+	}
+	for _, cip := range candidateIngressesForDC(dc) {
+		if cip == "" {
+			continue
+		}
+		seen = true
+		if !directDialBlockedRecently(cip) {
+			return false
+		}
+	}
+	return seen
+}
+
+func minWorkerCooldownForDC(dc int) (time.Duration, bool) {
+	if worker := customCFWorkerCached(); worker != "" {
+		host := workerHostOnly(worker)
+		if host == "" {
+			return 0, false
+		}
+		rem := workerCooldownRemaining(host, dc)
+		return rem, rem > 0
+	}
+	var minWait time.Duration
+	for _, w := range publicTunnelWorkers {
+		if w == "" {
+			continue
+		}
+		rem := workerCooldownRemaining(w, dc)
+		if rem <= 0 {
+			return 0, false
+		}
+		if minWait == 0 || rem < minWait {
+			minWait = rem
+		}
+	}
+	return minWait, minWait > 0
+}
+
+// nextExhaustedRouteWait reports the earliest cooldown expiry when every CF front
+// and worker for this DC is cooling down. When checkDirect is true, it only
+// returns a positive delay if static direct endpoints also recently failed.
+func nextExhaustedRouteWait(dc int, isMedia, isTest, checkDirect bool) time.Duration {
+	if isTest {
+		return 0
+	}
+	if checkDirect && !allDirectIPsBlockedForDC(dc) {
+		return 0
+	}
+	frontWait, frontsParked := allFrontsParked(dc, isMedia)
+	if !frontsParked || frontWait <= 0 {
+		return 0
+	}
+	workerWait, workersCooling := minWorkerCooldownForDC(dc)
+	hasWorkerPool := customCFWorkerCached() != "" || len(publicTunnelWorkers) > 0
+	if hasWorkerPool && !workersCooling {
+		return 0
+	}
+	wait := frontWait
+	if workersCooling && workerWait > 0 && workerWait < wait {
+		wait = workerWait
+	}
+	const maxSyncWait = 10 * time.Minute
+	if wait > maxSyncWait {
+		wait = maxSyncWait
+	}
+	return wait
 }
 
 // sweepRouteCaches bounds the host-keyed health maps. Keys accumulate as the
@@ -7148,15 +7472,18 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 
 		// 7. Public Cloudflare Worker fallback (Tier-3)
 		if worker == "" {
-			if pubWorker := nextPublicWorker(); pubWorker != "" {
+			if pubWorkers := availablePublicWorkers(dc); len(pubWorkers) > 0 {
 				dst := workerDstForDC(dc)
-				candPubWorker := dialCandidate{
-					name: fmt.Sprintf("cf-worker (%s)", pubWorker),
-					dial: func(c context.Context) (*wsConn, error) {
-						return dialCFWorker(c, dc, dst, pubWorker, false)
-					},
+				for _, pubWorker := range pubWorkers {
+					w := pubWorker
+					candPubWorker := dialCandidate{
+						name: fmt.Sprintf("cf-worker (%s)", w),
+						dial: func(c context.Context) (*wsConn, error) {
+							return dialCFWorker(c, dc, dst, w, false)
+						},
+					}
+					deferCandidates = append(deferCandidates, candPubWorker)
 				}
-				deferCandidates = append(deferCandidates, candPubWorker)
 			}
 		}
 	}
@@ -7671,13 +7998,13 @@ func websocketUpgradePath(conn net.Conn, host string, path string) (*wsConn, err
 		_ = resp.Body.Close()
 		msg := cleanHTTPErrorBody(body)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
-			var retryAfter time.Duration
-			if ra := resp.Header.Get("Retry-After"); ra != "" {
-				if sec, err := strconv.Atoi(strings.TrimSpace(ra)); err == nil && sec > 0 {
-					retryAfter = time.Duration(sec) * time.Second
-				}
+			retryAfter, hasRA := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+			return nil, &RateLimitError{
+				StatusCode:    resp.StatusCode,
+				RetryAfter:    retryAfter,
+				HasRetryAfter: hasRA,
+				Message:       msg,
 			}
-			return nil, &RateLimitError{StatusCode: resp.StatusCode, RetryAfter: retryAfter, Message: msg}
 		}
 		if msg != "" {
 			return nil, fmt.Errorf("HTTP %s: %s", resp.Status, msg)
@@ -7716,24 +8043,40 @@ func workerDstForDC(dc int) string {
 	return dcSpecs[2].workerDst
 }
 
-func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool) (*wsConn, error) {
-	worker = strings.TrimSpace(worker)
-	if worker == "" {
-		return nil, errors.New("worker is not configured")
-	}
-	worker = normalizeWorkerAddress(worker)
-
-	host := worker
+func buildWorkerTarget(rawWorker, defaultPath, dstIP string, dc int) (host, reqPath string) {
+	normalized := normalizeWorkerAddress(rawWorker)
+	host = normalized
 	query := ""
-	if idx := strings.IndexByte(worker, '?'); idx != -1 {
-		host = worker[:idx]
-		query = worker[idx+1:]
+	if idx := strings.IndexByte(normalized, '?'); idx != -1 {
+		host = normalized[:idx]
+		query = normalized[idx+1:]
 	}
 	customPath := ""
 	if slash := strings.IndexByte(host, '/'); slash != -1 {
 		customPath = host[slash:]
 		host = host[:slash]
 	}
+	basePath := defaultPath
+	if customPath != "" {
+		basePath = customPath
+	}
+	reqPath = fmt.Sprintf("%s?dst=%s&dc=%d", basePath, dstIP, dc)
+	if query != "" {
+		reqPath += "&" + query
+	}
+	return host, reqPath
+}
+
+func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool) (*wsConn, error) {
+	worker = strings.TrimSpace(worker)
+	if worker == "" {
+		return nil, errors.New("worker is not configured")
+	}
+	basePath := "/apiws"
+	if isTest {
+		basePath = "/apiws_test"
+	}
+	host, path := buildWorkerTarget(worker, basePath, dstIP, dc)
 
 	if isWorkerInCooldown(host, dc) {
 		return nil, fmt.Errorf("worker %s (DC%d) is in rate limit cooldown", host, dc)
@@ -7748,18 +8091,6 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		return nil, err
 	}
 	defer release()
-
-	basePath := "/apiws"
-	if isTest {
-		basePath = "/apiws_test"
-	}
-	if customPath != "" {
-		basePath = customPath
-	}
-	path := fmt.Sprintf("%s?dst=%s&dc=%d", basePath, dstIP, dc)
-	if query != "" {
-		path += "&" + query
-	}
 
 	ips, err := resolveHostIPv4(ctx, nil, host, 1500*time.Millisecond, 0)
 	if err != nil {
@@ -7802,7 +8133,7 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		var rle *RateLimitError
 		if errors.As(e, &rle) {
 			if shouldPenalizeRoute(ctx, e) {
-				markWorkerCooldownDC(host, dc, rle.RetryAfter)
+				markWorkerRateLimit(host, dc, rle)
 			}
 			return nil, e
 		}
@@ -7856,25 +8187,7 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 
 	if isWorker {
 		target = normalizeWorkerAddress(target)
-		host = target
-		query := ""
-		if idx := strings.IndexByte(target, '?'); idx != -1 {
-			host = target[:idx]
-			query = target[idx+1:]
-		}
-		customPath := ""
-		if slash := strings.IndexByte(host, '/'); slash != -1 {
-			customPath = host[slash:]
-			host = host[:slash]
-		}
-		basePath := "/apiws"
-		if customPath != "" {
-			basePath = customPath
-		}
-		path = fmt.Sprintf("%s?dst=%s&dc=2", basePath, dcSpecs[2].workerDst)
-		if query != "" {
-			path += "&" + query
-		}
+		host, path = buildWorkerTarget(target, "/apiws", dcSpecs[2].workerDst, 2)
 		honorFrontingSNI = false
 	} else {
 		host = target
@@ -7955,6 +8268,9 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 	cfPop := ws.cfPoP
 	cfRay := ws.cfRay
 	_ = ws.Close()
+	if isWorker && host != "" {
+		clearWorkerCooldown(host)
+	}
 
 	return map[string]any{
 		"ok":         true,
