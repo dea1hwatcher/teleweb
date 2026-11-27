@@ -4000,6 +4000,20 @@ func TestCFDialLimiter(t *testing.T) {
 }
 
 func TestDCDomainAffinity(t *testing.T) {
+	dcDomainAffinityMu.Lock()
+	oldAff, hadAff := dcDomainAffinity[2]
+	delete(dcDomainAffinity, 2)
+	dcDomainAffinityMu.Unlock()
+	t.Cleanup(func() {
+		dcDomainAffinityMu.Lock()
+		if hadAff {
+			dcDomainAffinity[2] = oldAff
+		} else {
+			delete(dcDomainAffinity, 2)
+		}
+		dcDomainAffinityMu.Unlock()
+	})
+
 	domains := []string{"alpha.co.uk", "beta.co.uk", "gamma.co.uk"}
 	setDCDomainAffinity(2, "gamma.co.uk")
 
@@ -6734,5 +6748,383 @@ func TestOutboundProxyChangeInvalidatesIdleTransports(t *testing.T) {
 	h2ClientsMu.RUnlock()
 	if remaining != 0 {
 		t.Fatalf("expected H2 client cache to clear on proxy change, got %d entries", remaining)
+	}
+}
+
+func TestParseRetryAfter_SecondsAndHTTPDate(t *testing.T) {
+	now := time.Date(2026, 11, 27, 20, 0, 0, 0, time.UTC)
+
+	if d, ok := parseRetryAfter("", now); ok || d != 0 {
+		t.Fatalf("empty Retry-After = (%v, %t), want (0, false)", d, ok)
+	}
+	if d, ok := parseRetryAfter("0", now); ok || d != 0 {
+		t.Fatalf("zero Retry-After = (%v, %t), want (0, false)", d, ok)
+	}
+	if d, ok := parseRetryAfter(" 45 ", now); !ok || d != 45*time.Second {
+		t.Fatalf("45s Retry-After = (%v, %t), want (45s, true)", d, ok)
+	}
+
+	futureDate := now.Add(2 * time.Minute).UTC().Format(http.TimeFormat)
+	if d, ok := parseRetryAfter(futureDate, now); !ok || d != 2*time.Minute {
+		t.Fatalf("future HTTP-date Retry-After = (%v, %t), want (2m, true)", d, ok)
+	}
+
+	pastDate := now.Add(-time.Minute).UTC().Format(http.TimeFormat)
+	if d, ok := parseRetryAfter(pastDate, now); ok || d != 0 {
+		t.Fatalf("past HTTP-date Retry-After = (%v, %t), want (0, false)", d, ok)
+	}
+}
+
+func TestNextUTCMidnightCooldown_AndWorkerRateLimit(t *testing.T) {
+	now := time.Date(2026, 11, 27, 23, 0, 0, 0, time.UTC)
+	if got := nextUTCMidnightCooldown(now); got != time.Hour {
+		t.Fatalf("nextUTCMidnightCooldown(23:00 UTC) = %v, want 1h", got)
+	}
+	nearMidnight := time.Date(2026, 11, 27, 23, 59, 50, 0, time.UTC)
+	if got := nextUTCMidnightCooldown(nearMidnight); got < time.Minute {
+		t.Fatalf("nextUTCMidnightCooldown near midnight = %v, want >= 1m clamp", got)
+	}
+
+	origBase := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(origBase) })
+
+	host429 := "quota429-test.workers.dev"
+	host503 := "busy503-test.workers.dev"
+	clearWorkerCooldown(host429)
+	clearWorkerCooldown(host503, 2)
+	clearWorkerCooldown(host503, 4)
+	t.Cleanup(func() {
+		clearWorkerCooldown(host429)
+		clearWorkerCooldown(host503, 2)
+		clearWorkerCooldown(host503, 4)
+	})
+
+	// 429 without Retry-After should quarantine the entire worker across all DCs.
+	markWorkerRateLimit(host429, 2, &RateLimitError{StatusCode: http.StatusTooManyRequests})
+	if !isWorkerInCooldown(host429, 2) || !isWorkerInCooldown(host429, 4) {
+		t.Fatal("expected HTTP 429 worker quarantine to apply across all DCs")
+	}
+
+	// Explicit Retry-After > 15m should be honored rather than truncated to 15m.
+	clearWorkerCooldown(host429)
+	markWorkerRateLimit(host429, 2, &RateLimitError{
+		StatusCode:    http.StatusTooManyRequests,
+		RetryAfter:    45 * time.Minute,
+		HasRetryAfter: true,
+	})
+	if rem := workerCooldownRemaining(host429, 4); rem < 44*time.Minute {
+		t.Fatalf("expected >= 44m remaining cooldown across DCs, got %v", rem)
+	}
+
+	// Saving/updating custom worker clears stale cooldown for that host.
+	if err := writeCustomCFWorker("https://" + host429 + "/apiws"); err != nil {
+		t.Fatal(err)
+	}
+	if isWorkerInCooldown(host429, 2) {
+		t.Fatal("expected writeCustomCFWorker to clear prior cooldown on updated worker host")
+	}
+	_ = writeCustomCFWorker("")
+
+	// 503 stays scoped per-DC with short backoff.
+	markWorkerRateLimit(host503, 2, &RateLimitError{StatusCode: http.StatusServiceUnavailable})
+	if !isWorkerInCooldown(host503, 2) {
+		t.Fatal("expected 503 cooldown for DC2")
+	}
+	if isWorkerInCooldown(host503, 4) {
+		t.Fatal("503 cooldown must stay scoped to DC2")
+	}
+}
+
+func TestAvailablePublicWorkers_SkipsCooledDown(t *testing.T) {
+	if len(publicTunnelWorkers) < 2 {
+		t.Skip("need at least 2 publicTunnelWorkers")
+	}
+	cooled := publicTunnelWorkers[0]
+	clearWorkerCooldown(cooled, 2)
+	markWorkerCooldownDC(cooled, 0, 2*time.Minute)
+	t.Cleanup(func() { clearWorkerCooldown(cooled, 2) })
+
+	avail := availablePublicWorkers(2)
+	if len(avail) != len(publicTunnelWorkers)-1 {
+		t.Fatalf("availablePublicWorkers length = %d, want %d", len(avail), len(publicTunnelWorkers)-1)
+	}
+	for _, w := range avail {
+		if w == cooled {
+			t.Fatalf("availablePublicWorkers returned cooled worker %s", w)
+		}
+	}
+}
+
+func TestWatchClientDuringDial_ImmediateEOFAndPendingPreservation(t *testing.T) {
+	// Case A: Early client close immediately cancels dial context without sleeping.
+	c1, c2 := net.Pipe()
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	watchCtx1, w1 := watchClientDuringDial(ctx1, c1)
+	defer w1.Close()
+
+	_ = c2.Close()
+	<-watchCtx1.Done()
+	if !errors.Is(watchCtx1.Err(), context.Canceled) {
+		t.Fatalf("expected watchCtx canceled on client EOF, got %v", watchCtx1.Err())
+	}
+
+	// Case B: Client sends payload bytes before dial finishes; dial stays alive
+	// and pending bytes are preserved cleanly across partial Reads.
+	p1, p2 := net.Pipe()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	watchCtx2, w2 := watchClientDuringDial(ctx2, p1)
+	defer w2.Close()
+	defer p2.Close()
+
+	firstMsg := []byte("hello-world-mtproto")
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := p2.Write(firstMsg)
+		writeDone <- err
+	}()
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	if watchCtx2.Err() != nil {
+		t.Fatalf("watchCtx2 must remain active after payload write, got %v", watchCtx2.Err())
+	}
+
+	var got bytes.Buffer
+	chunk := make([]byte, 5)
+	for got.Len() < len(firstMsg) {
+		n, err := w2.Read(chunk)
+		if n > 0 {
+			got.Write(chunk[:n])
+		}
+		if err != nil {
+			t.Fatalf("unexpected read error draining pending bytes: %v", err)
+		}
+	}
+	if got.String() != string(firstMsg) {
+		t.Fatalf("pending bytes mismatch: got %q, want %q", got.String(), string(firstMsg))
+	}
+
+	// Follow-up write after pending drain passes through to inner Conn.
+	go func() { _, _ = p2.Write([]byte("!")) }()
+	one := make([]byte, 4)
+	n, err := w2.Read(one)
+	if err != nil || string(one[:n]) != "!" {
+		t.Fatalf("post-pending Read = (%q, %v), want (%q, nil)", string(one[:n]), err, "!")
+	}
+}
+
+func TestWsPoolRefillSyncsWithExhaustedRoutes(t *testing.T) {
+	origBase := getBaseDir()
+	setBaseDir(t.TempDir())
+	t.Cleanup(func() { setBaseDir(origBase) })
+
+	testDomain := "pool-sync-route.invalid"
+	if err := os.WriteFile(path("cf-domains"), []byte(testDomain+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	workerHost := "worker-pool-sync.invalid"
+	if err := writeCustomCFWorker(workerHost); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		clearWorkerCooldown(workerHost)
+	})
+
+	routeHealthMu.Lock()
+	origHealth := routeHealth
+	routeHealth = map[string]routeHealthState{}
+	routeHealthMu.Unlock()
+	t.Cleanup(func() {
+		routeHealthMu.Lock()
+		routeHealth = origHealth
+		routeHealthMu.Unlock()
+	})
+
+	var cachedKeyVal any
+	var hadCached bool
+	key := routeKey(2, false)
+	if v, ok := cfHostCache.Load(key); ok {
+		cachedKeyVal = v
+		hadCached = true
+		cfHostCache.Delete(key)
+	}
+	t.Cleanup(func() {
+		if hadCached {
+			cfHostCache.Store(key, cachedKeyVal)
+		} else {
+			cfHostCache.Delete(key)
+		}
+	})
+
+	// Mark direct DC2 ingresses as recently failed.
+	for _, cip := range candidateIngressesForDC(2) {
+		directDialMarkFail(cip)
+		c := cip
+		t.Cleanup(func() { directDialMarkReachable(c) })
+	}
+	if pref := preferredIngressForDC(2); pref != "" {
+		directDialMarkFail(pref)
+		t.Cleanup(func() { directDialMarkReachable(pref) })
+	}
+
+	parkFront(frontHost(2, testDomain), 4*time.Minute, "test park", nil)
+	markWorkerCooldownDC(workerHost, 0, 3*time.Minute)
+
+	wait := nextExhaustedRouteWait(2, false, false, true)
+	if wait < 2*time.Minute+30*time.Second || wait > 3*time.Minute+30*time.Second {
+		t.Fatalf("nextExhaustedRouteWait = %v, want ~3m (min of 3m worker & 4m front)", wait)
+	}
+
+	p := newWsPool(context.Background(), 1)
+	defer p.Close()
+	p.Refill(2, false, false)
+
+	sb := p.getSlotBackoff(poolSlot{dc: 2, isMedia: false, isTest: false})
+	until := time.Unix(0, sb.until.Load())
+	if rem := time.Until(until); rem < 2*time.Minute+30*time.Second {
+		t.Fatalf("expected Refill to defer slot backoff to worker/front cooldown, got remaining %v", rem)
+	}
+
+	p.ResetAllBackoffs()
+	if sb.until.Load() != 0 {
+		t.Fatal("expected ResetAllBackoffs to clear slot backoff deadline")
+	}
+}
+
+func TestSelectH2MediaHost_RespectsRouteHealthAndRussianPoP(t *testing.T) {
+	routeHealthMu.Lock()
+	origHealth := routeHealth
+	routeHealth = map[string]routeHealthState{}
+	routeHealthMu.Unlock()
+	t.Cleanup(func() {
+		routeHealthMu.Lock()
+		routeHealth = origHealth
+		routeHealthMu.Unlock()
+	})
+
+	h2FailsMu.Lock()
+	origH2 := h2Fails
+	h2Fails = make(map[string]time.Time)
+	h2FailsMu.Unlock()
+	t.Cleanup(func() {
+		h2FailsMu.Lock()
+		h2Fails = origH2
+		h2FailsMu.Unlock()
+	})
+
+	dcDomainAffinityMu.Lock()
+	origAff := dcDomainAffinity[2]
+	delete(dcDomainAffinity, 2)
+	dcDomainAffinityMu.Unlock()
+	t.Cleanup(func() {
+		dcDomainAffinityMu.Lock()
+		if origAff == "" {
+			delete(dcDomainAffinity, 2)
+		} else {
+			dcDomainAffinity[2] = origAff
+		}
+		dcDomainAffinityMu.Unlock()
+	})
+
+	ruDom := "ru-edge-h2.invalid"
+	coolDom := "cool-edge-h2.invalid"
+	healthyDom := "healthy-edge-h2.invalid"
+	domainLastPoP.Store(ruDom, "DME")
+	domainLastPoP.Store(healthyDom, "AMS")
+	t.Cleanup(func() {
+		domainLastPoP.Delete(ruDom)
+		domainLastPoP.Delete(healthyDom)
+	})
+
+	parkFront(frontHost(2, coolDom), 5*time.Minute, "test 429", nil)
+	now := time.Now()
+
+	domains := []string{ruDom, coolDom, healthyDom}
+	got := selectH2MediaHost(2, domains, now)
+	if got != frontHost(2, healthyDom) {
+		t.Fatalf("selectH2MediaHost = %q, want %q", got, frontHost(2, healthyDom))
+	}
+
+	// When all candidates are parked in routeHealth, return empty so WSS fallback runs.
+	parkFront(frontHost(2, ruDom), 5*time.Minute, "test 429", nil)
+	parkFront(frontHost(2, healthyDom), 5*time.Minute, "test 429", nil)
+	if empty := selectH2MediaHost(2, domains, now); empty != "" {
+		t.Fatalf("selectH2MediaHost with all cooled = %q, want empty", empty)
+	}
+}
+
+func TestHandleAcceptError_ThrottlingAndFDLimit(t *testing.T) {
+	if !isFDLimitError(syscall.EMFILE) {
+		t.Fatal("expected isFDLimitError(syscall.EMFILE) = true")
+	}
+	if !isFDLimitError(errors.New("accept tcp: too many open files")) {
+		t.Fatal("expected isFDLimitError('too many open files') = true")
+	}
+	if isFDLimitError(errors.New("i/o timeout")) {
+		t.Fatal("expected isFDLimitError('i/o timeout') = false")
+	}
+
+	var ts atomic.Int64
+	t0 := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	if !shouldLogThrottled(&ts, t0, 30*time.Second) {
+		t.Fatal("first log call must be permitted")
+	}
+	if shouldLogThrottled(&ts, t0.Add(5*time.Second), 30*time.Second) {
+		t.Fatal("log within 30s interval must be suppressed")
+	}
+	if !shouldLogThrottled(&ts, t0.Add(31*time.Second), 30*time.Second) {
+		t.Fatal("log after 30s interval must be permitted")
+	}
+	if !handleAcceptError(net.ErrClosed, "tcp4") {
+		t.Fatal("net.ErrClosed must signal accept loop stop")
+	}
+}
+
+func TestBuildRootCertPool_AdditiveSystemAndCustomCerts(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(42),
+		Subject:               pkix.Name{CommonName: "TeleWEB-Test-Additive-CA"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              []string{"additive-ca.teleweb.invalid"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	pemData := fmt.Sprintf("-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n", base64.StdEncoding.EncodeToString(der))
+	if err := os.WriteFile(filepath.Join(dir, "custom-ca.pem"), []byte(pemData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	pool, added := buildRootCertPool([]string{filepath.Join(dir, "missing"), dir})
+	if added != 1 {
+		t.Fatalf("buildRootCertPool added = %d, want 1", added)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		DNSName: "additive-ca.teleweb.invalid",
+		Roots:   pool,
+	}); err != nil {
+		t.Fatalf("expected custom CA in additive pool to verify leaf: %v", err)
+	}
+	if sysPool, sysErr := x509.SystemCertPool(); sysErr == nil && sysPool != nil && pool.Equal(x509.NewCertPool()) {
+		t.Fatal("expected buildRootCertPool to preserve system CAs when available")
 	}
 }
