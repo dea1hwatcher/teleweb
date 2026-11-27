@@ -76,31 +76,38 @@ var dohBootstrapIPs = map[string][]string{
 	"dns.adguard-dns.com": {"94.140.14.14", "94.140.15.15"},
 }
 
+func dialDoHConn(ctx context.Context, network, addr string) (net.Conn, error) {
+	if conn, used, err := dialViaOutboundProxy(ctx, network, addr, 3*time.Second); used {
+		return conn, err
+	}
+	host, port, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		host = addr
+	}
+	d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 3 * time.Second}
+	conn, err := d.DialContext(ctx, network, addr)
+	if err == nil {
+		setConnSockOpts(conn)
+		return wrapStdTLSConn(conn, host), nil
+	}
+	// System DNS failed to resolve or dial the endpoint: fallback to hardcoded bootstrap IPs.
+	if splitErr == nil {
+		if bootstrapIPs, ok := dohBootstrapIPs[host]; ok {
+			for _, ip := range bootstrapIPs {
+				if bConn, bErr := d.DialContext(ctx, network, net.JoinHostPort(ip, port)); bErr == nil {
+					setConnSockOpts(bConn)
+					return wrapStdTLSConn(bConn, host), nil
+				}
+			}
+		}
+	}
+	return nil, err
+}
+
 func getDoHClient() *http.Client {
 	dohClientOnce.Do(func() {
 		tr := &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				if conn, used, err := dialViaOutboundProxy(ctx, network, addr, 3*time.Second); used {
-					return conn, err
-				}
-				d := net.Dialer{Resolver: systemDNSResolver(), Timeout: 3 * time.Second}
-				conn, err := d.DialContext(ctx, network, addr)
-				if err == nil {
-					return conn, nil
-				}
-				// System DNS failed to resolve or dial the endpoint: fallback to hardcoded bootstrap IPs.
-				host, port, splitErr := net.SplitHostPort(addr)
-				if splitErr == nil {
-					if bootstrapIPs, ok := dohBootstrapIPs[host]; ok {
-						for _, ip := range bootstrapIPs {
-							if bConn, bErr := d.DialContext(ctx, network, net.JoinHostPort(ip, port)); bErr == nil {
-								return bConn, nil
-							}
-						}
-					}
-				}
-				return nil, err
-			},
+			DialContext: dialDoHConn,
 			TLSClientConfig: &tls.Config{
 				RootCAs:          getSystemRootCAs(),
 				CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256},
