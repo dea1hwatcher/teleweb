@@ -388,6 +388,7 @@ type Status struct {
 	ForceTestDC       bool           `json:"forceTestDc"`
 	H2MediaEnabled    bool           `json:"h2MediaEnabled"`
 	DC203DirectTCP    bool           `json:"dc203DirectTcp"`
+	TLSEvasion        string         `json:"tlsEvasion"`
 	Redirector        bool           `json:"redirector"`
 	IsAndroid         bool           `json:"isAndroid"`
 	Stealth           *StealthStatus `json:"stealth,omitempty"`
@@ -429,6 +430,7 @@ type apiRequest struct {
 	ForceTestDC    *bool   `json:"forceTestDc,omitempty"`
 	H2MediaEnabled *bool   `json:"h2MediaEnabled,omitempty"`
 	DC203DirectTCP *bool   `json:"dc203DirectTcp,omitempty"`
+	TLSEvasion     *string `json:"tlsEvasion,omitempty"`
 	StealthMode    *string `json:"stealthMode,omitempty"`
 }
 
@@ -3904,6 +3906,7 @@ func buildStatus(apps []App) Status {
 		ForceTestDC:    readForceTestDC(),
 		H2MediaEnabled: readH2MediaEnabled(),
 		DC203DirectTCP: readDC203DirectTCP(),
+		TLSEvasion:     readTLSEvasionMode(),
 		Redirector:     localRedirectorHealthy(),
 		IsAndroid:      isAndroidRuntime(),
 		Stealth:        detectStealthStatus(),
@@ -4125,6 +4128,13 @@ func executeAPICommand(q apiRequest) (any, error) {
 			if err := writeDC203DirectTCP(*q.DC203DirectTCP); err != nil {
 				return nil, err
 			}
+		}
+		if q.TLSEvasion != nil {
+			if err := writeTLSEvasionMode(*q.TLSEvasion); err != nil {
+				return nil, err
+			}
+			resetDoHIdleConnections()
+			resetH2IdleConnections()
 		}
 		return status(), nil
 	case "clearlogs":
@@ -7432,16 +7442,27 @@ func dialTelegramWS(ctx context.Context, dc int, isMedia bool, isTest bool) (*ws
 		candDirect := dialCandidate{
 			name: fmt.Sprintf("direct (%s@%s)", targetHost, ipAddr),
 			dial: func(c context.Context) (*wsConn, error) {
-				attemptCtx, cancel := context.WithTimeout(c, 2500*time.Millisecond)
-				defer cancel()
-				raw, err := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ipStr, "443"), 1200*time.Millisecond)
-				if err != nil {
-					directDialMarkFail(ipStr)
+				for attempt := 0; attempt < 2; attempt++ {
+					attemptCtx, cancel := context.WithTimeout(c, 2500*time.Millisecond)
+					raw, err := trackedDial(attemptCtx, "tcp4", net.JoinHostPort(ipStr, "443"), 1200*time.Millisecond)
+					if err != nil {
+						cancel()
+						directDialMarkFail(ipStr)
+						return nil, err
+					}
+					directDialMarkReachable(ipStr)
+					setConnSockOpts(raw)
+					ws, err := finishTelegramWSPath(attemptCtx, raw, targetHost, wsUpgradePath)
+					cancel()
+					if err == nil {
+						return ws, nil
+					}
+					if attempt == 0 && handleTLSHandshakeFailure(c, targetHost, err) && remainingDialBudget(c) >= 800*time.Millisecond {
+						continue
+					}
 					return nil, err
 				}
-				directDialMarkReachable(ipStr)
-				setConnSockOpts(raw)
-				return finishTelegramWSPath(attemptCtx, raw, targetHost, wsUpgradePath)
+				return nil, errors.New("direct dial retries exhausted")
 			},
 		}
 		if !cfPriority && !(isMedia && globalMediaCircuitBreaker.IsBlocked(dc)) {
@@ -7597,12 +7618,14 @@ func noteRouteHTTPFailure(host string, err error) {
 	case routeRejectForbidden:
 		reason = "HTTP 403 (Forbidden)"
 	default:
-		if !isTimeout(err) && !isTimeoutText(msg) {
+		var tlsErr *tlsHandshakeError
+		if !isTimeout(err) && !isTimeoutText(msg) &&
+			!(errors.As(err, &tlsErr) && (tlsErr.Kind == tlsFailReset || tlsErr.Kind == tlsFailTimeout)) {
 			return
 		}
 		// Every front is an anycast Cloudflare edge IP and the ISP drops those
-		// in waves, so a timeout is a shared-outage signal as well: park
-		// briefly, never escalate (see frontTimeoutPark).
+		// in waves, so a timeout or exhausted TLS reset is parked briefly without
+		// exponential escalation (see frontTimeoutPark).
 		noteFrontUnreachable(host, err)
 		return
 	}
@@ -7696,8 +7719,11 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 		return nil, fmt.Errorf("DNS: %w", err)
 	}
 	ips = orderCFEdgeIPs(ips)
+	hostKey := tlsEvasionHostKey(host, true)
 	var last error
-	for i, ip := range ips {
+	retriedLastIP := false
+	for i := 0; i < len(ips); i++ {
+		ip := ips[i]
 		if !ip.Is4() {
 			continue
 		}
@@ -7721,10 +7747,18 @@ func dialCFHost(ctx context.Context, resolver *net.Resolver, host string) (*wsCo
 				}
 				return ws, nil
 			}
-			if shouldPenalizeRoute(ctx, e) {
+			_ = raw.Close()
+			escalated := handleTLSHandshakeFailure(ctx, hostKey, e)
+			if escalated && i == len(ips)-1 && !retriedLastIP && remainingDialBudget(ctx) >= 700*time.Millisecond {
+				retriedLastIP = true
+				cancel()
+				last = e
+				i--
+				continue
+			}
+			if !escalated && shouldPenalizeRoute(ctx, e) {
 				noteRouteHTTPFailure(host, e)
 			}
-			_ = raw.Close()
 			// A rejected route will reject the next IP the same way: stop
 			// trying this host instead of burning the dial budget on it.
 			if routeHTTPRejection(strings.ToLower(e.Error())) != routeRejectNone {
@@ -7819,6 +7853,10 @@ func verifyFrontingPeerChain(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 }
 
 func prepareUTLSForHTTP1(conn *utls.UConn) error {
+	return prepareUTLSForHTTP1WithProfile(conn, tlsSplitNone)
+}
+
+func prepareUTLSForHTTP1WithProfile(conn *utls.UConn, profile tlsEvasionProfile) error {
 	if err := conn.BuildHandshakeState(); err != nil {
 		return err
 	}
@@ -7855,6 +7893,7 @@ func prepareUTLSForHTTP1(conn *utls.UConn) error {
 	if !found {
 		conn.Extensions = append(conn.Extensions, &utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}})
 	}
+	applyPreSNIPadding(conn, profile)
 	return conn.BuildHandshakeState()
 }
 
@@ -7878,6 +7917,7 @@ func finishTelegramWSPath(ctx context.Context, raw net.Conn, host string, path s
 func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, honorFrontingSNI bool, helloIDs ...utls.ClientHelloID) (*wsConn, error) {
 	setConnSockOpts(raw)
 	sni, skipVerify := tlsHandshakeForHost(host, honorFrontingSNI)
+	profile := tlsProfileForHost(sni)
 	uConfig := &utls.Config{
 		ServerName:                  sni,
 		MinVersion:                  utls.VersionTLS12,
@@ -7899,8 +7939,9 @@ func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, h
 	} else if readFlag("utls_firefox", false) {
 		helloID = utls.HelloFirefox_Auto
 	}
-	uConn := utls.UClient(raw, uConfig, helloID)
-	if err := prepareUTLSForHTTP1(uConn); err != nil {
+	wrappedRaw := newTLSSplitConn(raw, profile)
+	uConn := utls.UClient(wrappedRaw, uConfig, helloID)
+	if err := prepareUTLSForHTTP1WithProfile(uConn, profile); err != nil {
 		_ = raw.Close()
 		return nil, err
 	}
@@ -7911,6 +7952,9 @@ func finishTLSAndUpgrade(ctx context.Context, raw net.Conn, host, path string, h
 	}
 	if err := uConn.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()
+		if kind := classifyTLSHandshakeErr(err); kind == tlsFailReset || kind == tlsFailTimeout {
+			return nil, &tlsHandshakeError{Kind: kind, Err: err}
+		}
 		return nil, err
 	}
 	ws, err := websocketUpgradePath(uConn, host, path)
@@ -8098,7 +8142,9 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 	}
 
 	var lastErr error
-	for i, ip := range ips {
+	retriedLastIP := false
+	for i := 0; i < len(ips); i++ {
+		ip := ips[i]
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -8129,6 +8175,12 @@ func dialCFWorker(ctx context.Context, dc int, dstIP, worker string, isTest bool
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if handleTLSHandshakeFailure(ctx, host, e) && i == len(ips)-1 && !retriedLastIP && remainingDialBudget(ctx) >= 700*time.Millisecond {
+			retriedLastIP = true
+			lastErr = e
+			i--
+			continue
 		}
 		var rle *RateLimitError
 		if errors.As(e, &rle) {
@@ -8229,28 +8281,42 @@ func runCFTestProbe(rawTarget string) (map[string]any, error) {
 	}
 
 	ip := ips[0]
-	dialCtx, dialCancel := context.WithTimeout(ctx, 3500*time.Millisecond)
-	defer dialCancel()
+	hostKey := tlsEvasionHostKey(host, honorFrontingSNI)
+	var start time.Time
+	var ws *wsConn
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		dialCtx, dialCancel := context.WithTimeout(ctx, 3500*time.Millisecond)
+		start = time.Now()
+		var raw net.Conn
+		raw, err = trackedDial(dialCtx, "tcp4", net.JoinHostPort(ip.String(), "443"), 2*time.Second)
+		if err != nil {
+			dialCancel()
+			latencyMs := time.Since(start).Milliseconds()
+			return map[string]any{
+				"ok":         false,
+				"reachable":  false,
+				"target":     target,
+				"host":       host,
+				"ip":         ip.String(),
+				"latency_ms": latencyMs,
+				"pop":        "",
+				"cf_ray":     "",
+				"error":      fmt.Sprintf("TCP dial to %s:443 failed: %v", ip.String(), err),
+			}, nil
+		}
+		setConnSockOpts(raw)
 
-	start := time.Now()
-	raw, err := trackedDial(dialCtx, "tcp4", net.JoinHostPort(ip.String(), "443"), 2*time.Second)
-	if err != nil {
-		latencyMs := time.Since(start).Milliseconds()
-		return map[string]any{
-			"ok":         false,
-			"reachable":  false,
-			"target":     target,
-			"host":       host,
-			"ip":         ip.String(),
-			"latency_ms": latencyMs,
-			"pop":        "",
-			"cf_ray":     "",
-			"error":      fmt.Sprintf("TCP dial to %s:443 failed: %v", ip.String(), err),
-		}, nil
+		ws, err = finishTLSAndUpgrade(dialCtx, raw, host, path, honorFrontingSNI, utls.HelloChrome_Auto)
+		dialCancel()
+		if err == nil {
+			break
+		}
+		if attempt == 0 && handleTLSHandshakeFailure(ctx, hostKey, err) && remainingDialBudget(ctx) >= 700*time.Millisecond {
+			continue
+		}
+		break
 	}
-	setConnSockOpts(raw)
-
-	ws, err := finishTLSAndUpgrade(dialCtx, raw, host, path, honorFrontingSNI, utls.HelloChrome_Auto)
 	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {
 		return map[string]any{
