@@ -2249,6 +2249,20 @@ body.swiping .state::after {
           </span>
         </div>
 
+        <!-- TLS DPI Evasion Strategy (CircumVolve L5) -->
+        <div class="search-bar">
+          <svg aria-hidden="true" class="icon s24"><use href="#i-shield"/></svg>
+          <select id="selectTLSEvasion" aria-label="Обход DPI на TLS-рукопожатии" onchange="$('saveConfigBtn').click()">
+            <option value="auto">TLS-обход DPI: Авто-эскалация (реком.)</option>
+            <option value="split">TLS-обход DPI: Фрагментация SNI (Split)</option>
+            <option value="aggressive">TLS-обход DPI: Усиленный (SubHeader + Padding)</option>
+            <option value="off">TLS-обход DPI: Выключен</option>
+          </select>
+          <span class="icon-btn state tone-primary" style="pointer-events: none;">
+            <svg aria-hidden="true" class="icon s24"><use href="#i-chevron-down"/></svg>
+          </span>
+        </div>
+
         <div style="margin-top: 4px;">
           <button class="btn primary large with-icon state" id="saveConfigBtn" type="button" style="width: 100%;">
             <svg class="icon s20"><use href="#i-check"/></svg>
@@ -3744,6 +3758,9 @@ function render() {
   if ($("selectPoolSize") && document.activeElement !== $("selectPoolSize")) {
     $("selectPoolSize").value = String(state && typeof state.poolSize === "number" ? state.poolSize : 2);
   }
+  if ($("selectTLSEvasion") && document.activeElement !== $("selectTLSEvasion")) {
+    $("selectTLSEvasion").value = (state && state.tlsEvasion) || "auto";
+  }
   if ($("meta-pool")) {
     const hits = state && state.poolHits || 0;
     const idle = state && state.poolIdle || 0;
@@ -4301,9 +4318,10 @@ $("saveConfigBtn").addEventListener("click", async () => {
   const forceTestDc = $("swForceTestDC") ? $("swForceTestDC").checked : false;
   const dc203DirectTcp = $("swDC203") ? $("swDC203").checked : true;
   const poolSize = $("selectPoolSize") ? parseInt($("selectPoolSize").value, 10) : 2;
+  const tlsEvasion = $("selectTLSEvasion") ? $("selectTLSEvasion").value : "auto";
 
   try {
-    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance, dohEnabled, h2MediaEnabled, forceTestDc, dc203DirectTcp, poolSize });
+    state = await api("setConfig", { customCFDomain, customCFWorker, dcOverrides, cfPriority, cfBalance, dohEnabled, h2MediaEnabled, forceTestDc, dc203DirectTcp, poolSize, tlsEvasion });
     toast("Настройки успешно сохранены");
   } catch (e) {
     toast(e.message);
@@ -4325,6 +4343,7 @@ async function applyRoutingPreset(name, cfg) {
     if ($("swH2Media")) $("swH2Media").checked = !!cfg.h2MediaEnabled;
     if ($("swDC203") && cfg.dc203DirectTcp !== undefined) $("swDC203").checked = !!cfg.dc203DirectTcp;
     if ($("selectPoolSize") && cfg.poolSize) $("selectPoolSize").value = String(cfg.poolSize);
+    if ($("selectTLSEvasion") && cfg.tlsEvasion) $("selectTLSEvasion").value = String(cfg.tlsEvasion);
   } catch (err) {
     toast("Ошибка: " + err.message);
   } finally {
@@ -4341,7 +4360,8 @@ if ($("btnPresetEco")) {
       dohEnabled: true,
       h2MediaEnabled: false,
       dc203DirectTcp: true,
-      poolSize: 1
+      poolSize: 1,
+      tlsEvasion: "auto"
     });
   });
 }
@@ -4354,7 +4374,8 @@ if ($("btnPresetTurbo")) {
       dohEnabled: true,
       h2MediaEnabled: false,
       dc203DirectTcp: true,
-      poolSize: 4
+      poolSize: 4,
+      tlsEvasion: "auto"
     });
   });
 }
@@ -4367,7 +4388,8 @@ if ($("btnPresetBypass")) {
       dohEnabled: true,
       h2MediaEnabled: false,
       dc203DirectTcp: true,
-      poolSize: 2
+      poolSize: 2,
+      tlsEvasion: "split"
     });
   });
 }
