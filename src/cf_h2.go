@@ -60,7 +60,11 @@ func getH2Client(host string) *http.Client {
 
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return trackedDial(ctx, network, addr, 5*time.Second)
+			conn, err := trackedDial(ctx, network, addr, 5*time.Second)
+			if err != nil {
+				return nil, err
+			}
+			return wrapStdTLSConn(conn, host), nil
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName: host,
@@ -265,6 +269,9 @@ func h2PostPacket(ctx context.Context, client *http.Client, apiURL, host string,
 	noteCFRay(resp.Header.Get("CF-Ray"), host)
 
 	if resp.StatusCode != http.StatusOK {
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden) && shouldPenalizeRoute(ctx) {
+			noteRouteHTTPFailure(host, fmt.Errorf("HTTP %s", resp.Status))
+		}
 		h2FailsMu.Lock()
 		h2Fails[host] = time.Now().Add(10 * time.Minute)
 		capFailMapLocked(h2Fails)
@@ -319,33 +326,41 @@ func dispatchH2PostInternal(h2InFlight chan struct{}, bridgeCtx context.Context,
 	return true
 }
 
+// selectH2MediaHost picks the highest-priority Cloudflare domain for H2 media
+// bridging while respecting shared routeHealth parks, Russian PoP avoidance,
+// per-DC domain affinity, and H2-specific preflight failures.
+func selectH2MediaHost(dc int, domains []string, now time.Time) string {
+	if len(domains) == 0 {
+		return ""
+	}
+	start := 0
+	if len(domains) > 1 {
+		start = int(atomic.AddUint64(&cfFrontSeq, 1) % uint64(len(domains)))
+	}
+	hosts := frontCandidatesForRace(dc, domains, start, len(domains))
+	h2FailsMu.RLock()
+	defer h2FailsMu.RUnlock()
+	for _, h := range hosts {
+		if routeCoolingDown(h) {
+			continue
+		}
+		if until, failed := h2Fails[h]; failed && !now.After(until) {
+			continue
+		}
+		return h
+	}
+	return ""
+}
+
 func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bool {
 	// Cloudflare does not front Telegram Test DCs; only production DCs 1-5
 	if isTest || !h2MediaEnabledCached() {
 		return false
 	}
 
-	// 1. Pick candidate host for DC from active Cloudflare domains
-	domains := cfDomainsCached()
-	if len(domains) == 0 {
-		return false
-	}
-	var hosts []string
-	for _, d := range domains {
-		hosts = append(hosts, fmt.Sprintf("kws%d.%s", dc, d))
-	}
-
+	// 1. Pick candidate host for DC honoring affinity, RU PoP avoidance, routeHealth, and h2Fails
 	now := time.Now()
-	var selectedHost string
-	for _, h := range hosts {
-		h2FailsMu.RLock()
-		until := h2Fails[h]
-		h2FailsMu.RUnlock()
-		if now.After(until) {
-			selectedHost = h
-			break
-		}
-	}
+	selectedHost := selectH2MediaHost(dc, cfDomainsCached(), now)
 	if selectedHost == "" {
 		return false
 	}
@@ -402,12 +417,27 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		return false
 	}
 
+	startedAt := time.Now()
+	var h2UpBytes, h2DownBytes atomic.Int64
+	var closeReasonPtr atomic.Pointer[string]
+	setCloseReason := func(r string) {
+		closeReasonPtr.CompareAndSwap(nil, &r)
+	}
 	logf("conn #%d DC%d media bridged via HTTP/2 host=%s (%s)", id, dc, selectedHost, apiURL)
 	atomic.AddInt64(&trafficUpBytes, int64(len(init)))
 
 	// 4. Run HTTP/2 pipeline
 	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
-	defer bridgeCancel()
+	defer func() {
+		bridgeCancel()
+		reason := "eof"
+		if p := closeReasonPtr.Load(); p != nil {
+			reason = *p
+		}
+		logf("conn #%d DC%d media HTTP/2 session closed (%s, reason=%s, dur=%v, up=%d down=%d)",
+			id, dc, selectedHost, reason, time.Since(startedAt).Round(time.Millisecond),
+			h2UpBytes.Load(), h2DownBytes.Load())
+	}()
 
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
@@ -427,11 +457,13 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				lastWriteDeadline = now
 			}
 			if err := writeFull(c, encrypted); err != nil {
+				setCloseReason("client write error")
 				return err
 			}
 			// Count the full encoded frame (length prefix + body) so the
 			// H2 path's download statistics match the WSS path, which
 			// accounts whole frames.
+			h2DownBytes.Add(int64(len(encoded)))
 			atomic.AddInt64(&trafficDownBytes, int64(len(encoded)))
 			lastActivity.Store(time.Now().UnixNano())
 			return nil
@@ -444,11 +476,13 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 					// the server has already advanced its CTR stream, so every
 					// later reply would decrypt into garbage. Tear the session
 					// down instead — the MTProto client reconnects on its own.
+					setCloseReason("post slot lost")
 					logf("H2 media bridge: request seq=%d lost; closing session to avoid CTR desync", r.seq)
 					bridgeCancel()
 					return
 				}
 				if err := seq.push(r.seq, r.data); err != nil {
+					setCloseReason("reply reorder error")
 					bridgeCancel()
 					return
 				}
@@ -525,6 +559,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 		_ = c.SetReadDeadline(time.Now().Add(3 * time.Minute))
 		nr, err := c.Read(buf)
 		if nr > 0 {
+			h2UpBytes.Add(int64(nr))
 			atomic.AddInt64(&trafficUpBytes, int64(nr))
 			lastActivity.Store(time.Now().UnixNano())
 			prevPlain := len(framer.plain)
@@ -533,6 +568,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 			framer.stream.XORKeyStream(framer.plain[prevPlain:], chunk)
 
 			if len(framer.plain) > maxWSFrame {
+				setCloseReason("plain buffer limit")
 				logf("H2 media bridge: buffered plain payload exceeds %d bytes; closing session", maxWSFrame)
 				bridgeCancel()
 				break
@@ -543,6 +579,7 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				// A framing error means the CTR stream desynchronised: the old
 				// loop silently swallowed it and kept decrypting garbage. Tear
 				// the session down -- the MTProto client reconnects on its own.
+				setCloseReason("framing error")
 				logf("H2 media bridge: framing error: %v; closing session", perr)
 				bridgeCancel()
 				break
@@ -572,12 +609,16 @@ func tryBridgeH2Media(c net.Conn, init []byte, id int64, dc int, isTest bool) bo
 				// one sequence slot, even when its request ultimately fails.
 				seq := postSeq.Add(1) - 1
 				if !dispatchH2Post(h2InFlight, bridgeCtx, client, apiURL, selectedHost, replyCh, seq, rawMTProto) {
+					setCloseReason("bridge cancelled")
 					return true
 				}
 			}
 		}
 
 		if err != nil {
+			if !isNeutralError(err) {
+				setCloseReason("client read error")
+			}
 			break
 		}
 	}

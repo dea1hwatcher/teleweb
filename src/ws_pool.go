@@ -96,6 +96,21 @@ func (p *WsPool) ResetBackoff(dc int, isMedia bool, isTest bool) {
 	sb.until.Store(0)
 }
 
+// ResetAllBackoffs clears consecutive refill delays across every slot when
+// routing configuration or custom worker settings change.
+func (p *WsPool) ResetAllBackoffs() {
+	if p == nil {
+		return
+	}
+	p.backoffs.Range(func(_, val any) bool {
+		if sb, ok := val.(*slotBackoff); ok && sb != nil {
+			sb.consecutive.Store(0)
+			sb.until.Store(0)
+		}
+		return true
+	})
+}
+
 func isPoolConnAlive(c net.Conn) bool {
 	if c == nil {
 		return false
@@ -161,8 +176,13 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 	}
 	slot := poolSlot{dc: dc, isMedia: isMedia, isTest: isTest}
 	sb := p.getSlotBackoff(slot)
-	if time.Now().UnixNano() < sb.until.Load() {
+	now := time.Now()
+	if now.UnixNano() < sb.until.Load() {
 		return // in consecutive failure backoff window
+	}
+	if wait := nextExhaustedRouteWait(dc, isMedia, isTest, true); wait > 0 {
+		sb.until.Store(now.Add(wait).UnixNano())
+		return
 	}
 	q, rf := p.getQueue(slot)
 	if !rf.CompareAndSwap(0, 1) {
@@ -191,13 +211,17 @@ func (p *WsPool) Refill(dc int, isMedia bool, isTest bool) {
 			dialCancel()
 
 			if err != nil || ws == nil {
-				// Consecutive failure backoff: scale delay to prevent network/CPU thrashing
+				// Consecutive failure backoff: scale delay to prevent network/CPU thrashing,
+				// and defer to the earliest CF/worker cooldown expiry if all routes are paused.
 				fails := sb.consecutive.Add(1)
 				delay := 15 * time.Second
 				if fails == 2 {
 					delay = 30 * time.Second
 				} else if fails >= 3 {
 					delay = 60 * time.Second
+				}
+				if routeWait := nextExhaustedRouteWait(dc, isMedia, isTest, false); routeWait > delay {
+					delay = routeWait
 				}
 				sb.until.Store(time.Now().Add(delay).UnixNano())
 				break
